@@ -41,6 +41,10 @@ use bevy_ghx_proc_gen::simple_plugin::ProcGenSimplePlugins;
 use bevy_ghx_proc_gen::spawner_plugin::NodesSpawner;
 use rand::RngExt;
 
+use crate::attack::{Action, Damage};
+
+pub mod attack;
+
 #[derive(Resource)]
 pub struct CursorPos(Vec2);
 impl Default for CursorPos {
@@ -72,66 +76,19 @@ pub fn update_cursor_pos(
 pub trait TileStat {}
 
 #[derive(Component, Debug)]
-pub struct Burning(i32);
+pub struct Health(i32);
 
-// Side length of a colored quadrant (in "number of tiles").
-const QUADRANT_SIDE_LENGTH: u32 = 12;
+#[derive(Component, Debug)]
+pub struct Armor(i32);
 
-fn startup(mut commands: Commands, asset_server: Res<AssetServer>) {
-    commands.spawn(Camera2d);
-
-    let texture_handle: Handle<Image> = asset_server.load("iso_color.png");
-
-    // In total, there will be `(QUADRANT_SIDE_LENGTH * 2) * (QUADRANT_SIDE_LENGTH * 2)` tiles.
-    let map_size = TilemapSize {
-        x: QUADRANT_SIDE_LENGTH * 2,
-        y: QUADRANT_SIDE_LENGTH * 2,
-    };
-    let quadrant_size = TilemapSize {
-        x: QUADRANT_SIDE_LENGTH,
-        y: QUADRANT_SIDE_LENGTH,
-    };
-    let mut tile_storage = TileStorage::empty(map_size);
-    let tilemap_entity = commands.spawn_empty().id();
-    let tilemap_id = TilemapId(tilemap_entity);
-
-    fill_tilemap_rect(
-        TileTextureIndex(0),
-        TilePos { x: 0, y: 0 },
-        map_size,
-        tilemap_id,
-        &mut commands,
-        &mut tile_storage,
-    );
-
-    let mut rng = rand::rng();
-    for tile_entity in tile_storage.iter() {
-        if let Some(tile_entity) = tile_entity {
-            let rand_is_burning = rng.random_bool(1.0 / 8.0);
-
-            if !rand_is_burning {
-                continue;
-            }
-
-            commands.entity(tile_entity.clone()).insert(Burning(1));
-        }
+impl Health {
+    pub fn inflict_damage(mut self: Self, damage: &Damage) {
+        self.0 -= damage.0;
     }
-
-    let tile_size = TilemapTileSize { x: 64.0, y: 32.0 };
-    let grid_size = tile_size.into();
-    let map_type = TilemapType::Isometric(IsoCoordSystem::Diamond);
-
-    commands.entity(tilemap_entity).insert(TilemapBundle {
-        grid_size,
-        size: map_size,
-        storage: tile_storage,
-        texture: TilemapTexture::Single(texture_handle),
-        tile_size,
-        map_type,
-        anchor: TilemapAnchor::Center,
-        ..Default::default()
-    });
 }
+
+#[derive(Component, Debug)]
+pub struct Burning(i32);
 
 #[derive(Component, Debug)]
 pub struct Beast;
@@ -618,6 +575,14 @@ fn startup_3d(
         TimerMode::Repeating,
     )));
 
+    Action::spawn_empty(&mut cmd)
+        .with_name("Mon attaque")
+        .with_range(4)
+        .with_mp_cost(3)
+        .with_ap_cost(4)
+        .with_melee_damage(20)
+        .get_entity();
+
     // Scene lights
     cmd.insert_resource(GlobalAmbientLight {
         color: Color::Srgba(ORANGE_400),
@@ -704,6 +669,13 @@ pub fn count_cells(mut cmd: Commands, q: Query<Entity, With<GridCell>>) {
     }
 }
 
+pub fn log_actions(mut cmd: Commands, q: Query<Entity, With<Action>>) {
+    for action_ent in &q {
+        println!("ACTION COMP LIST = ");
+        cmd.entity(action_ent).log_components();
+    }
+}
+
 fn main() {
     App::new()
         .insert_resource(DirectionalLightShadowMap { size: 4096 })
@@ -744,6 +716,7 @@ fn main() {
         .add_systems(Update, tick_tilemap_effects_timer)
         .add_systems(Update, spread_tiles_effects)
         .add_systems(Update, update_tiles_texture)
+        .add_systems(Update, log_actions)
         //
         // .add_systems(Update, count_cells)
         .run();
