@@ -41,9 +41,11 @@ use bevy_ghx_proc_gen::simple_plugin::ProcGenSimplePlugins;
 use bevy_ghx_proc_gen::spawner_plugin::NodesSpawner;
 use rand::RngExt;
 
-use crate::attack::{Action, Damage};
+use crate::actions::{Action, ActionPlugin, Damage};
+use crate::ui::GameUiPlugin;
 
-pub mod attack;
+pub mod actions;
+pub mod ui;
 
 #[derive(Resource)]
 pub struct CursorPos(Vec2);
@@ -92,6 +94,9 @@ pub struct Burning(i32);
 
 #[derive(Component, Debug)]
 pub struct Beast;
+
+#[derive(Component, Debug)]
+pub struct ActiveCamera;
 
 pub fn spawn_beasts(mut cmd: Commands) {
     cmd.spawn(Beast);
@@ -349,15 +354,19 @@ impl<A: Bundle + Clone + Default> BundleInserter for GridCellSocketsComponents<A
         scale: Vec3,
         rotation: ModelRotation,
     ) {
-        command.insert((
-            Transform::from_translation(translation)
-                .with_scale(scale)
-                .with_rotation(Quat::from_rotation_y(rotation.rad())),
-            Mesh3d(self.mesh.clone()),
-            MeshMaterial3d(self.material.clone()),
-            GridCell,
-            self.components.clone(),
-        ));
+        command
+            .insert((
+                Transform::from_translation(translation)
+                    .with_scale(scale)
+                    .with_rotation(Quat::from_rotation_y(rotation.rad())),
+                Mesh3d(self.mesh.clone()),
+                MeshMaterial3d(self.material.clone()),
+                GridCell,
+                self.components.clone(),
+            ))
+            // TODO : Switch observer setup to a Added<GridCell> system
+            .observe(tag_hovered_gridcell)
+            .observe(untag_hoverout_gridcell);
 
         let mut rng = rand::rng();
         let rand_is_burning = rng.random_bool(1.0 / 8.0);
@@ -560,6 +569,7 @@ fn startup_3d(
     cmd.spawn((
         Camera3d::default(),
         Name::new("Camera"),
+        ActiveCamera,
         Projection::from(OrthographicProjection {
             // 6 world units per pixel of window height.
             scaling_mode: ScalingMode::FixedVertical {
@@ -676,6 +686,17 @@ pub fn log_actions(mut cmd: Commands, q: Query<Entity, With<Action>>) {
     }
 }
 
+#[derive(Component, Debug)]
+pub struct CursorTarget(Entity);
+
+pub fn tag_hovered_gridcell(hover: On<Pointer<Over>>, mut cmd: Commands) {
+    cmd.entity(hover.entity).insert(CursorTarget(hover.entity));
+}
+
+pub fn untag_hoverout_gridcell(hover: On<Pointer<Out>>, mut cmd: Commands) {
+    cmd.entity(hover.entity).remove::<CursorTarget>();
+}
+
 fn main() {
     App::new()
         .insert_resource(DirectionalLightShadowMap { size: 4096 })
@@ -706,6 +727,7 @@ fn main() {
             // },
         ))
         .add_plugins(TilemapPlugin)
+        .add_plugins((ActionPlugin, GameUiPlugin))
         .add_systems(Startup, startup_3d)
         // .init_resource::<CursorPos>()
         // .add_systems(Startup, (startup, spawn_beasts))

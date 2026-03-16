@@ -11,9 +11,9 @@ use bevy::{
     },
 };
 
-pub struct AttackPlugin;
+pub struct ActionPlugin;
 
-impl Plugin for AttackPlugin {
+impl Plugin for ActionPlugin {
     fn build(&self, app: &mut bevy::app::App) {}
 }
 
