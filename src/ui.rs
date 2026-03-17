@@ -3,9 +3,10 @@ use bevy::{
     camera::Camera,
     color::{
         Color,
-        palettes::css::{RED, WHITE},
+        palettes::css::{GREY, RED, WHITE},
     },
     ecs::{
+        children,
         component::Component,
         entity::Entity,
         hierarchy::Children,
@@ -19,13 +20,13 @@ use bevy::{
     picking::Pickable,
     transform::components::Transform,
     ui::{
-        BackgroundColor, BorderColor, BorderRadius, IsDefaultUiCamera, Node, Outline, UiRect, Val,
-        px, widget::Text,
+        BackgroundColor, BorderColor, BorderRadius, IsDefaultUiCamera, Node, Outline, PositionType,
+        UiRect, Val, ZIndex, px, widget::Text,
     },
 };
 use bevy_ui_anchor::{AnchorPoint, AnchorUiConfig, AnchorUiNode, AnchorUiPlugin, AnchoredUiNodes};
 
-use crate::{ActiveCamera, CursorTarget};
+use crate::{ActiveCamera, CursorTarget, Health, MaxHealth};
 
 pub struct GameUiPlugin;
 
@@ -46,6 +47,30 @@ impl Plugin for GameUiPlugin {
     }
 }
 
+pub enum UiDataLevel {
+    Title,
+    Subtitle,
+    Text,
+}
+
+pub struct UiData {
+    pub level: UiDataLevel,
+    pub text: &'static str,
+}
+
+pub trait UiDataContainer {
+    fn get_ui_data(&self) -> Option<UiData>;
+}
+
+impl<T> UiDataContainer for T
+where
+    T: Component,
+{
+    fn get_ui_data(&self) -> Option<UiData> {
+        None
+    }
+}
+
 pub fn tag_active_camera(mut cmd: Commands, q: Query<Entity, (Added<ActiveCamera>, With<Camera>)>) {
     for cam_ent in &q {
         cmd.entity(cam_ent)
@@ -59,7 +84,7 @@ pub struct RemoveOnCursorTargetChange(Entity);
 pub fn draw_cursor_target_health_ui(
     mut cmd: Commands,
     q: Query<
-        Entity,
+        (Entity, &Health, &MaxHealth),
         (
             Added<CursorTarget>,
             With<Transform>,
@@ -67,14 +92,14 @@ pub fn draw_cursor_target_health_ui(
         ),
     >,
 ) {
-    for ent in &q {
+    for (ent, health, max_health) in &q {
         cmd.entity(ent).insert(AnchoredUiNodes::spawn_one((
             RemoveOnCursorTargetChange(ent),
             // TODO: Check if this works ? is it overriden ? Needed ?
             Pickable::IGNORE,
             AnchorUiConfig {
                 anchorpoint: AnchorPoint::middle(),
-                offset: Some(Vec3::new(0.0, 1.5, 0.0)),
+                offset: Some(Vec3::new(0.0, 0.5, 0.0)),
                 ..Default::default()
             },
             Node {
@@ -84,16 +109,33 @@ pub fn draw_cursor_target_health_ui(
             },
             BorderColor::all(WHITE),
             Outline::default(),
-            Children::spawn_one((
-                // text
-                Node {
-                    width: px(100),
-                    height: px(10),
-                    border_radius: BorderRadius::all(px(10)),
-                    ..Default::default()
-                },
-                BackgroundColor(Color::Srgba(RED)),
-            )),
+            children![
+                (
+                    Pickable::IGNORE,
+                    // text
+                    Node {
+                        width: px(health.0),
+                        height: px(10),
+                        border_radius: BorderRadius::all(px(10)),
+                        position_type: PositionType::Absolute,
+                        ..Default::default()
+                    },
+                    BackgroundColor(Color::Srgba(RED)),
+                    ZIndex(1),
+                ),
+                (
+                    Pickable::IGNORE,
+                    // text
+                    Node {
+                        width: px(max_health.0),
+                        height: px(10),
+                        border_radius: BorderRadius::all(px(10)),
+                        position_type: PositionType::Relative,
+                        ..Default::default()
+                    },
+                    BackgroundColor(Color::Srgba(GREY)),
+                )
+            ],
         )));
     }
 }

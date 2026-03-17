@@ -41,10 +41,14 @@ use bevy_ghx_proc_gen::simple_plugin::ProcGenSimplePlugins;
 use bevy_ghx_proc_gen::spawner_plugin::NodesSpawner;
 use rand::RngExt;
 
-use crate::actions::{Action, ActionPlugin, Damage};
+use crate::actions::{Action, ActionPlugin, Damage, PendingEffectTowards, PendingEffects};
+use crate::combat::CombatPlugin;
+use crate::states::CombatState;
 use crate::ui::GameUiPlugin;
 
 pub mod actions;
+pub mod combat;
+pub mod states;
 pub mod ui;
 
 #[derive(Resource)]
@@ -77,15 +81,35 @@ pub fn update_cursor_pos(
 
 pub trait TileStat {}
 
-#[derive(Component, Debug)]
-pub struct Health(i32);
+#[derive(Component, Debug, Default)]
+pub struct MaxArmor(i32);
 
 #[derive(Component, Debug)]
+#[require(MaxArmor)]
 pub struct Armor(i32);
 
+#[derive(Component, Debug, Default)]
+pub struct MaxHealth(i32);
+
+#[derive(Component, Debug)]
+#[require(MaxHealth)]
+pub struct Health(i32);
+
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+pub enum HealthState {
+    Alive,
+    Dead,
+}
+
 impl Health {
-    pub fn inflict_damage(mut self: Self, damage: &Damage) {
-        self.0 -= damage.0;
+    pub fn apply_damage(self: &mut Self, value: i32) -> HealthState {
+        let health_left = (self.0 - value).max(0);
+        self.0 = health_left;
+        if health_left > 0 {
+            HealthState::Alive
+        } else {
+            HealthState::Dead
+        }
     }
 }
 
@@ -365,11 +389,14 @@ impl<A: Bundle + Clone + Default> BundleInserter for GridCellSocketsComponents<A
                 Mesh3d(self.mesh.clone()),
                 MeshMaterial3d(self.material.clone()),
                 GridCell,
+                Health(100),
+                MaxHealth(100),
                 self.components.clone(),
             ))
             // TODO : Switch observer setup to a Added<GridCell> system
             .observe(tag_hovered_gridcell)
-            .observe(untag_hoverout_gridcell);
+            .observe(untag_hoverout_gridcell)
+            .observe(trigger_attack);
 
         let mut rng = rand::rng();
         let rand_is_burning = rng.random_bool(1.0 / 8.0);
@@ -707,6 +734,10 @@ pub fn untag_hoverout_gridcell(mut hover: On<Pointer<Out>>, mut hovered: ResMut<
     hover.propagate(false);
 }
 
+pub fn trigger_attack(mut click: On<Pointer<Click>>, mut cmd: Commands) {
+    cmd.spawn((Damage(10), PendingEffectTowards(click.entity)));
+}
+
 pub fn sync_cursor_target(
     mut cmd: Commands,
     hovered: Res<HoveredCell>,
@@ -732,8 +763,6 @@ pub fn sync_cursor_target(
 
 fn main() {
     App::new()
-        .insert_resource(DirectionalLightShadowMap { size: 4096 })
-        .insert_resource(HoveredCell(None))
         .add_plugins((
             MeshPickingPlugin,
             DefaultPlugins
@@ -752,16 +781,12 @@ fn main() {
                 }),
             ProcGenSimplePlugins::<Cartesian3D, GridCellSocketsComponents>::default(),
             GridDebugPlugin::<Cartesian3D>::new(),
-            // ProcGenDebugPlugins::<Cartesian3D, Handle<Scene>> {
-            //     config: DebugPluginConfig {
-            //         generation_view_mode: GenerationViewMode::Final,
-            //         ..default()
-            //     },
-            //     ..default()
-            // },
         ))
         .add_plugins(TilemapPlugin)
-        .add_plugins((ActionPlugin, GameUiPlugin))
+        .add_plugins((ActionPlugin, GameUiPlugin, CombatPlugin))
+        .insert_resource(DirectionalLightShadowMap { size: 4096 })
+        .insert_resource(HoveredCell(None))
+        .insert_state(CombatState::DeterminePlayOrder)
         .add_systems(Startup, startup_3d)
         // .init_resource::<CursorPos>()
         // .add_systems(Startup, (startup, spawn_beasts))

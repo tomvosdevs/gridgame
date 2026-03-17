@@ -1,20 +1,25 @@
 use std::marker::PhantomData;
 
 use bevy::{
-    app::Plugin,
+    app::{Plugin, Update},
     ecs::{
         bundle::Bundle,
         component::Component,
         entity::Entity,
         name::Name,
-        system::{Commands, EntityCommand, EntityCommands},
+        query::With,
+        system::{Commands, EntityCommand, EntityCommands, Query},
     },
 };
+
+use crate::{Health, HealthState};
 
 pub struct ActionPlugin;
 
 impl Plugin for ActionPlugin {
-    fn build(&self, app: &mut bevy::app::App) {}
+    fn build(&self, app: &mut bevy::app::App) {
+        app.add_systems(Update, apply_pending_effects);
+    }
 }
 
 pub struct Confusion;
@@ -55,8 +60,34 @@ impl DamageKind for Fire {}
 impl DamageKind for Electric {}
 impl DamageKind for Water {}
 
-#[derive(Component, Debug, Default)]
+#[derive(Component)]
+#[relationship(relationship_target = PendingEffects)]
+pub struct PendingEffectTowards(pub Entity);
+
+#[derive(Component)]
+#[relationship_target(relationship = PendingEffectTowards, linked_spawn)]
+pub struct PendingEffects(Vec<Entity>);
+
+#[derive(Component)]
 pub struct Damage(pub i32);
+
+pub fn apply_pending_effects(
+    mut cmd: Commands,
+    mut target_q: Query<(Entity, &PendingEffects, &mut Health)>,
+    pending: Query<&Damage, With<PendingEffectTowards>>,
+) {
+    for (target_ent, effects, mut target_health) in &mut target_q {
+        for &source_ent in &effects.0 {
+            if let Ok(damage) = pending.get(source_ent) {
+                println!("applygin dmg");
+                if HealthState::Dead == target_health.apply_damage(damage.0) {
+                    cmd.entity(target_ent).despawn();
+                }
+                cmd.entity(source_ent).despawn();
+            }
+        }
+    }
+}
 
 #[derive(Component, Debug)]
 pub struct MovementPoints(pub i32);
@@ -179,7 +210,7 @@ impl<'a> ActionBuilder<'a, ActionPointsDefined> {
 }
 
 #[derive(Component, Debug)]
-#[require(Damage, ActionPoints, Range)]
+#[require(ActionPoints, Range)]
 pub struct Action;
 
 impl<'a> Action {
