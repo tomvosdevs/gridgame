@@ -1,7 +1,10 @@
 use bevy::{
     app::{Plugin, Update},
     camera::Camera,
-    color::palettes::css::WHITE,
+    color::{
+        Color,
+        palettes::css::{RED, WHITE},
+    },
     ecs::{
         component::Component,
         entity::Entity,
@@ -13,9 +16,11 @@ use bevy::{
         system::{Commands, Query},
     },
     math::Vec3,
+    picking::Pickable,
     transform::components::Transform,
     ui::{
-        BorderColor, BorderRadius, IsDefaultUiCamera, Node, Outline, UiRect, Val, px, widget::Text,
+        BackgroundColor, BorderColor, BorderRadius, IsDefaultUiCamera, Node, Outline, UiRect, Val,
+        px, widget::Text,
     },
 };
 use bevy_ui_anchor::{AnchorPoint, AnchorUiConfig, AnchorUiNode, AnchorUiPlugin, AnchoredUiNodes};
@@ -56,7 +61,7 @@ pub fn draw_cursor_target_health_ui(
     q: Query<
         Entity,
         (
-            With<CursorTarget>,
+            Added<CursorTarget>,
             With<Transform>,
             Without<AnchoredUiNodes>,
         ),
@@ -65,36 +70,44 @@ pub fn draw_cursor_target_health_ui(
     for ent in &q {
         cmd.entity(ent).insert(AnchoredUiNodes::spawn_one((
             RemoveOnCursorTargetChange(ent),
+            // TODO: Check if this works ? is it overriden ? Needed ?
+            Pickable::IGNORE,
             AnchorUiConfig {
                 anchorpoint: AnchorPoint::middle(),
-                offset: Some(Vec3::new(0.0, 0.5, 0.0)),
+                offset: Some(Vec3::new(0.0, 1.5, 0.0)),
                 ..Default::default()
             },
             Node {
-                border: UiRect::all(Val::Px(2.)),
-                border_radius: BorderRadius::all(px(3)),
+                border: UiRect::all(px(2)),
+                border_radius: BorderRadius::all(px(10)),
                 ..Default::default()
             },
             BorderColor::all(WHITE),
             Outline::default(),
-            Children::spawn_one(
+            Children::spawn_one((
                 // text
-                Text("HP goes here".into()),
-            ),
+                Node {
+                    width: px(100),
+                    height: px(10),
+                    border_radius: BorderRadius::all(px(10)),
+                    ..Default::default()
+                },
+                BackgroundColor(Color::Srgba(RED)),
+            )),
         )));
     }
 }
 
 pub fn remove_cursor_target_health_ui(
     mut cmd: Commands,
-    q: Query<(Entity, &RemoveOnCursorTargetChange)>,
-    cursor_target_q: Query<Entity, With<CursorTarget>>,
+    mut removed: RemovedComponents<CursorTarget>,
+    ui_q: Query<(Entity, &RemoveOnCursorTargetChange)>,
 ) {
-    let cursor_targets: Vec<Entity> = cursor_target_q.iter().collect();
-    for (ent, remove_on) in &q {
-        if cursor_targets.contains(&remove_on.0) {
-            continue;
+    for removed_entity in removed.read() {
+        for (ui_ent, marker) in &ui_q {
+            if marker.0 == removed_entity {
+                cmd.entity(ui_ent).despawn();
+            }
         }
-        cmd.entity(ent).despawn();
     }
 }

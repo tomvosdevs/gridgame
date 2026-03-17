@@ -312,6 +312,9 @@ impl GridRulesGenerator {
 #[derive(Component, Clone, Debug)]
 pub struct GridCell;
 
+#[derive(Resource, Default)]
+pub struct HoveredCell(pub Option<Entity>);
+
 #[derive(Default, Clone)]
 pub struct GridCellSocketsComponents<A: Bundle + Clone + Default = ()> {
     components: A,
@@ -599,6 +602,7 @@ fn startup_3d(
         brightness: 0.05,
         ..default()
     });
+
     cmd.spawn((
         Name::new("Main light"),
         Transform {
@@ -613,6 +617,7 @@ fn startup_3d(
             ..default()
         },
     ));
+
     cmd.spawn((
         Name::new("Back light"),
         Transform {
@@ -689,17 +694,46 @@ pub fn log_actions(mut cmd: Commands, q: Query<Entity, With<Action>>) {
 #[derive(Component, Debug)]
 pub struct CursorTarget(Entity);
 
-pub fn tag_hovered_gridcell(hover: On<Pointer<Over>>, mut cmd: Commands) {
-    cmd.entity(hover.entity).insert(CursorTarget(hover.entity));
+pub fn tag_hovered_gridcell(mut hover: On<Pointer<Over>>, mut hovered: ResMut<HoveredCell>) {
+    hovered.0 = Some(hover.entity);
+    hover.propagate(false);
 }
 
-pub fn untag_hoverout_gridcell(hover: On<Pointer<Out>>, mut cmd: Commands) {
-    cmd.entity(hover.entity).remove::<CursorTarget>();
+pub fn untag_hoverout_gridcell(mut hover: On<Pointer<Out>>, mut hovered: ResMut<HoveredCell>) {
+    // Only clear if this entity is still the current target
+    if hovered.0 == Some(hover.entity) {
+        hovered.0 = None;
+    }
+    hover.propagate(false);
+}
+
+pub fn sync_cursor_target(
+    mut cmd: Commands,
+    hovered: Res<HoveredCell>,
+    current: Query<Entity, With<CursorTarget>>,
+) {
+    if !hovered.is_changed() {
+        return; // nothing to do this frame
+    }
+
+    // Remove from old target
+    for ent in &current {
+        if Some(ent) != hovered.0 {
+            cmd.entity(ent).remove::<CursorTarget>();
+        }
+    }
+
+    // Add to new target
+    if let Some(ent) = hovered.0 {
+        println!("setting target to : {:?}", ent);
+        cmd.entity(ent).insert(CursorTarget(ent));
+    }
 }
 
 fn main() {
     App::new()
         .insert_resource(DirectionalLightShadowMap { size: 4096 })
+        .insert_resource(HoveredCell(None))
         .add_plugins((
             MeshPickingPlugin,
             DefaultPlugins
@@ -738,7 +772,8 @@ fn main() {
         .add_systems(Update, tick_tilemap_effects_timer)
         .add_systems(Update, spread_tiles_effects)
         .add_systems(Update, update_tiles_texture)
-        .add_systems(Update, log_actions)
+        .add_systems(Update, sync_cursor_target)
+        // .add_systems(Update, log_actions)
         //
         // .add_systems(Update, count_cells)
         .run();
