@@ -41,13 +41,18 @@ use bevy_ghx_proc_gen::simple_plugin::ProcGenSimplePlugins;
 use bevy_ghx_proc_gen::spawner_plugin::NodesSpawner;
 use rand::RngExt;
 
-use crate::actions::{Action, ActionPlugin, Damage, PendingEffectTowards, PendingEffects};
-use crate::combat::CombatPlugin;
+use crate::actions::{
+    Action, ActionPlugin, ActionPoints, Damage, Electric, Fire, Melee, MovementPoints,
+    PendingEffectTowards, PendingEffects, Physical, Piercing, Range, Ranged, Water,
+};
+use crate::combat::{CombatPlugin, SelectedAction};
+use crate::effects::{Burning, EffectsPlugin};
 use crate::states::CombatState;
 use crate::ui::GameUiPlugin;
 
 pub mod actions;
 pub mod combat;
+pub mod effects;
 pub mod states;
 pub mod ui;
 
@@ -112,9 +117,6 @@ impl Health {
         }
     }
 }
-
-#[derive(Component, Debug)]
-pub struct Burning(i32);
 
 #[derive(Component, Debug)]
 pub struct Beast;
@@ -615,12 +617,13 @@ fn startup_3d(
         TimerMode::Repeating,
     )));
 
+    // Spawn test attack/ Spawn test action
     Action::spawn_empty(&mut cmd)
         .with_name("Mon attaque")
         .with_range(4)
         .with_mp_cost(3)
         .with_ap_cost(4)
-        .with_melee_damage(20)
+        .with_melee_damage(200)
         .get_entity();
 
     // Scene lights
@@ -734,8 +737,37 @@ pub fn untag_hoverout_gridcell(mut hover: On<Pointer<Out>>, mut hovered: ResMut<
     hover.propagate(false);
 }
 
-pub fn trigger_attack(mut click: On<Pointer<Click>>, mut cmd: Commands) {
-    cmd.spawn((Damage(10), PendingEffectTowards(click.entity)));
+pub fn trigger_attack(
+    mut click: On<Pointer<Click>>,
+    mut cmd: Commands,
+    actions_q: Query<(
+        Entity,
+        &Action,
+        &Range,
+        &ActionPoints,
+        Option<&MovementPoints>,
+        Option<&Physical>,
+        Option<&Ranged>,
+        Option<&Melee>,
+        Option<&Piercing>,
+        Option<&Fire>,
+        Option<&Electric>,
+        Option<&Water>,
+    )>,
+    selected_action: Res<SelectedAction>,
+) {
+    let Some(action_ent) = selected_action.0 else {
+        return;
+    };
+    let Ok(action) = actions_q.get(action_ent) else {
+        return;
+    };
+
+    let target = click.entity;
+    let melee_dmg = action.7.or(Some(&Melee(0))).unwrap();
+
+    // Replace with event emission ?
+    let damages = cmd.spawn((PendingEffectTowards(target), Damage(melee_dmg.0)));
 }
 
 pub fn sync_cursor_target(
@@ -783,7 +815,7 @@ fn main() {
             GridDebugPlugin::<Cartesian3D>::new(),
         ))
         .add_plugins(TilemapPlugin)
-        .add_plugins((ActionPlugin, GameUiPlugin, CombatPlugin))
+        .add_plugins((EffectsPlugin, ActionPlugin, GameUiPlugin, CombatPlugin))
         .insert_resource(DirectionalLightShadowMap { size: 4096 })
         .insert_resource(HoveredCell(None))
         .insert_state(CombatState::DeterminePlayOrder)

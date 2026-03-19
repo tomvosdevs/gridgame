@@ -1,14 +1,9 @@
-use std::marker::PhantomData;
+use std::{any::Any, marker::PhantomData};
 
 use bevy::{
     app::{Plugin, Update},
     ecs::{
-        bundle::Bundle,
-        component::Component,
-        entity::Entity,
-        name::Name,
-        query::With,
-        system::{Commands, EntityCommand, EntityCommands, Query},
+        bundle::Bundle, component::Component, entity::Entity, event::EntityEvent, name::Name, observer::On, query::{QueryData, QueryFilter, QueryState, ReadOnlyQueryData, With}, system::{Commands, EntityCommand, EntityCommands, Query}, world::World
     },
 };
 
@@ -26,10 +21,20 @@ pub struct Confusion;
 #[derive(Component, Debug, Default)]
 pub struct Range(i32);
 
-pub trait DamageKind {}
+pub trait AsAny: Any {
+    fn as_any(&self) -> &dyn Any;
+}
+
+impl<T: Component + DamageKind> AsAny for T {
+    fn as_any(&self) -> &dyn Any { self }
+}
+
+pub trait DamageKind: Any + Component {
+    fn apply_damage(self) -> impl Bundle;
+}
 
 #[derive(Component, Debug, Default)]
-pub struct Physical(i32);
+pub struct Physical;
 
 #[derive(Component, Debug, Default)]
 #[require(Physical)]
@@ -37,7 +42,7 @@ pub struct Ranged(i32);
 
 #[derive(Component, Debug, Default)]
 #[require(Physical)]
-pub struct Melee(i32);
+pub struct Melee(pub i32);
 
 #[derive(Component, Debug, Default)]
 #[require(Physical)]
@@ -52,7 +57,11 @@ pub struct Electric(i32);
 #[derive(Component, Debug, Default)]
 pub struct Water(i32);
 
-impl DamageKind for Physical {}
+impl DamageKind for Physical {
+    fn apply_damage(self) -> impl Bundle {
+        (PendingEffectTowards())
+    }
+}
 impl DamageKind for Ranged {}
 impl DamageKind for Melee {}
 impl DamageKind for Piercing {}
@@ -217,4 +226,122 @@ impl<'a> Action {
     pub fn spawn_empty(commands: &'a mut Commands) -> ActionBuilder<'a, ActionCreated> {
         ActionBuilder::empty(commands)
     }
+}
+
+impl Action {
+    pub fn attack_entity(
+        entity_cmds: &mut EntityCommands,
+        action: (Entity, &Action, &Range, &ActionPoints, Option<&MovementPoints>, Option<&Physical>, Option<&Ranged>, Option<&Melee>, Option<&Piercing>, Option<&Fire>, Option<&Electric>, Option<&Water>)
+    ) {
+        let (action_entity, action_c, range, ap_cost, mp_cost, physical_dmg, ranged_dmg, melee_dmg, piercing_dmg, fire_dmg, electric_dmg, water_dmg) = action;
+
+
+        if let Some(physical_dmg) = physical_dmg {
+            physical_dmg
+        }
+        entity_cmds.
+    }
+}
+
+#[derive(EntityEvent)]
+struct ActionCast {
+    entity: Entity,
+}
+
+#[derive(EntityEvent)]
+struct Split {
+    entity: Entity,
+}
+
+pub struct Predicate {
+    validate_fn: Box<dyn FnMut(&mut World, Entity) -> bool + Send + Sync + 'static>,
+}
+
+impl Predicate {
+    pub fn validate(&mut self, world: &mut World, entity: Entity) -> bool {
+        (self.validate_fn)(world, entity)
+    }
+
+    pub fn new<D, F>(predicate: impl Fn(D::Item<'_, '_>) -> bool + Send + Sync + 'static) -> Self
+    where
+        D: ReadOnlyQueryData + 'static,
+        F: QueryFilter + 'static,
+    {
+        let mut query_state: Option<QueryState<D, F>> = None;
+
+        Self {
+            validate_fn: Box::new(move |world: &mut World, entity: Entity| -> bool {
+                let qs = query_state.get_or_insert_with(|| QueryState::<D, F>::new(world));
+                qs.update_archetypes(world);
+                match qs.get(world, entity) {
+                    Ok(data) => predicate(data),
+                    Err(_) => false,
+                }
+            }),
+        }
+    }
+}
+
+struct Reaction {
+    trigger_events: Vec<ActionEffect>,
+    predicates: Vec<Predicate>
+}
+
+impl Reaction {
+    pub fn validate_all(&mut self, world: &mut World, entity: Entity) -> bool {
+        self.predicates.iter_mut().all(|p| p.validate(world, entity))
+    }
+
+    pub fn trigger_effects(&mut self, entity: Entity, world: &mut World) {
+        if self.validate_all(world, entity) {
+            for effect in &self.trigger_events {
+                effect.trigger_world(entity, world);
+            }
+        }
+    }
+}
+
+pub enum ActionEffect {
+    Split,
+    Infuse
+}
+
+impl ActionEffect {
+    pub fn trigger(self: &Self, entity: Entity, cmd: &mut Commands) {
+        match self {
+            ActionEffect::Split => cmd.trigger(Split {entity}),
+            ActionEffect::Infuse => cmd.trigger(Split {entity}),
+        }
+    }
+
+    pub fn trigger_world(self: &Self, entity: Entity, world: &mut World) {
+        match self {
+            ActionEffect::Split => world.trigger(Split {entity}),
+            ActionEffect::Infuse => world.trigger(Split {entity}),
+        }
+    }
+}
+
+#[derive(Component)]
+pub struct ActionEffects(Vec<ActionEffect>);
+
+#[derive(Component)]
+pub struct ActionTargets(Vec<Entity>);
+
+pub fn setup_ex(world: &mut World) {
+    world.add_observer(|e: On<ActionCast>, mut cmd: Commands, q: Query<(&ActionTargets, &ActionEffects)>| {
+        let Ok((targets, effects)) = q.get(e.entity) else {
+            return
+        };
+
+        for target_ent in targets.0.iter() {
+            for effect in effects.0.iter() {
+                effect.trigger(*target_ent, &mut cmd);
+            }
+        }
+    });
+
+    world.add_observer(|e: On<Split>, mut world: &mut World| {
+        let p = Predicate<>;
+    });
 }

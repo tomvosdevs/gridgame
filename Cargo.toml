@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 bevy = { version = "0.18.0", features = ["bevy_gltf", "debug"] }
+bevy-trait-query = "0.18.0"
 bevy_ecs_tilemap = "0.18.1"
 bevy_ghx_grid = "0.8.0"
 bevy_ghx_proc_gen = {version = "0.8.0", features = ["bevy_ghx_grid"]}
