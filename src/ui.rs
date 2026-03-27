@@ -21,6 +21,7 @@ use bevy::{
         schedule::IntoScheduleConfigs,
         spawn::SpawnRelated,
         system::{Commands, Local, Query, Res, ResMut},
+        world::World,
     },
     image::Image,
     input::{ButtonState, mouse::MouseButton},
@@ -50,9 +51,14 @@ use bevy::{
         Val, ZIndex, percent, px, widget::Text,
     },
     utils::default,
-    window::{PrimaryWindow, Window, WindowEvent},
+    window::{CursorIcon, PrimaryWindow, Window, WindowEvent},
 };
 use bevy_ui_anchor::{AnchorPoint, AnchorUiConfig, AnchorUiNode, AnchorUiPlugin, AnchoredUiNodes};
+use haalka::{
+    HaalkaPlugin,
+    align::{Align, Alignable},
+    prelude::{BuilderPassThrough, Cursorable, El, Element, Row, Spawnable},
+};
 
 use crate::{ActiveCamera, CursorTarget, Health, MaxHealth, startup_3d};
 
@@ -62,7 +68,18 @@ pub struct GameUiPlugin;
 
 impl Plugin for GameUiPlugin {
     fn build(&self, app: &mut bevy::app::App) {
-        app.add_plugins(AnchorUiPlugin::<UiCameraMarker>::new())
+        app.add_plugins(HaalkaPlugin::new())
+            .add_plugins(AnchorUiPlugin::<UiCameraMarker>::new())
+            .add_systems(
+                Startup,
+                (
+                    |world: &mut World| {
+                        card_ui_root().spawn(world);
+                    },
+                    haalka_camera,
+                )
+                    .before(setup_diegetic_ui),
+            )
             .add_systems(Startup, setup_diegetic_ui.after(startup_3d))
             .add_systems(First, drive_diegetic_pointer.in_set(PickingSystems::Input))
             .add_systems(Update, tag_active_camera)
@@ -75,6 +92,35 @@ impl Plugin for GameUiPlugin {
 }
 
 #[derive(Component)]
+struct HaalkaCamera;
+
+#[derive(Component)]
+pub struct CardUiRoot;
+
+fn haalka_camera(mut cmd: Commands) {
+    cmd.spawn((Camera2d, HaalkaCamera));
+}
+
+pub fn card_ui_root() -> impl Element {
+    El::<Node>::new()
+        .with_node(|mut n| {
+            n.height = Val::Percent(100.);
+            n.width = Val::Percent(100.)
+        })
+        .insert(Pickable::default())
+        .insert(CardUiRoot)
+        .cursor(CursorIcon::default())
+        .align_content(Align::center())
+        .child(
+            Row::<Node>::new()
+                .with_node(|mut n| {
+                    n.column_gap = Val::Px(15.);
+                })
+                .item(El::<Text>::new().text(Text::new("Hello"))),
+        )
+}
+
+#[derive(Component)]
 /// We need a marker for the camera, so the plugin knows which camera to perform position
 /// calculations towards
 pub struct UiCameraMarker;
@@ -82,16 +128,24 @@ pub struct UiCameraMarker;
 #[derive(Component)]
 struct DiegeticUiTarget;
 
+#[derive(Component)]
+pub struct CardTextureCamera;
+
 fn setup_diegetic_ui(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut images: ResMut<Assets<Image>>,
-    q: Query<&Transform, (With<Camera3d>, With<ActiveCamera>)>,
+    card_ui_root_q: Query<Entity, (With<CardUiRoot>, With<Node>)>,
+    main_3d_cam_q: Query<&Transform, (With<Camera3d>, With<ActiveCamera>)>,
 ) {
-    let main_cam_tf = q
+    let main_cam_tf = main_3d_cam_q
         .single()
         .expect("found more than one Cam3d with 'ActiveCamera'");
+
+    let card_ui_root_ent = card_ui_root_q
+        .single()
+        .expect("Expected one card ui root entity");
 
     let size = Extent3d {
         width: 400,
@@ -116,6 +170,7 @@ fn setup_diegetic_ui(
     let texture_camera = commands
         .spawn((
             Camera2d,
+            CardTextureCamera,
             Camera {
                 // render before the "main pass" camera
                 order: -1,
@@ -126,62 +181,8 @@ fn setup_diegetic_ui(
         .id();
 
     commands
-        .spawn((
-            Node {
-                // Cover the whole image
-                width: percent(100),
-                height: percent(100),
-                flex_direction: FlexDirection::Column,
-                justify_content: JustifyContent::Center,
-                align_items: AlignItems::Center,
-                ..default()
-            },
-            BackgroundColor(GRAY.into()),
-            UiTargetCamera(texture_camera),
-        ))
-        .with_children(|parent| {
-            parent
-                .spawn((
-                    Node {
-                        position_type: PositionType::Absolute,
-                        width: Val::Auto,
-                        height: Val::Auto,
-                        align_items: AlignItems::Center,
-                        padding: UiRect::all(Val::Px(20.)),
-                        border_radius: BorderRadius::all(Val::Px(10.)),
-                        ..default()
-                    },
-                    BackgroundColor(BLUE.into()),
-                ))
-                .observe(
-                    |drag: On<Pointer<Drag>>, mut nodes: Query<(&mut Node, &ComputedNode)>| {
-                        let (mut node, computed) = nodes.get_mut(drag.entity).unwrap();
-                        node.left =
-                            Val::Px(drag.pointer_location.position.x - computed.size.x / 2.0);
-                        node.top = Val::Px(drag.pointer_location.position.y - 50.0);
-                    },
-                )
-                .observe(
-                    |over: On<Pointer<Over>>, mut colors: Query<&mut BackgroundColor>| {
-                        colors.get_mut(over.entity).unwrap().0 = RED.into();
-                    },
-                )
-                .observe(
-                    |out: On<Pointer<Out>>, mut colors: Query<&mut BackgroundColor>| {
-                        colors.get_mut(out.entity).unwrap().0 = BLUE.into();
-                    },
-                )
-                .with_children(|parent| {
-                    parent.spawn((
-                        Text::new("Drag Me!"),
-                        TextFont {
-                            font_size: 40.0,
-                            ..default()
-                        },
-                        TextColor::WHITE,
-                    ));
-                });
-        });
+        .entity(card_ui_root_ent)
+        .insert(UiTargetCamera(texture_camera));
 
     let mesh_handle = meshes.add(Rectangle::new(20.0, 50.0));
 
@@ -310,7 +311,7 @@ fn drive_diegetic_pointer(
     mut raycast: MeshRayCast,
     rays: Res<RayMap>,
     cubes: Query<&Mesh3d, With<DiegeticUiTarget>>,
-    ui_camera: Query<&RenderTarget, With<Camera2d>>,
+    ui_camera: Query<&RenderTarget, (With<Camera2d>, With<CardTextureCamera>)>,
     primary_window: Query<Entity, With<PrimaryWindow>>,
     windows: Query<(Entity, &Window)>,
     images: Res<Assets<Image>>,

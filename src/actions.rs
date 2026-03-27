@@ -236,7 +236,7 @@ pub struct ActionCast {
 }
 
 #[derive(EntityEvent)]
-pub struct Split {
+pub struct ActionEffectReceived {
     pub entity: Entity,
     key: ActionEffect,
 }
@@ -337,34 +337,6 @@ pub enum ActionEffect {
     Infuse,
 }
 
-impl ActionEffect {
-    pub fn trigger(self: &Self, entity: Entity, cmd: &mut Commands) {
-        match self {
-            ActionEffect::Split => cmd.trigger(Split {
-                entity,
-                key: ActionEffect::Split,
-            }),
-            ActionEffect::Infuse => cmd.trigger(Split {
-                entity,
-                key: ActionEffect::Infuse,
-            }),
-        }
-    }
-
-    pub fn trigger_world(self: &Self, entity: Entity, world: &mut World) {
-        match self {
-            ActionEffect::Split => world.trigger(Split {
-                entity,
-                key: ActionEffect::Split,
-            }),
-            ActionEffect::Infuse => world.trigger(Split {
-                entity,
-                key: ActionEffect::Infuse,
-            }),
-        }
-    }
-}
-
 #[derive(Component)]
 pub struct ActionEffects(pub Vec<ActionEffect>);
 
@@ -399,31 +371,39 @@ pub fn setup_actions_observers(world: &mut World) {
             };
 
             for effect in effects.0.iter() {
-                effect.trigger(main_target.0, &mut cmd);
+                cmd.trigger(ActionEffectReceived {
+                    entity: main_target.0,
+                    key: *effect,
+                });
             }
         },
     );
 
     world.add_observer(
-        |e: On<Split>, mut world_obs: DeferredWorld, q: Query<Entity, With<Reaction>>| {
+        |e: On<ActionEffectReceived>,
+         mut world_obs: DeferredWorld,
+         q: Query<Entity, With<Reaction>>| {
             let entity = e.entity;
             let effect_key = e.key;
 
             let reaction_entities: Vec<Entity> = q.iter().collect();
-            println!("split received");
+            println!("action effect received");
             for reaction_entity in reaction_entities {
                 println!("checking reaction");
                 let (entities, mut commands) = world_obs.entities_and_commands();
 
                 // Read predicates via entities (immutable)
                 let reaction = entities.get(reaction_entity).unwrap();
-                let should_apply = reaction
+                let reaction_applies_to_curr_effect = reaction
                     .get::<Reaction>()
                     .map_or(false, |r| r.trigger_on.contains(&effect_key));
 
-                println!("reaction should apply : {:?}", should_apply);
+                println!(
+                    "reaction should apply : {:?}",
+                    reaction_applies_to_curr_effect
+                );
 
-                if should_apply {
+                if reaction_applies_to_curr_effect {
                     // Apply results via commands
                     commands.queue(move |w: &mut World| {
                         let mut reaction =
