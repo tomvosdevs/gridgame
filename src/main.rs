@@ -54,6 +54,7 @@ pub mod actions;
 pub mod combat;
 pub mod effects;
 pub mod states;
+pub mod tiles_templates;
 pub mod ui;
 
 #[derive(Resource)]
@@ -335,7 +336,7 @@ impl GridRulesGenerator {
     fn add_socket_to_cell(direction: Direction, cell_name: &'static str) {}
 }
 
-#[derive(Component, Clone, Debug)]
+#[derive(Component, Clone, Debug, Default)]
 pub struct GridCell;
 
 #[derive(Resource, Default)]

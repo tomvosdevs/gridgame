@@ -15,9 +15,15 @@ use bevy::{
         world::{DeferredWorld, World},
     },
     math::bool,
+    transform::components::Transform,
 };
+use bevy_ghx_grid::ghx_grid::cartesian::{
+    coordinates::{Cartesian3D, CartesianPosition},
+    grid::CartesianGrid,
+};
+use bevy_ghx_proc_gen::GridNode;
 
-use crate::{GridCell, Health, HealthState};
+use crate::{BLOCK_SIZE, GridCell, Health, HealthState, NODE_SIZE};
 
 pub struct ActionPlugin;
 
@@ -355,9 +361,33 @@ pub fn setup_reactions(mut cmd: Commands) {
         vec![Predicate::new(|w: &World, e: Entity| {
             w.get::<GridCell>(e).is_some()
         })],
-        vec![ReactionResult::new(|cmd: &mut Commands, e: Entity| {
-            println!("hi from result");
-            cmd.entity(e).despawn();
+        vec![ReactionResult::new_deferred(|w: &mut World, e: Entity| {
+            // 1. Collect all data first (immutable borrows, then drop them)
+            let curr_node = w.get::<GridNode>(e).unwrap().0.clone();
+            let curr_tf = w.get::<Transform>(e).unwrap().clone();
+
+            let (new_pos, new_index, new_tf) = {
+                let mut grid_q = w.query::<&CartesianGrid<Cartesian3D>>();
+                let grid = grid_q.iter(w).next().unwrap();
+                let mut curr_pos = grid.pos_from_index(curr_node.clone());
+                let mut new_pos = grid
+                    .get_next_pos_in_direction(
+                        &curr_pos,
+                        bevy_ghx_grid::ghx_grid::direction::Direction::YForward,
+                    )
+                    .unwrap();
+                let new_index = grid.index_from_pos(&new_pos);
+                let mut new_tf = curr_tf.clone();
+                new_tf.translation.y += NODE_SIZE.y;
+                //let new_position =
+                (new_pos, new_index, new_tf)
+            }; // grid_q and grid dropped here
+
+            // 2. Now issue commands (mutable borrow, no live immutable borrows)
+            let clone_ent = w.commands().entity(e).clone_and_spawn().id();
+            w.commands()
+                .entity(clone_ent)
+                .insert((new_pos, GridNode(new_index), new_tf));
         })],
     ));
 }

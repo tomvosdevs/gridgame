@@ -1,4 +1,4 @@
-use std::f32::consts::PI;
+use std::{f32::consts::PI, time::Duration};
 
 use bevy::{
     app::{First, Plugin, Startup, Update},
@@ -53,6 +53,13 @@ use bevy::{
     utils::default,
     window::{CursorIcon, PrimaryWindow, Window, WindowEvent},
 };
+use bevy_tween::{
+    DefaultTweenPlugins,
+    bevy_time_runner::TimeRunner,
+    interpolate::{translation, translation_by},
+    prelude::{AnimationBuilderExt, EaseKind, TimeDirection, TransformTargetStateExt},
+    tween::{AnimationTarget, IntoTarget},
+};
 use bevy_ui_anchor::{AnchorPoint, AnchorUiConfig, AnchorUiNode, AnchorUiPlugin, AnchoredUiNodes};
 use haalka::{
     HaalkaPlugin,
@@ -70,15 +77,13 @@ impl Plugin for GameUiPlugin {
     fn build(&self, app: &mut bevy::app::App) {
         app.add_plugins(HaalkaPlugin::new())
             .add_plugins(AnchorUiPlugin::<UiCameraMarker>::new())
+            .add_plugins(DefaultTweenPlugins::default())
             .add_systems(
                 Startup,
-                (
-                    |world: &mut World| {
-                        card_ui_root().spawn(world);
-                    },
-                    haalka_camera,
-                )
-                    .before(setup_diegetic_ui),
+                (|world: &mut World| {
+                    card_ui_root().spawn(world);
+                })
+                .before(setup_diegetic_ui),
             )
             .add_systems(Startup, setup_diegetic_ui.after(startup_3d))
             .add_systems(First, drive_diegetic_pointer.in_set(PickingSystems::Input))
@@ -92,14 +97,7 @@ impl Plugin for GameUiPlugin {
 }
 
 #[derive(Component)]
-struct HaalkaCamera;
-
-#[derive(Component)]
 pub struct CardUiRoot;
-
-fn haalka_camera(mut cmd: Commands) {
-    cmd.spawn((Camera2d, HaalkaCamera));
-}
 
 pub fn card_ui_root() -> impl Element {
     El::<Node>::new()
@@ -131,6 +129,10 @@ struct DiegeticUiTarget;
 #[derive(Component)]
 pub struct CardTextureCamera;
 
+#[derive(Component)]
+#[require(Mesh3d)]
+pub struct CardUiTargetMesh;
+
 fn setup_diegetic_ui(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -147,9 +149,13 @@ fn setup_diegetic_ui(
         .single()
         .expect("Expected one card ui root entity");
 
+    let card_aspect_ratio_multiplier = (2, 3);
+    let card_tex_side_px = 400;
+    let card_mesh_size_multiplier = 5.0;
+
     let size = Extent3d {
-        width: 400,
-        height: 1000,
+        width: card_aspect_ratio_multiplier.0 * card_tex_side_px,
+        height: card_aspect_ratio_multiplier.1 * card_tex_side_px,
         ..default()
     };
 
@@ -184,7 +190,10 @@ fn setup_diegetic_ui(
         .entity(card_ui_root_ent)
         .insert(UiTargetCamera(texture_camera));
 
-    let mesh_handle = meshes.add(Rectangle::new(20.0, 50.0));
+    let mesh_handle = meshes.add(Rectangle::new(
+        card_aspect_ratio_multiplier.0 as f32 * card_mesh_size_multiplier,
+        card_aspect_ratio_multiplier.1 as f32 * card_mesh_size_multiplier,
+    ));
 
     // This material has the texture that has been rendered.
     let material_handle = materials.add(StandardMaterial {
@@ -197,16 +206,57 @@ fn setup_diegetic_ui(
     let cam_forward = main_cam_tf.forward();
 
     // Cube with material containing the rendered UI texture.
-    commands.spawn((
-        Mesh3d(mesh_handle.clone()),
-        MeshMaterial3d(material_handle),
-        Transform::from_xyz(5.0, 10.0, 0.0).looking_to(cam_forward, Vec3::Y),
-        DiegeticUiTarget,
-    ));
+    commands
+        .spawn((
+            CardUiTargetMesh,
+            Mesh3d(mesh_handle.clone()),
+            MeshMaterial3d(material_handle),
+            Transform::from_xyz(5.0, 10.0, 0.0).looking_to(cam_forward, Vec3::Y),
+            Pickable::default(),
+            DiegeticUiTarget,
+        ))
+        .observe(over_moveup_card_mesh)
+        .observe(leave_moveback_card_mesh);
 
     // Main camera is spawned elsewhere
     //
     commands.spawn(CUBE_POINTER_ID);
+}
+
+#[derive(Component)]
+pub struct TweenAnimator;
+
+pub fn over_moveup_card_mesh(
+    mut e: On<Pointer<Over>>,
+    mut cmd: Commands,
+    mut q: Query<&mut Transform, (With<Mesh3d>, With<CardUiTargetMesh>)>,
+) {
+    let Ok(mut mesh_tf) = q.get_mut(e.entity) else {
+        return;
+    };
+
+    let end = mesh_tf.translation + Vec3::new(0., 3., 0.);
+    let target = e.entity.into_target();
+    let mut transform_state = target.transform_state(*mesh_tf);
+    let tween = transform_state.translation_to(end);
+    cmd.entity(e.entity).animation().insert_tween_here(
+        Duration::from_millis(500),
+        EaseKind::QuadraticIn,
+        tween,
+    );
+}
+
+pub fn leave_moveback_card_mesh(
+    mut e: On<Pointer<Out>>,
+    mut cmd: Commands,
+    mut q: Query<(&mut Transform, &mut TimeRunner), (With<Mesh3d>, With<CardUiTargetMesh>)>,
+) {
+    let Ok((mut mesh_tf, mut time_runner)) = q.get_mut(e.entity) else {
+        return;
+    };
+
+    println!("Over leave");
+    time_runner.set_direction(TimeDirection::Backward);
 }
 
 pub enum UiDataLevel {

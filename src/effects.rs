@@ -29,23 +29,23 @@ pub trait StatusEffect {}
 pub struct Burning(pub i32);
 impl StatusEffect for Burning {}
 
-#[derive(Component, Debug, Clone)]
+#[derive(Component, Debug, Clone, Default)]
 pub struct Heat;
 impl StatusEffect for Heat {}
 
-#[derive(Component, Debug, Clone)]
+#[derive(Component, Debug, Clone, Default)]
 pub struct Steam;
 impl StatusEffect for Steam {}
 
-#[derive(Component, Debug, Clone)]
+#[derive(Component, Debug, Clone, Default)]
 pub struct Humid;
 impl StatusEffect for Humid {}
 
-#[derive(Component, Debug, Clone)]
+#[derive(Component, Debug, Clone, Default)]
 pub struct Iced;
 impl StatusEffect for Iced {}
 
-#[derive(Component, Debug, Clone)]
+#[derive(Component, Debug, Clone, Default)]
 pub struct Cold;
 impl StatusEffect for Cold {}
 
@@ -180,13 +180,10 @@ fn resolve_effects(
     world: &World,
     reactions_q: Query<&Reaction>,
     effects_equivalence: Res<EffectsEquivalence>,
-    effects_q: Query<
-        (
-            Entity,
-            AnyOf<(&Humid, &Heat, &Cold, &Iced, &Burning, &Steam)>,
-        ),
-        With<TempFilterC>,
-    >,
+    effects_q: Query<(
+        Entity,
+        AnyOf<(&Humid, &Heat, &Cold, &Iced, &Burning, &Steam)>,
+    )>,
 ) {
     let reactions: Vec<&Reaction> = reactions_q.iter().collect();
     for (target_entity, opt_effects) in &effects_q {
