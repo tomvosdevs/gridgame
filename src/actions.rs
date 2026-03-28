@@ -359,7 +359,10 @@ pub fn setup_reactions(mut cmd: Commands) {
     cmd.spawn(Reaction::new(
         vec![ActionEffect::Split],
         vec![Predicate::new(|w: &World, e: Entity| {
-            w.get::<GridCell>(e).is_some()
+            let has_gridcell = w.get::<GridCell>(e).is_some();
+            let has_gridnode = w.get::<GridNode>(e).is_some();
+            let has_tf = w.get::<Transform>(e).is_some();
+            has_gridcell && has_gridnode && has_tf
         })],
         vec![ReactionResult::new_deferred(|w: &mut World, e: Entity| {
             // 1. Collect all data first (immutable borrows, then drop them)
@@ -370,6 +373,7 @@ pub fn setup_reactions(mut cmd: Commands) {
                 let mut grid_q = w.query::<&CartesianGrid<Cartesian3D>>();
                 let grid = grid_q.iter(w).next().unwrap();
                 let mut curr_pos = grid.pos_from_index(curr_node.clone());
+                // TODO - ERR - Currently this crashes if used on a Y = grid height cell
                 let mut new_pos = grid
                     .get_next_pos_in_direction(
                         &curr_pos,

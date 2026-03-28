@@ -47,7 +47,7 @@ use crate::actions::{
 };
 use crate::combat::{CombatPlugin, SelectedAction};
 use crate::effects::{Burning, EffectsPlugin};
-use crate::states::CombatState;
+use crate::states::{CombatState, TurnsPlugin};
 use crate::ui::GameUiPlugin;
 
 pub mod actions;
@@ -819,7 +819,13 @@ fn main() {
             GridDebugPlugin::<Cartesian3D>::new(),
         ))
         .add_plugins(TilemapPlugin)
-        .add_plugins((EffectsPlugin, ActionPlugin, GameUiPlugin, CombatPlugin))
+        .add_plugins((
+            EffectsPlugin,
+            ActionPlugin,
+            GameUiPlugin,
+            CombatPlugin,
+            TurnsPlugin,
+        ))
         .insert_resource(DirectionalLightShadowMap { size: 4096 })
         .insert_resource(HoveredCell(None))
         .insert_state(CombatState::DeterminePlayOrder)
