@@ -46,12 +46,14 @@ use crate::actions::{
     MainTarget, Melee, MovementPoints, Physical, Piercing, Range, Ranged, UsedAction, Water,
 };
 use crate::combat::{CombatPlugin, SelectedAction};
+use crate::deck_and_cards::DeckAndCardsPlugin;
 use crate::effects::{Burning, EffectsPlugin};
 use crate::states::{CombatState, TurnsPlugin};
 use crate::ui::GameUiPlugin;
 
 pub mod actions;
 pub mod combat;
+pub mod deck_and_cards;
 pub mod effects;
 pub mod states;
 pub mod tiles_templates;
@@ -825,6 +827,7 @@ fn main() {
             GameUiPlugin,
             CombatPlugin,
             TurnsPlugin,
+            DeckAndCardsPlugin,
         ))
         .insert_resource(DirectionalLightShadowMap { size: 4096 })
         .insert_resource(HoveredCell(None))

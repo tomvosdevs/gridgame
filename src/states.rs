@@ -7,6 +7,7 @@ use bevy::{
         event::{EntityEvent, Event},
         observer::On,
         query::With,
+        resource::Resource,
         schedule::IntoScheduleConfigs,
         system::{Commands, Query},
     },
@@ -35,7 +36,8 @@ impl Plugin for TurnsPlugin {
                 }
             },
         )
-        .add_observer(|e: On<StartTurn>| {
+        .add_observer(|e: On<StartTurn>, mut cmd: Commands| {
+            cmd.insert_resource(CurrentPlayingEntity(e.entity));
             println!("turn started on : {:?}", e.entity);
         })
         .add_systems(
@@ -44,6 +46,9 @@ impl Plugin for TurnsPlugin {
         );
     }
 }
+
+#[derive(Resource)]
+pub struct CurrentPlayingEntity(pub Entity);
 
 #[derive(Event)]
 pub struct StartCombat;
