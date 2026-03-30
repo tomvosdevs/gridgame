@@ -190,7 +190,6 @@ pub fn spread_tiles_effects(
         for n_index in neighbors_indices {
             if let Some(n_index) = n_index {
                 if let Some(n_ent) = non_burning.get(&n_index) {
-                    println!("inserting burns");
                     cmd.entity(*n_ent).insert(Burning(1));
                 }
             }
@@ -213,7 +212,6 @@ fn update_tiles_texture(
             Ok(handle) => {
                 for (mut material, node) in &mut cell_q {
                     if material.0 != handle {
-                        println!("updated a burning tile's mat : {:?}", node.0);
                         material.0 = handle.clone();
                     }
                 }

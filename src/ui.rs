@@ -3,6 +3,7 @@ use std::{f32::consts::PI, time::Duration};
 use bevy::{
     app::{First, Plugin, Startup, Update},
     asset::{Assets, RenderAssetUsages, uuid::Uuid},
+    audio::Sample,
     camera::{Camera, Camera2d, Camera3d, RenderTarget},
     color::{
         Color,
@@ -13,6 +14,7 @@ use bevy::{
         component::Component,
         entity::Entity,
         error::Result,
+        event::EntityEvent,
         hierarchy::Children,
         lifecycle::RemovedComponents,
         message::{MessageReader, MessageWriter},
@@ -67,7 +69,11 @@ use haalka::{
     prelude::{BuilderPassThrough, Cursorable, El, Element, Row, Spawnable},
 };
 
-use crate::{ActiveCamera, CursorTarget, Health, MaxHealth, startup_3d};
+use crate::{
+    ActiveCamera, CursorTarget, Health, MaxHealth,
+    deck_and_cards::{Card, CardDrawn},
+    startup_3d,
+};
 
 const CUBE_POINTER_ID: PointerId = PointerId::Custom(Uuid::from_u128(90870987));
 
@@ -76,30 +82,34 @@ pub struct GameUiPlugin;
 impl Plugin for GameUiPlugin {
     fn build(&self, app: &mut bevy::app::App) {
         app.add_plugins(HaalkaPlugin::new())
+            .add_observer(spawn_card_drawn_notifer)
+            .add_observer(spawn_card_diegetic_ui)
             .add_plugins(AnchorUiPlugin::<UiCameraMarker>::new())
             .add_plugins(DefaultTweenPlugins::default())
-            .add_systems(
-                Startup,
-                (|world: &mut World| {
-                    card_ui_root().spawn(world);
-                })
-                .before(setup_diegetic_ui),
-            )
-            .add_systems(Startup, setup_diegetic_ui.after(startup_3d))
-            .add_systems(First, drive_diegetic_pointer.in_set(PickingSystems::Input))
+            // .add_systems(
+            //     Startup,
+            //     (|world: &mut World| {
+            //         card_ui_root().spawn(world);
+            //     })
+            //     .before(setup_diegetic_ui),
+            // )
+            // .add_systems(Startup, setup_diegetic_ui.after(startup_3d))
+            // TODO: Add this back for input handling
+            // .add_systems(First, drive_diegetic_pointer.in_set(PickingSystems::Input))
             .add_systems(Update, tag_active_camera)
             .add_systems(Update, draw_cursor_target_health_ui)
             .add_systems(
                 Update,
                 remove_cursor_target_health_ui.after(draw_cursor_target_health_ui),
-            );
+            )
+            .add_systems(Update, handle_card_drawn_notifiers);
     }
 }
 
 #[derive(Component)]
 pub struct CardUiRoot;
 
-pub fn card_ui_root() -> impl Element {
+pub fn card_ui() -> impl Element {
     El::<Node>::new()
         .with_node(|mut n| {
             n.height = Val::Percent(100.);
@@ -133,21 +143,57 @@ pub struct CardTextureCamera;
 #[require(Mesh3d)]
 pub struct CardUiTargetMesh;
 
-fn setup_diegetic_ui(
+#[derive(EntityEvent)]
+pub struct CardUiSpawned {
+    pub entity: Entity,
+    pub card_hand_index: u16,
+}
+
+#[derive(Component, Clone)]
+pub struct CardDrawnInHandNotifier {
+    pub card_entity: Entity,
+    pub card_hand_index: u16,
+}
+
+fn spawn_card_drawn_notifer(e: On<CardDrawn>, mut cmd: Commands) {
+    println!("spawning card notifier");
+    cmd.spawn(CardDrawnInHandNotifier {
+        card_entity: e.entity,
+        card_hand_index: e.card_hand_index,
+    });
+}
+
+fn handle_card_drawn_notifiers(world: &mut World) {
+    let mut q = world.query::<(Entity, &CardDrawnInHandNotifier)>();
+    let notifiers_data: Vec<(Entity, CardDrawnInHandNotifier)> =
+        q.iter(world).map(|(e, n)| (e, n.clone())).collect();
+
+    for (notifier_ent, notifier) in notifiers_data {
+        let card_ui_root = card_ui().spawn(world);
+        world.trigger(CardUiSpawned {
+            entity: card_ui_root,
+            card_hand_index: notifier.card_hand_index,
+        });
+        world.commands().entity(notifier_ent).despawn();
+    }
+}
+
+fn spawn_card_diegetic_ui(
+    e: On<CardUiSpawned>,
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut images: ResMut<Assets<Image>>,
-    card_ui_root_q: Query<Entity, (With<CardUiRoot>, With<Node>)>,
     main_3d_cam_q: Query<&Transform, (With<Camera3d>, With<ActiveCamera>)>,
 ) {
     let main_cam_tf = main_3d_cam_q
         .single()
         .expect("found more than one Cam3d with 'ActiveCamera'");
 
-    let card_ui_root_ent = card_ui_root_q
-        .single()
-        .expect("Expected one card ui root entity");
+    println!("in spawn card diegetic ui");
+
+    let card_ui_root_ent = e.entity;
+    let card_hand_index = e.card_hand_index;
 
     let card_aspect_ratio_multiplier = (2, 3);
     let card_tex_side_px = 400;
@@ -204,6 +250,8 @@ fn setup_diegetic_ui(
     });
 
     let cam_forward = main_cam_tf.forward();
+    let offset_step = 10.0;
+    let card_x_offset = card_hand_index as f32 * offset_step;
 
     // Cube with material containing the rendered UI texture.
     commands
@@ -211,7 +259,7 @@ fn setup_diegetic_ui(
             CardUiTargetMesh,
             Mesh3d(mesh_handle.clone()),
             MeshMaterial3d(material_handle),
-            Transform::from_xyz(5.0, 10.0, 0.0).looking_to(cam_forward, Vec3::Y),
+            Transform::from_xyz(0.0 + card_x_offset, 10.0, 0.0).looking_to(cam_forward, Vec3::Y),
             Pickable::default(),
             DiegeticUiTarget,
         ))
@@ -371,6 +419,7 @@ fn drive_diegetic_pointer(
 ) -> Result {
     // Get the size of the texture, so we can convert from dimensionless UV coordinates that span
     // from 0 to 1, to pixel coordinates.
+    // TODO: Switch to remove single and allow multiple
     let target = ui_camera
         .single()?
         .normalize(primary_window.single().ok())

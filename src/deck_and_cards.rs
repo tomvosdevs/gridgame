@@ -5,96 +5,37 @@ use bevy::{
     ecs::{
         bundle::Bundle,
         component::Component,
-        entity::Entity,
+        entity::{Entity, MapEntities},
+        event::EntityEvent,
         name::Name,
+        observer::On,
         query::{With, Without},
         related,
+        relationship::RelationshipTarget,
         schedule::IntoScheduleConfigs,
         system::{Commands, EntityCommands, Query},
         world::World,
     },
 };
 
+use crate::states::EntityTurnEnd;
+
 pub struct DeckAndCardsPlugin;
 
 impl Plugin for DeckAndCardsPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(
-            Startup,
-            (
-                spawn_test_template_cards,
-                print_template_cards,
-                spawn_test_deck,
-            )
-                .chain(),
-        )
-        .add_systems(Update, log_cards_in_deck);
+        app.add_observer(set_hand_cards)
+            .add_observer(discard_hand)
+            .add_systems(
+                Startup,
+                (
+                    spawn_test_template_cards,
+                    // print_template_cards,
+                    spawn_test_deck,
+                )
+                    .chain(),
+            );
     }
-}
-
-#[derive(Component, Clone)]
-#[require(DeckCards)]
-pub struct Deck;
-
-#[derive(Component)]
-#[relationship_target(relationship = InDeck, linked_spawn)]
-pub struct DeckCards(Vec<Entity>);
-
-impl Default for DeckCards {
-    fn default() -> Self {
-        Self(vec![])
-    }
-}
-
-#[derive(Component)]
-#[relationship(relationship_target = DeckCards)]
-pub struct InDeck(Entity);
-
-#[derive(Component, Clone)]
-pub struct Card;
-
-pub trait CardStateMarker {}
-
-pub struct TemplateCard;
-impl CardStateMarker for TemplateCard {}
-pub struct InDrawPile;
-impl CardStateMarker for InDrawPile {}
-pub struct InDiscardPile;
-impl CardStateMarker for InDiscardPile {}
-pub struct InHand;
-impl CardStateMarker for InHand {}
-pub struct OutOfCombat;
-impl CardStateMarker for OutOfCombat {}
-
-#[derive(Component, Clone)]
-pub struct CardState<S: CardStateMarker> {
-    pub _state: PhantomData<S>,
-}
-
-impl<S: CardStateMarker> CardState<S> {
-    pub fn new() -> Self {
-        Self {
-            _state: PhantomData,
-        }
-    }
-}
-
-impl Card {
-    pub fn new_template(name: &'static str) -> impl Bundle {
-        (Card, CardState::<TemplateCard>::new(), Name::new(name))
-    }
-}
-
-pub fn add_card_to_deck(cmd: &mut Commands, card_template: Entity, deck_entity: Entity) {
-    // let new_card_instance = cmd
-    //     .spawn((InDeck(deck_entity), CardState::<OutOfCombat>::new()))
-    //     .id();
-
-    // clone template component into the instance
-    let instance = cmd.entity(card_template).clone_and_spawn().id();
-
-    println!("log of instance components : ");
-    cmd.entity(instance).log_components();
 }
 
 pub fn spawn_test_template_cards(mut cmd: Commands) {
@@ -114,7 +55,7 @@ pub fn spawn_test_template_cards(mut cmd: Commands) {
     }
 }
 
-pub fn print_template_cards(q: Query<&Name, With<CardState<TemplateCard>>>) {
+pub fn print_template_cards(q: Query<&Name, With<CardState<InCardTemplateRegistry>>>) {
     for card_name in &q {
         println!("found template card : {:?}", card_name);
     }
@@ -122,7 +63,7 @@ pub fn print_template_cards(q: Query<&Name, With<CardState<TemplateCard>>>) {
 
 pub fn spawn_test_deck(
     mut cmd: Commands,
-    template_cards_q: Query<Entity, With<CardState<TemplateCard>>>,
+    template_cards_q: Query<Entity, With<CardState<InCardTemplateRegistry>>>,
 ) {
     let test_deck_ent = cmd.spawn(Deck).id();
 
@@ -132,14 +73,176 @@ pub fn spawn_test_deck(
     }
 }
 
-pub fn log_cards_in_deck(
-    instance_cards_q: Query<&Name, (With<Card>, Without<CardState<TemplateCard>>)>,
+// ===============
+// Observer systems
+// ===============
+
+pub fn set_hand_cards(
+    e: On<DrawHand>,
+    mut cmd: Commands,
+    decks_q: Query<(&HandDrawData, &CardPile), With<Deck>>,
+    drawable_cards_q: Query<Entity, (With<Card>, With<CardState<InDrawPile>>)>,
 ) {
-    println!(
-        "about to log instances of cards : {:?}",
-        instance_cards_q.iter().len()
-    );
-    for card_name in &instance_cards_q {
-        println!("found card in deck with name : {:?}", card_name);
+    println!("drawing hand cards");
+    let (hand_draw_data, card_pile) = decks_q.get(e.entity).expect("Target deck not found");
+    let hand_size = hand_draw_data.cards_per_turn as usize;
+
+    let new_hand_cards: Vec<Entity> = card_pile
+        .iter()
+        .filter(|card_entity| drawable_cards_q.contains(*card_entity))
+        // This ensure the Vec never grows larger than the hand size.
+        .take(hand_size)
+        .collect();
+
+    for (idx, card_entity) in new_hand_cards.iter().enumerate() {
+        let mut entity_cmds = cmd.entity(*card_entity);
+        entity_cmds.remove::<CardState<InDrawPile>>();
+        entity_cmds.insert(HandCard::new());
+        cmd.trigger(CardDrawn {
+            entity: *card_entity,
+            card_hand_index: idx as u16,
+        });
     }
+}
+
+pub fn discard_hand(
+    _: On<EntityTurnEnd>,
+    mut cmd: Commands,
+    hand_cards: Query<Entity, (With<Card>, With<HandCard>)>,
+) {
+    for card_entity in &hand_cards {
+        let mut entity_cmds = cmd.entity(card_entity);
+        entity_cmds.remove::<HandCard>();
+        entity_cmds.insert(DiscardPileCard::new());
+        cmd.trigger(CardDiscarded {
+            entity: card_entity,
+        });
+    }
+}
+
+// Structs etc
+
+#[derive(Component, Clone, Debug)]
+#[require(CardPile, HandDrawData)]
+pub struct Deck;
+
+#[derive(Component)]
+pub struct ActiveDeck;
+
+#[derive(Component)]
+pub struct HandDrawData {
+    pub cards_per_turn: u16,
+}
+
+impl HandDrawData {
+    pub fn from_cards_per_turn(amount: u16) -> Self {
+        Self {
+            cards_per_turn: amount,
+        }
+    }
+}
+
+impl Default for HandDrawData {
+    fn default() -> Self {
+        Self { cards_per_turn: 5 }
+    }
+}
+
+#[derive(EntityEvent)]
+pub struct CardDrawn {
+    pub entity: Entity,
+    pub card_hand_index: u16,
+}
+
+#[derive(EntityEvent)]
+pub struct CardDiscarded {
+    pub entity: Entity,
+}
+
+#[derive(EntityEvent)]
+pub struct DrawHand {
+    pub entity: Entity,
+}
+
+impl DrawHand {
+    pub fn from_deck_entity(deck_entity: Entity) -> Self {
+        Self {
+            entity: deck_entity,
+        }
+    }
+}
+
+#[derive(Component)]
+#[relationship_target(relationship = InDeck, linked_spawn)]
+pub struct CardPile(Vec<Entity>);
+
+impl Default for CardPile {
+    fn default() -> Self {
+        Self(vec![])
+    }
+}
+
+#[derive(Component)]
+#[relationship(relationship_target = CardPile)]
+pub struct InDeck(Entity);
+
+#[derive(Component, Clone, Default)]
+pub struct Card;
+
+pub trait CardStateMarker {}
+
+pub struct InCardTemplateRegistry;
+impl CardStateMarker for InCardTemplateRegistry {}
+pub struct InDrawPile;
+impl CardStateMarker for InDrawPile {}
+pub struct InDiscardPile;
+impl CardStateMarker for InDiscardPile {}
+pub struct InHand;
+impl CardStateMarker for InHand {}
+// For cards outside of combat
+pub struct UnassignedDeckState;
+impl CardStateMarker for UnassignedDeckState {}
+
+#[derive(Component, Clone)]
+#[require(Card)]
+pub struct CardState<S: CardStateMarker> {
+    pub _state: PhantomData<S>,
+}
+
+pub type TemplateCard = CardState<InCardTemplateRegistry>;
+pub type DrawPileCard = CardState<InDrawPile>;
+pub type DiscardPileCard = CardState<InDiscardPile>;
+pub type HandCard = CardState<InHand>;
+pub type StatelessCard = CardState<UnassignedDeckState>;
+
+impl<S: CardStateMarker> CardState<S> {
+    pub fn new() -> Self {
+        Self {
+            _state: PhantomData,
+        }
+    }
+}
+
+impl Card {
+    pub fn new_template(name: &'static str) -> impl Bundle {
+        (
+            Card,
+            CardState::<InCardTemplateRegistry>::new(),
+            Name::new(name),
+        )
+    }
+}
+
+pub fn add_card_to_deck(cmd: &mut Commands, card_template: Entity, deck_entity: Entity) {
+    let new_card_instance = cmd
+        .spawn((InDeck(deck_entity), CardState::<UnassignedDeckState>::new()))
+        .id();
+
+    // clone template component into the instance
+    let instance = cmd
+        .entity(card_template)
+        .clone_with_opt_out(new_card_instance, |builder| {
+            builder.deny::<CardState<InCardTemplateRegistry>>();
+        })
+        .id();
 }
