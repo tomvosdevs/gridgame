@@ -1,4 +1,4 @@
-use std::{f32::consts::PI, time::Duration};
+use std::{f32::consts::PI, ops::Mul, time::Duration};
 
 use bevy::{
     app::{First, Plugin, Startup, Update},
@@ -124,7 +124,11 @@ pub fn card_ui() -> impl Element {
                 .with_node(|mut n| {
                     n.column_gap = Val::Px(15.);
                 })
-                .item(El::<Text>::new().text(Text::new("Hello"))),
+                .item(
+                    El::<Text>::new()
+                        .text(Text::new("Hello"))
+                        .text_font(TextFont::from_font_size(50.0)),
+                ),
         )
 }
 
@@ -195,9 +199,9 @@ fn spawn_card_diegetic_ui(
     let card_ui_root_ent = e.entity;
     let card_hand_index = e.card_hand_index;
 
-    let card_aspect_ratio_multiplier = (2, 3);
+    let card_aspect_ratio_multiplier = (4, 5);
     let card_tex_side_px = 400;
-    let card_mesh_size_multiplier = 5.0;
+    let card_mesh_size_multiplier = 1.75;
 
     let size = Extent3d {
         width: card_aspect_ratio_multiplier.0 * card_tex_side_px,
@@ -236,10 +240,9 @@ fn spawn_card_diegetic_ui(
         .entity(card_ui_root_ent)
         .insert(UiTargetCamera(texture_camera));
 
-    let mesh_handle = meshes.add(Rectangle::new(
-        card_aspect_ratio_multiplier.0 as f32 * card_mesh_size_multiplier,
-        card_aspect_ratio_multiplier.1 as f32 * card_mesh_size_multiplier,
-    ));
+    let card_mesh_width = card_aspect_ratio_multiplier.0 as f32 * card_mesh_size_multiplier;
+    let card_mesh_height = card_aspect_ratio_multiplier.1 as f32 * card_mesh_size_multiplier;
+    let mesh_handle = meshes.add(Rectangle::new(card_mesh_width, card_mesh_height));
 
     // This material has the texture that has been rendered.
     let material_handle = materials.add(StandardMaterial {
@@ -250,21 +253,36 @@ fn spawn_card_diegetic_ui(
     });
 
     let cam_forward = main_cam_tf.forward();
-    let offset_step = 10.0;
+    let cam_left = main_cam_tf.left();
+    let cam_right = main_cam_tf.right();
+    let cam_down = main_cam_tf.down();
+    let cam_up = main_cam_tf.up();
+
+    let gap = 1.0;
+    let margin = 0.7;
+    let offset_step = gap + card_mesh_width;
     let card_x_offset = card_hand_index as f32 * offset_step;
 
+    let card_translation = main_cam_tf.translation
+        + *cam_forward * 3.0
+        + *cam_left * 21.2
+        + *cam_right * card_x_offset // spread cards left by index
+        + *cam_down * 11.8
+        // Correct position to account for card size
+        + *cam_up * ((card_mesh_height/2.0) + margin)
+        + *cam_right * ((card_mesh_width/2.0) + margin);
+
     // Cube with material containing the rendered UI texture.
-    commands
-        .spawn((
-            CardUiTargetMesh,
-            Mesh3d(mesh_handle.clone()),
-            MeshMaterial3d(material_handle),
-            Transform::from_xyz(0.0 + card_x_offset, 10.0, 0.0).looking_to(cam_forward, Vec3::Y),
-            Pickable::default(),
-            DiegeticUiTarget,
-        ))
-        .observe(over_moveup_card_mesh)
-        .observe(leave_moveback_card_mesh);
+    commands.spawn((
+        CardUiTargetMesh,
+        Mesh3d(mesh_handle.clone()),
+        MeshMaterial3d(material_handle),
+        Transform::from_translation(card_translation).looking_to(cam_forward, Vec3::Y),
+        Pickable::default(),
+        DiegeticUiTarget,
+    ));
+    // .observe(over_moveup_card_mesh)
+    // .observe(leave_moveback_card_mesh);
 
     // Main camera is spawned elsewhere
     //
