@@ -1,12 +1,12 @@
-use std::{f32::consts::PI, ops::Mul, time::Duration};
+use std::{collections::HashMap, f32::consts::PI, ops::Mul, time::Duration};
 
 use bevy::{
     app::{First, Plugin, Startup, Update},
     asset::{Assets, RenderAssetUsages, uuid::Uuid},
     audio::Sample,
-    camera::{Camera, Camera2d, Camera3d, RenderTarget},
+    camera::{Camera, Camera2d, Camera3d, ClearColorConfig, RenderTarget},
     color::{
-        Color,
+        Color, Srgba,
         palettes::css::{BLUE, GRAY, GREY, RED, WHITE},
     },
     ecs::{
@@ -28,7 +28,7 @@ use bevy::{
     image::Image,
     input::{ButtonState, mouse::MouseButton},
     math::{
-        Dir3, Quat, Vec2, Vec3,
+        AspectRatio, Dir3, Quat, Vec2, Vec3,
         primitives::{Cuboid, Plane3d, Rectangle},
     },
     mesh::{Mesh, Mesh3d},
@@ -40,7 +40,9 @@ use bevy::{
         mesh_picking::ray_cast::{MeshRayCast, MeshRayCastSettings, RayCastVisibility},
         pointer::{Location, PointerAction, PointerButton, PointerId, PointerInput},
     },
+    prelude::{Deref, DerefMut},
     render::{
+        alpha::AlphaMode,
         camera::NormalizedRenderTargetExt,
         render_resource::{Extent3d, TextureDimension, TextureFormat, TextureUsages},
         texture::ManualTextureViews,
@@ -66,7 +68,11 @@ use bevy_ui_anchor::{AnchorPoint, AnchorUiConfig, AnchorUiNode, AnchorUiPlugin, 
 use haalka::{
     HaalkaPlugin,
     align::{Align, Alignable},
-    prelude::{BuilderPassThrough, Cursorable, El, Element, Row, Spawnable},
+    jonmo::signal,
+    prelude::{
+        BuilderPassThrough, Column, Cursorable, El, Element, LazyEntity, Row, SignalExt, Spawnable,
+        deref_copied,
+    },
 };
 
 use crate::{
@@ -106,28 +112,94 @@ impl Plugin for GameUiPlugin {
     }
 }
 
+#[derive(Clone, Debug)]
+pub enum TextSection {
+    Title(String),
+    Subtitle(String),
+    Description(String),
+}
+
+impl TextSection {
+    fn text(&self) -> &str {
+        match self {
+            TextSection::Title(title_str) => title_str,
+            TextSection::Subtitle(subtitle_str) => subtitle_str,
+            TextSection::Description(desc_str) => desc_str,
+        }
+    }
+}
+
+#[derive(Component, Clone, Deref, DerefMut, Debug)]
+pub struct CardUiTextContent {
+    pub sections: Vec<TextSection>,
+}
+
+impl CardUiTextContent {
+    pub fn copies_sections(&self) -> Vec<TextSection> {
+        self.sections.clone()
+    }
+}
+
 #[derive(Component)]
 pub struct CardUiRoot;
 
-pub fn card_ui() -> impl Element {
+pub fn card_ui(card_text_entity: Entity) -> impl Element {
     El::<Node>::new()
         .with_node(|mut n| {
             n.height = Val::Percent(100.);
-            n.width = Val::Percent(100.)
+            n.width = Val::Percent(100.);
+            n.padding = UiRect::all(Val::Px(10.0));
+            n.position_type = PositionType::Relative;
         })
         .insert(Pickable::default())
+        .insert(BackgroundColor::from(Color::hsla(0., 0., 0., 0.)))
         .insert(CardUiRoot)
         .cursor(CursorIcon::default())
-        .align_content(Align::center())
+        .align_content(Align::new().left().top())
         .child(
-            Row::<Node>::new()
+            El::<Node>::new()
                 .with_node(|mut n| {
-                    n.column_gap = Val::Px(15.);
+                    n.position_type = PositionType::Absolute;
+                    n.top = Val::Px(-5.0);
+                    n.right = Val::Px(-5.0);
+                    n.width = Val::Px(40.0);
+                    n.height = Val::Px(40.0);
+                    n.border_radius = BorderRadius::all(Val::Px(100.0));
                 })
-                .item(
-                    El::<Text>::new()
-                        .text(Text::new("Hello"))
-                        .text_font(TextFont::from_font_size(50.0)),
+                .insert(BackgroundColor::from(Srgba::hex("#B01807").unwrap()))
+                .insert(ZIndex(10)),
+        )
+        .child(
+            El::<Node>::new()
+                .with_node(|mut n| {
+                    n.height = Val::Percent(100.);
+                    n.width = Val::Percent(100.);
+                    n.padding = UiRect::all(Val::Percent(8.0));
+                    n.border_radius = BorderRadius::all(Val::Px(18.0));
+                })
+                .insert(BackgroundColor::from(Srgba::hex("#F7F5F3").unwrap()))
+                .child_signal(
+                    signal::from_component_changed::<CardUiTextContent>(card_text_entity).map_in(
+                        |text_sections| {
+                            let sections = text_sections.sections.to_vec();
+                            Column::<Node>::new().items(
+                                sections
+                                    .into_iter()
+                                    .map(|section| match section {
+                                        TextSection::Title(s) => El::<Text>::new()
+                                            .text(Text::new(s.clone()))
+                                            .text_font(TextFont::from_font_size(64.0)),
+                                        TextSection::Subtitle(s) => El::<Text>::new()
+                                            .text(Text::new(s.clone()))
+                                            .text_font(TextFont::from_font_size(48.0)),
+                                        TextSection::Description(s) => El::<Text>::new()
+                                            .text(Text::new(s.clone()))
+                                            .text_font(TextFont::from_font_size(26.0)),
+                                    })
+                                    .into_iter(),
+                            )
+                        },
+                    ),
                 ),
         )
 }
@@ -172,8 +244,17 @@ fn handle_card_drawn_notifiers(world: &mut World) {
     let notifiers_data: Vec<(Entity, CardDrawnInHandNotifier)> =
         q.iter(world).map(|(e, n)| (e, n.clone())).collect();
 
+    let test_card_data_ent = world
+        .spawn(CardUiTextContent {
+            sections: vec![
+                TextSection::Title("Hey".to_string()),
+                TextSection::Subtitle("Some sub".to_string()),
+            ],
+        })
+        .id();
+
     for (notifier_ent, notifier) in notifiers_data {
-        let card_ui_root = card_ui().spawn(world);
+        let card_ui_root = card_ui(test_card_data_ent).spawn(world);
         world.trigger(CardUiSpawned {
             entity: card_ui_root,
             card_hand_index: notifier.card_hand_index,
@@ -199,13 +280,19 @@ fn spawn_card_diegetic_ui(
     let card_ui_root_ent = e.entity;
     let card_hand_index = e.card_hand_index;
 
-    let card_aspect_ratio_multiplier = (4, 5);
-    let card_tex_side_px = 400;
-    let card_mesh_size_multiplier = 1.75;
+    let card_aspect_ratio = AspectRatio::try_new(4.0, 5.0).unwrap();
+    let card_max_side_length = 512.0;
+    let card_mesh_max_side_length = 7.5;
+    let aspect_ratio_multiplier = match card_aspect_ratio.is_portrait() {
+        true => Vec2::new(card_aspect_ratio.ratio(), 1.0),
+        false => Vec2::new(1.0, card_aspect_ratio.ratio()),
+    };
+
+    println!("size mul = {:?}", aspect_ratio_multiplier);
 
     let size = Extent3d {
-        width: card_aspect_ratio_multiplier.0 * card_tex_side_px,
-        height: card_aspect_ratio_multiplier.1 * card_tex_side_px,
+        width: (card_max_side_length * aspect_ratio_multiplier.x).round() as u32,
+        height: (card_max_side_length * aspect_ratio_multiplier.y).round() as u32,
         ..default()
     };
 
@@ -230,6 +317,7 @@ fn spawn_card_diegetic_ui(
             Camera {
                 // render before the "main pass" camera
                 order: -1,
+                clear_color: ClearColorConfig::Custom(Color::NONE),
                 ..default()
             },
             RenderTarget::Image(image_handle.clone().into()),
@@ -240,15 +328,20 @@ fn spawn_card_diegetic_ui(
         .entity(card_ui_root_ent)
         .insert(UiTargetCamera(texture_camera));
 
-    let card_mesh_width = card_aspect_ratio_multiplier.0 as f32 * card_mesh_size_multiplier;
-    let card_mesh_height = card_aspect_ratio_multiplier.1 as f32 * card_mesh_size_multiplier;
+    let card_mesh_width = card_mesh_max_side_length * aspect_ratio_multiplier.x;
+    let card_mesh_height = card_mesh_max_side_length * aspect_ratio_multiplier.y;
     let mesh_handle = meshes.add(Rectangle::new(card_mesh_width, card_mesh_height));
 
     // This material has the texture that has been rendered.
     let material_handle = materials.add(StandardMaterial {
         base_color_texture: Some(image_handle),
-        reflectance: 0.02,
-        unlit: false,
+        perceptual_roughness: 1.0,
+        cull_mode: None,
+        alpha_mode: AlphaMode::Blend,
+        // emissive_exposure_weight: 0.8,
+        // #TODO: See how to make the card react to light
+        // a bit while still being lit enough to be readable
+        unlit: true,
         ..default()
     });
 
