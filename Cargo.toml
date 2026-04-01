@@ -6,10 +6,16 @@ edition = "2024"
 [dependencies]
 bevy = { version = "0.18.0", features = ["bevy_gltf", "debug"] }
 bevy-trait-query = "0.18.0"
+bevy_diesel = "0.1.0"
 bevy_ecs_tilemap = "0.18.1"
+bevy_gauge = "0.4.4"
+bevy_gearbox = "0.5.2"
 bevy_ghx_grid = "0.8.0"
 bevy_ghx_proc_gen = {version = "0.8.0", features = ["bevy_ghx_grid"]}
+bevy_tween = "0.12.0"
+bevy_tweening = "0.15.0"
 bevy_ui_anchor = "0.11.0"
+haalka = "0.7.1"
 rand = "0.10.0"
 
 # Enable a small amount of optimization in the dev profile.

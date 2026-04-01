@@ -23,10 +23,10 @@ pub struct CombatPlugin;
 impl Plugin for CombatPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, (set_selected_action__test).after(startup_3d))
-            .add_systems(
-                Update,
-                print_on_determine_play_order.run_if(in_state(CombatState::DeterminePlayOrder)),
-            )
+            // .add_systems(
+            //     Update,
+            //     print_on_determine_play_order.run_if(in_state(CombatState::DeterminePlayOrder)),
+            // )
             .insert_resource(SelectedAction(None));
     }
 }

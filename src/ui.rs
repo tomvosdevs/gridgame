@@ -29,7 +29,8 @@ use bevy::{
     input::{ButtonState, mouse::MouseButton},
     math::{
         AspectRatio, Dir3, Quat, Vec2, Vec3,
-        primitives::{Cuboid, Plane3d, Rectangle},
+        curve::EaseFunction,
+        primitives::{Cuboid, InfinitePlane3d, Plane3d, Rectangle},
     },
     mesh::{Mesh, Mesh3d},
     pbr::{MeshMaterial3d, StandardMaterial},
@@ -50,9 +51,9 @@ use bevy::{
     text::{TextColor, TextFont},
     transform::components::{GlobalTransform, Transform},
     ui::{
-        AlignItems, BackgroundColor, BorderColor, BorderRadius, ComputedNode, FlexDirection,
-        IsDefaultUiCamera, JustifyContent, Node, Outline, PositionType, UiRect, UiTargetCamera,
-        Val, ZIndex, percent, px, widget::Text,
+        AlignItems, BackgroundColor, BorderColor, BorderRadius, ComputedNode, Display,
+        FlexDirection, IsDefaultUiCamera, JustifyContent, JustifyItems, Node, Outline,
+        PositionType, UiRect, UiTargetCamera, Val, ZIndex, percent, px, widget::Text,
     },
     utils::default,
     window::{CursorIcon, PrimaryWindow, Window, WindowEvent},
@@ -64,6 +65,7 @@ use bevy_tween::{
     prelude::{AnimationBuilderExt, EaseKind, TimeDirection, TransformTargetStateExt},
     tween::{AnimationTarget, IntoTarget},
 };
+use bevy_tweening::{EntityCommandsTweeningExtensions, TweeningPlugin};
 use bevy_ui_anchor::{AnchorPoint, AnchorUiConfig, AnchorUiNode, AnchorUiPlugin, AnchoredUiNodes};
 use haalka::{
     HaalkaPlugin,
@@ -88,6 +90,7 @@ pub struct GameUiPlugin;
 impl Plugin for GameUiPlugin {
     fn build(&self, app: &mut bevy::app::App) {
         app.add_plugins(HaalkaPlugin::new())
+            .add_plugins(TweeningPlugin)
             .add_observer(spawn_card_drawn_notifer)
             .add_observer(spawn_card_diegetic_ui)
             .add_plugins(AnchorUiPlugin::<UiCameraMarker>::new())
@@ -160,14 +163,22 @@ pub fn card_ui(card_text_entity: Entity) -> impl Element {
             El::<Node>::new()
                 .with_node(|mut n| {
                     n.position_type = PositionType::Absolute;
-                    n.top = Val::Px(-5.0);
-                    n.right = Val::Px(-5.0);
-                    n.width = Val::Px(40.0);
-                    n.height = Val::Px(40.0);
+                    n.top = Val::Px(0.0);
+                    n.left = Val::Px(0.0);
+                    n.width = Val::Px(80.0);
+                    n.height = Val::Px(80.0);
                     n.border_radius = BorderRadius::all(Val::Px(100.0));
+                    n.display = Display::Flex;
+                    n.align_items = AlignItems::Center;
+                    n.justify_content = JustifyContent::Center;
                 })
                 .insert(BackgroundColor::from(Srgba::hex("#B01807").unwrap()))
-                .insert(ZIndex(10)),
+                .insert(ZIndex(10))
+                .child(
+                    El::<Text>::new()
+                        .text(Text::new("2"))
+                        .text_font(TextFont::from_font_size(48.0)),
+                ),
         )
         .child(
             El::<Node>::new()
@@ -366,14 +377,16 @@ fn spawn_card_diegetic_ui(
         + *cam_right * ((card_mesh_width/2.0) + margin);
 
     // Cube with material containing the rendered UI texture.
-    commands.spawn((
-        CardUiTargetMesh,
-        Mesh3d(mesh_handle.clone()),
-        MeshMaterial3d(material_handle),
-        Transform::from_translation(card_translation).looking_to(cam_forward, Vec3::Y),
-        Pickable::default(),
-        DiegeticUiTarget,
-    ));
+    commands
+        .spawn((
+            CardUiTargetMesh,
+            Mesh3d(mesh_handle.clone()),
+            MeshMaterial3d(material_handle),
+            Transform::from_translation(card_translation).looking_to(cam_forward, Vec3::Y),
+            Pickable::default(),
+            DiegeticUiTarget,
+        ))
+        .observe(drag_card_mesh);
     // .observe(over_moveup_card_mesh)
     // .observe(leave_moveback_card_mesh);
 
@@ -384,6 +397,38 @@ fn spawn_card_diegetic_ui(
 
 #[derive(Component)]
 pub struct TweenAnimator;
+
+pub fn drag_card_mesh(
+    e: On<Pointer<Drag>>,
+    mut cmd: Commands,
+    mut q: Query<(Entity, &GlobalTransform), (With<Mesh3d>, With<CardUiTargetMesh>)>,
+    main_cam_q: Query<(&Camera, &GlobalTransform), (With<ActiveCamera>, With<Camera3d>)>,
+) {
+    let (main_cam, main_cam_tf) = main_cam_q.single().expect("found more than one cam3d");
+    let Ok((mesh_ent, mesh_global_tf)) = q.get_mut(e.entity) else {
+        return;
+    };
+
+    let move_amount = e.delta.x + e.delta.y;
+    let pointer_pos = e.pointer_location.position;
+    let pointer_world_pos = main_cam
+        .viewport_to_world(main_cam_tf, pointer_pos)
+        .unwrap()
+        .plane_intersection_point(
+            mesh_global_tf.translation(),
+            InfinitePlane3d::new(mesh_global_tf.forward()),
+        )
+        .unwrap();
+    println!("pointer world pos : {:?} : ", pointer_world_pos);
+
+    let duration_ms = if move_amount < 50.0 { 30 } else { 15 };
+    // TODO : Change to use a reusable TweenAnim and update that
+    cmd.entity(mesh_ent).move_to(
+        pointer_world_pos,
+        Duration::from_millis(duration_ms),
+        EaseFunction::CubicIn,
+    );
+}
 
 pub fn over_moveup_card_mesh(
     mut e: On<Pointer<Over>>,
