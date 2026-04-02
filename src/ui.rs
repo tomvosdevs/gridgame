@@ -37,7 +37,7 @@ use bevy::{
     picking::{
         Pickable, PickingSystems,
         backend::ray::RayMap,
-        events::{Drag, Out, Over, Pointer},
+        events::{Drag, DragEnd, DragStart, Out, Over, Pointer},
         mesh_picking::ray_cast::{MeshRayCast, MeshRayCastSettings, RayCastVisibility},
         pointer::{Location, PointerAction, PointerButton, PointerId, PointerInput},
     },
@@ -49,6 +49,7 @@ use bevy::{
         texture::ManualTextureViews,
     },
     text::{TextColor, TextFont},
+    time::{Time, Timer, TimerMode},
     transform::components::{GlobalTransform, Transform},
     ui::{
         AlignItems, BackgroundColor, BorderColor, BorderRadius, ComputedNode, Display,
@@ -65,7 +66,9 @@ use bevy_tween::{
     prelude::{AnimationBuilderExt, EaseKind, TimeDirection, TransformTargetStateExt},
     tween::{AnimationTarget, IntoTarget},
 };
-use bevy_tweening::{EntityCommandsTweeningExtensions, TweeningPlugin};
+use bevy_tweening::{
+    EntityCommandsTweeningExtensions, Tween, TweenAnim, TweeningPlugin, lens::TransformPositionLens,
+};
 use bevy_ui_anchor::{AnchorPoint, AnchorUiConfig, AnchorUiNode, AnchorUiPlugin, AnchoredUiNodes};
 use haalka::{
     HaalkaPlugin,
@@ -230,6 +233,9 @@ pub struct CardTextureCamera;
 #[require(Mesh3d)]
 pub struct CardUiTargetMesh;
 
+#[derive(Component)]
+pub struct DragStartWorldPos(Transform);
+
 #[derive(EntityEvent)]
 pub struct CardUiSpawned {
     pub entity: Entity,
@@ -386,7 +392,9 @@ fn spawn_card_diegetic_ui(
             Pickable::default(),
             DiegeticUiTarget,
         ))
-        .observe(drag_card_mesh);
+        .observe(dragstart_card_mesh)
+        .observe(drag_card_mesh)
+        .observe(dragend_card_mesh);
     // .observe(over_moveup_card_mesh)
     // .observe(leave_moveback_card_mesh);
 
@@ -398,36 +406,153 @@ fn spawn_card_diegetic_ui(
 #[derive(Component)]
 pub struct TweenAnimator;
 
+#[derive(Component)]
+pub struct CardDragData {
+    pub timer: Timer,
+    pub last_event_time: Duration,
+    pub card_start_global_tf: GlobalTransform,
+    pub intended_translation: Vec3,
+    pub prev_global_pointer_pos: Option<Vec3>,
+}
+
+#[derive(Component)]
+pub struct LastDragWorldPos(pub Vec3);
+
+pub fn dragstart_card_mesh(
+    e: On<Pointer<DragStart>>,
+    mut cmd: Commands,
+    time: Res<Time>,
+    mut q: Query<(Entity, &Transform, &GlobalTransform), With<CardUiTargetMesh>>,
+) {
+    let (mesh_ent, mesh_tf, mesh_global_tf) = q
+        .get_mut(e.entity)
+        .expect("didn't find all needed components");
+
+    let tween = Tween::new(
+        EaseFunction::QuadraticOut,
+        Duration::from_secs_f32(0.28),
+        TransformPositionLens {
+            start: mesh_tf.translation,
+            end: mesh_tf.translation,
+        },
+    );
+
+    cmd.entity(mesh_ent).insert((
+        DragStartWorldPos(mesh_tf.clone()),
+        LastDragWorldPos(mesh_tf.translation),
+        CardDragData {
+            timer: Timer::from_seconds(0.1, TimerMode::Once),
+            last_event_time: time.elapsed(),
+            card_start_global_tf: mesh_global_tf.clone(),
+            prev_global_pointer_pos: None,
+            intended_translation: mesh_tf.translation,
+        },
+        TweenAnim::new(tween).with_destroy_on_completed(false),
+    ));
+}
+
 pub fn drag_card_mesh(
     e: On<Pointer<Drag>>,
     mut cmd: Commands,
-    mut q: Query<(Entity, &GlobalTransform), (With<Mesh3d>, With<CardUiTargetMesh>)>,
+    time: Res<Time>,
+    mut q: Query<
+        (&Transform, &mut CardDragData, &mut TweenAnim),
+        (With<Mesh3d>, With<CardUiTargetMesh>),
+    >,
     main_cam_q: Query<(&Camera, &GlobalTransform), (With<ActiveCamera>, With<Camera3d>)>,
 ) {
+    println!("in drag before checks");
     let (main_cam, main_cam_tf) = main_cam_q.single().expect("found more than one cam3d");
-    let Ok((mesh_ent, mesh_global_tf)) = q.get_mut(e.entity) else {
+    cmd.entity(e.entity).log_components();
+    let Ok((mesh_tf, mut drag_data, mut tween_anim)) = q.get_mut(e.entity) else {
+        println!("nope");
+        // the drag event might fire before DragStart ?
         return;
     };
 
-    let move_amount = e.delta.x + e.delta.y;
+    let last_evt_time = drag_data.last_event_time.clone();
+    drag_data.timer.tick(time.elapsed() - last_evt_time);
+
+    drag_data.last_event_time = time.elapsed();
+    println!("in drag youuu");
+    if !drag_data.timer.is_finished() {
+        return;
+    }
+
+    println!("timer done");
+
+    drag_data.timer.reset();
+    drag_data.timer.unpause();
+
     let pointer_pos = e.pointer_location.position;
     let pointer_world_pos = main_cam
         .viewport_to_world(main_cam_tf, pointer_pos)
         .unwrap()
         .plane_intersection_point(
-            mesh_global_tf.translation(),
-            InfinitePlane3d::new(mesh_global_tf.forward()),
+            drag_data.card_start_global_tf.translation(),
+            InfinitePlane3d::new(drag_data.card_start_global_tf.forward()),
         )
         .unwrap();
-    println!("pointer world pos : {:?} : ", pointer_world_pos);
 
-    let duration_ms = if move_amount < 50.0 { 30 } else { 15 };
-    // TODO : Change to use a reusable TweenAnim and update that
-    cmd.entity(mesh_ent).move_to(
-        pointer_world_pos,
-        Duration::from_millis(duration_ms),
-        EaseFunction::CubicIn,
+    if drag_data.prev_global_pointer_pos.is_none() {
+        let start_pointer_pos = e.pointer_location.position - e.distance;
+        let start_pointer_world_pos = main_cam
+            .viewport_to_world(main_cam_tf, start_pointer_pos)
+            .unwrap()
+            .plane_intersection_point(
+                drag_data.card_start_global_tf.translation(),
+                InfinitePlane3d::new(drag_data.card_start_global_tf.forward()),
+            )
+            .unwrap();
+
+        drag_data.prev_global_pointer_pos = Some(start_pointer_world_pos);
+    }
+
+    let movement_since_last_anim = pointer_world_pos - drag_data.prev_global_pointer_pos.unwrap();
+    drag_data.intended_translation += movement_since_last_anim;
+    let tween = Tween::new(
+        EaseFunction::QuadraticOut,
+        tween_anim
+            .tweenable()
+            .total_duration()
+            .as_finite()
+            .expect("expected finite duration"),
+        TransformPositionLens {
+            start: mesh_tf.translation,
+            end: drag_data.intended_translation,
+        },
     );
+
+    tween_anim
+        .set_tweenable(tween)
+        .expect("could not set tweenable");
+
+    drag_data.prev_global_pointer_pos = Some(pointer_world_pos);
+}
+
+pub fn dragend_card_mesh(
+    e: On<Pointer<DragEnd>>,
+    mut q: Query<
+        (&Transform, &DragStartWorldPos, &mut TweenAnim),
+        (With<Mesh3d>, With<CardUiTargetMesh>),
+    >,
+) {
+    let Ok((mesh_tf, mesh_drag_start_tf, mut tween_anim)) = q.get_mut(e.entity) else {
+        return;
+    };
+
+    let tween = Tween::new(
+        EaseFunction::CircularOut,
+        Duration::from_millis(300),
+        TransformPositionLens {
+            start: mesh_tf.translation,
+            end: mesh_drag_start_tf.0.translation,
+        },
+    );
+
+    tween_anim
+        .set_tweenable(tween)
+        .expect("could not set tweenable");
 }
 
 pub fn over_moveup_card_mesh(
