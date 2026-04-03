@@ -49,6 +49,7 @@ use crate::combat::{CombatPlugin, SelectedAction};
 use crate::deck_and_cards::DeckAndCardsPlugin;
 use crate::effects::{Burning, EffectsPlugin};
 use crate::states::{CombatState, TurnsPlugin};
+use crate::tiles_templates::Targetable;
 use crate::ui::GameUiPlugin;
 
 pub mod actions;
@@ -337,6 +338,7 @@ impl GridRulesGenerator {
 }
 
 #[derive(Component, Clone, Debug, Default)]
+#[require(Targetable)]
 pub struct GridCell;
 
 #[derive(Resource, Default)]
@@ -392,14 +394,14 @@ impl<A: Bundle + Clone + Default> BundleInserter for GridCellSocketsComponents<A
                 Mesh3d(self.mesh.clone()),
                 MeshMaterial3d(self.material.clone()),
                 GridCell,
+                Targetable,
                 Health(100),
                 MaxHealth(100),
                 self.components.clone(),
             ))
             // TODO : Switch observer setup to a Added<GridCell> system
             .observe(tag_hovered_gridcell)
-            .observe(untag_hoverout_gridcell)
-            .observe(trigger_attack);
+            .observe(untag_hoverout_gridcell);
 
         let mut rng = rand::rng();
         let rand_is_burning = rng.random_bool(1.0 / 8.0);
@@ -442,6 +444,11 @@ pub fn rules_and_assets(
     assets_reference_map.insert(
         "burning_material".to_string(),
         burning_material.clone().untyped(),
+    );
+    let highlighter_material = materials.add(Color::srgba(0., 0., 0., 0.2));
+    assets_reference_map.insert(
+        "highlighter_material".to_string(),
+        highlighter_material.untyped(),
     );
     cmd.spawn(AssetsReferences(assets_reference_map));
 
@@ -739,7 +746,7 @@ pub fn untag_hoverout_gridcell(mut hover: On<Pointer<Out>>, mut hovered: ResMut<
     hover.propagate(false);
 }
 
-pub fn trigger_attack(
+pub fn trigger_action(
     mut click: On<Pointer<Click>>,
     mut cmd: Commands,
     mut actions_q: Query<
@@ -792,7 +799,6 @@ pub fn sync_cursor_target(
 
     // Add to new target
     if let Some(ent) = hovered.0 {
-        println!("setting target to : {:?}", ent);
         cmd.entity(ent).insert(CursorTarget(ent));
     }
 }

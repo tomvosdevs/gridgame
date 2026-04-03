@@ -82,6 +82,7 @@ use haalka::{
 
 use crate::{
     ActiveCamera, CursorTarget, Health, MaxHealth,
+    actions::HighlightedTarget,
     deck_and_cards::{Card, CardDrawn},
     startup_3d,
 };
@@ -389,7 +390,10 @@ fn spawn_card_diegetic_ui(
             Mesh3d(mesh_handle.clone()),
             MeshMaterial3d(material_handle),
             Transform::from_translation(card_translation).looking_to(cam_forward, Vec3::Y),
-            Pickable::default(),
+            Pickable {
+                should_block_lower: false,
+                is_hoverable: true,
+            },
             DiegeticUiTarget,
         ))
         .observe(dragstart_card_mesh)
@@ -415,9 +419,6 @@ pub struct CardDragData {
     pub prev_global_pointer_pos: Option<Vec3>,
 }
 
-#[derive(Component)]
-pub struct LastDragWorldPos(pub Vec3);
-
 pub fn dragstart_card_mesh(
     e: On<Pointer<DragStart>>,
     mut cmd: Commands,
@@ -439,7 +440,6 @@ pub fn dragstart_card_mesh(
 
     cmd.entity(mesh_ent).insert((
         DragStartWorldPos(mesh_tf.clone()),
-        LastDragWorldPos(mesh_tf.translation),
         CardDragData {
             timer: Timer::from_seconds(0.1, TimerMode::Once),
             last_event_time: time.elapsed(),
@@ -532,14 +532,18 @@ pub fn drag_card_mesh(
 
 pub fn dragend_card_mesh(
     e: On<Pointer<DragEnd>>,
+    mut cmd: Commands,
     mut q: Query<
-        (&Transform, &DragStartWorldPos, &mut TweenAnim),
+        (Entity, &Transform, &DragStartWorldPos, &mut TweenAnim),
         (With<Mesh3d>, With<CardUiTargetMesh>),
     >,
+    mut highlighted_target: ResMut<HighlightedTarget>,
 ) {
-    let Ok((mesh_tf, mesh_drag_start_tf, mut tween_anim)) = q.get_mut(e.entity) else {
+    let Ok((mesh_ent, mesh_tf, mesh_drag_start_tf, mut tween_anim)) = q.get_mut(e.entity) else {
         return;
     };
+
+    highlighted_target.reset_and_remove_highlighter(&mut cmd);
 
     let tween = Tween::new(
         EaseFunction::CircularOut,
@@ -550,9 +554,10 @@ pub fn dragend_card_mesh(
         },
     );
 
-    tween_anim
-        .set_tweenable(tween)
-        .expect("could not set tweenable");
+    let mut mesh_ent_cmds = cmd.entity(mesh_ent);
+    mesh_ent_cmds.remove::<CardDragData>();
+    mesh_ent_cmds.remove::<DragStartWorldPos>();
+    mesh_ent_cmds.insert(TweenAnim::new(tween).with_destroy_on_completed(true));
 }
 
 pub fn over_moveup_card_mesh(

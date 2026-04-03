@@ -29,4 +29,7 @@ where
     _status: PhantomData<T>,
 }
 
+#[derive(Component, Default)]
+pub struct Targetable;
+
 pub struct GricCellBuilder {}

@@ -1,21 +1,32 @@
-use std::{any::Any, marker::PhantomData};
+use std::{any::Any, f32::consts::TAU, marker::PhantomData};
 
 use bevy::{
     app::{Plugin, Startup, Update},
+    asset::Assets,
+    color::{Color, Srgba},
     ecs::{
         bundle::Bundle,
+        change_detection::DetectChanges,
         component::{Component, ComponentId},
         entity::Entity,
         event::EntityEvent,
         name::Name,
         observer::On,
         query::{QueryData, QueryFilter, QueryState, ReadOnlyQueryData, With},
+        resource::Resource,
         schedule::IntoScheduleConfigs,
-        system::{Commands, EntityCommand, EntityCommands, Query},
+        system::{Commands, EntityCommand, EntityCommands, Query, Res, ResMut},
         world::{DeferredWorld, World},
     },
-    math::bool,
-    transform::components::Transform,
+    log::tracing_subscriber::reload::Handle,
+    math::{Vec3, bool},
+    mesh::Mesh3d,
+    pbr::{MeshMaterial3d, StandardMaterial},
+    picking::{
+        Pickable,
+        events::{DragEnd, Out, Over, Pointer},
+    },
+    transform::components::{GlobalTransform, Transform},
 };
 use bevy_ghx_grid::ghx_grid::cartesian::{
     coordinates::{Cartesian3D, CartesianPosition},
@@ -23,14 +34,106 @@ use bevy_ghx_grid::ghx_grid::cartesian::{
 };
 use bevy_ghx_proc_gen::GridNode;
 
-use crate::{BLOCK_SIZE, GridCell, Health, HealthState, NODE_SIZE};
+use crate::{
+    BLOCK_SIZE, GridCell, Health, HealthState, NODE_SIZE, tiles_templates::Targetable,
+    ui::CardDragData,
+};
 
 pub struct ActionPlugin;
 
 impl Plugin for ActionPlugin {
     fn build(&self, app: &mut bevy::app::App) {
-        app.add_systems(Startup, (setup_reactions, setup_actions_observers).chain());
+        app.insert_resource(HighlightedTarget {
+            target_entity: None,
+            highlighter_entity: None,
+        })
+        .add_systems(Startup, (setup_reactions, setup_actions_observers).chain())
+        .add_observer(handle_targetable_mouseover_check)
+        .add_observer(handle_targetable_mouseout_check);
     }
+}
+
+#[derive(Resource)]
+pub struct HighlightedTarget {
+    pub target_entity: Option<Entity>,
+    pub highlighter_entity: Option<Entity>,
+}
+
+impl HighlightedTarget {
+    pub fn highlight_at_position(
+        self: &mut Self,
+        cmd: &mut Commands,
+        target_tf: &GlobalTransform,
+        target_mesh: &Mesh3d,
+        target_entity: Entity,
+        mut materials: ResMut<Assets<StandardMaterial>>,
+    ) {
+        self.target_entity = Some(target_entity);
+        let mat = StandardMaterial::from_color(Srgba::new(1.0, 1.0, 1.0, 0.6));
+        let mat_handle = materials.add(mat);
+        let highlighter_ent = cmd
+            .spawn((
+                target_mesh.clone(),
+                MeshMaterial3d(mat_handle),
+                Pickable::IGNORE,
+                Transform::from_translation(target_tf.translation())
+                    .with_scale(target_tf.scale() * 1.2),
+            ))
+            .id();
+
+        self.highlighter_entity = Some(highlighter_ent);
+    }
+
+    pub fn reset(self: &mut Self) {
+        self.highlighter_entity = None;
+        self.target_entity = None;
+    }
+
+    pub fn reset_and_remove_highlighter(self: &mut Self, cmd: &mut Commands) {
+        if let Some(ent) = self.highlighter_entity {
+            cmd.entity(ent).despawn();
+        }
+        self.highlighter_entity = None;
+        self.target_entity = None;
+    }
+}
+
+pub fn handle_targetable_mouseover_check(
+    e: On<Pointer<Over>>,
+    mut cmd: Commands,
+    q: Query<(Entity, &GlobalTransform, &Mesh3d), With<Targetable>>,
+    dragged_card_q: Query<(), With<CardDragData>>,
+    mut highlighted_target: ResMut<HighlightedTarget>,
+    materials: ResMut<Assets<StandardMaterial>>,
+) {
+    if dragged_card_q.is_empty() {
+        return;
+    }
+    if let Ok((ent, global_tf, mesh)) = q.get(e.entity) {
+        println!("started over on : {:?}", ent);
+        highlighted_target.highlight_at_position(&mut cmd, global_tf, mesh, ent, materials);
+    }
+}
+
+pub fn handle_targetable_mouseout_check(
+    e: On<Pointer<Out>>,
+    mut cmd: Commands,
+    mut highlighted_target: ResMut<HighlightedTarget>,
+) {
+    let Some(highlighter_ent) = highlighted_target.highlighter_entity else {
+        return;
+    };
+
+    let Some(target_ent) = highlighted_target.target_entity else {
+        return;
+    };
+
+    if e.entity != target_ent {
+        return;
+    }
+
+    highlighted_target.reset();
+    cmd.entity(highlighter_ent).despawn();
 }
 
 pub struct Confusion;
