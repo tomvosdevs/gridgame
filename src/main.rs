@@ -15,6 +15,7 @@ use bevy::prelude::*;
 use bevy_ecs_tilemap::helpers::square_grid::diamond::INV_DIAMOND_BASIS;
 use bevy_ecs_tilemap::helpers::square_grid::neighbors::Neighbors;
 use bevy_ecs_tilemap::prelude::*;
+use bevy_gauge::plugin::AttributesPlugin;
 use bevy_ghx_grid::debug_plugin::view::DebugGridView;
 use bevy_ghx_grid::debug_plugin::{DebugGridView3dBundle, GridDebugPlugin};
 use bevy_ghx_grid::ghx_grid::cartesian::coordinates::{
@@ -420,6 +421,7 @@ pub fn rules_and_assets(
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) -> (
     ModelInstance,
+    ModelInstance,
     ModelsAssets<GridCellSocketsComponents>,
     ModelCollection<Cartesian3D>,
     SocketCollection,
@@ -525,7 +527,7 @@ pub fn rules_and_assets(
         3,
         GridCellSocketsComponents::from_mesh_and_material(&cube_mesh, &dark_red_mat),
     );
-    model_sockets_mapping
+    let ground_rock_instance = model_sockets_mapping
         .create(SocketsCartesian3D::Simple {
             x_pos: ground_rock_sides,
             x_neg: ground_rock_sides,
@@ -534,7 +536,8 @@ pub fn rules_and_assets(
             y_pos: ground_rock_top,
             y_neg: ground_rock_bottom,
         })
-        .with_name("rock");
+        .with_name("rock")
+        .instance();
 
     models_assets.add_asset(
         4,
@@ -577,6 +580,7 @@ pub fn rules_and_assets(
 
     (
         water_instance,
+        ground_rock_instance,
         models_assets,
         model_sockets_mapping,
         sockets,
@@ -672,7 +676,7 @@ fn startup_3d(
         },
     ));
 
-    let (water_instance, models_assets, models, socket_collection) =
+    let (water_instance, ground_rock_instance, models_assets, models, socket_collection) =
         rules_and_assets(&mut cmd, meshes, materials);
 
     let rules = Arc::new(
@@ -825,6 +829,7 @@ fn main() {
             GridDebugPlugin::<Cartesian3D>::new(),
         ))
         .add_plugins(TilemapPlugin)
+        .add_plugins(AttributesPlugin)
         .add_plugins((
             EffectsPlugin,
             ActionPlugin,

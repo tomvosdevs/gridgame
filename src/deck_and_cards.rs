@@ -9,13 +9,18 @@ use bevy::{
         event::EntityEvent,
         name::Name,
         observer::On,
-        query::{With, Without},
+        query::{QueryFilter, With, Without},
         related,
         relationship::RelationshipTarget,
         schedule::IntoScheduleConfigs,
         system::{Commands, EntityCommands, Query},
         world::World,
     },
+};
+use bevy_gauge::{
+    AttributeComponent, attributes,
+    prelude::{AttributeDerived, Attributes, AttributesAppExt, AttributesMut, WriteBack},
+    register_derived, register_write_back,
 };
 
 use crate::states::EntityTurnEnd;
@@ -65,7 +70,14 @@ pub fn spawn_test_deck(
     mut cmd: Commands,
     template_cards_q: Query<Entity, With<CardState<InCardTemplateRegistry>>>,
 ) {
-    let test_deck_ent = cmd.spawn(Deck).id();
+    let test_deck_ent = cmd
+        .spawn((
+            Deck,
+            attributes! {"SoulLife.Current" => 0.0, "SoulLife.Max" => 0.0},
+            Attributes::new(),
+            SoulLife::default(),
+        ))
+        .id();
 
     for template_card_ent in &template_cards_q {
         println!("adding card to deck");
@@ -81,6 +93,7 @@ pub fn set_hand_cards(
     e: On<DrawHand>,
     mut cmd: Commands,
     decks_q: Query<(&HandDrawData, &CardPile), With<Deck>>,
+    mut attributes: AttributesMut<(With<Deck>, With<CardPile>, With<HandDrawData>)>,
     drawable_cards_q: Query<Entity, (With<Card>, With<CardState<InDrawPile>>)>,
 ) {
     println!("drawing hand cards");
@@ -93,6 +106,11 @@ pub fn set_hand_cards(
         // This ensure the Vec never grows larger than the hand size.
         .take(hand_size)
         .collect();
+
+    let drawn_cards_count = new_hand_cards.iter().count() as f32;
+    let current_soullife = attributes.value(e.entity, "SoulLife.Current");
+    let new_soullife = (current_soullife - drawn_cards_count).max(0.0);
+    attributes.set(e.entity, "SoulLife.Current", new_soullife);
 
     for (idx, card_entity) in new_hand_cards.iter().enumerate() {
         let mut entity_cmds = cmd.entity(*card_entity);
@@ -123,7 +141,7 @@ pub fn discard_hand(
 // Structs etc
 
 #[derive(Component, Clone, Debug)]
-#[require(CardPile, HandDrawData)]
+#[require(CardPile, HandDrawData, SoulLife)]
 pub struct Deck;
 
 #[derive(Component)]
@@ -174,11 +192,49 @@ impl DrawHand {
 
 #[derive(Component)]
 #[relationship_target(relationship = InDeck, linked_spawn)]
-pub struct CardPile(Vec<Entity>);
+pub struct CardPile {
+    #[relationship_target]
+    cards: Vec<Entity>,
+}
+
+impl WriteBack for CardPile {
+    fn should_write_back(&self, attrs: &Attributes) -> bool {
+        let current = attrs.value("SoulLife.Max");
+        self.cards.len() as f32 != current
+    }
+
+    fn write_back<F: QueryFilter>(
+        &self,
+        entity: Entity,
+        attributes: &mut AttributesMut<'_, '_, F>,
+    ) {
+        attributes.set(entity, "SoulLife.Max", self.cards.len() as f32);
+    }
+}
+
+register_write_back!(CardPile);
+
+#[derive(Component, AttributeComponent)]
+pub struct SoulLife {
+    #[read("SoulLife.Current")]
+    #[init_from("SoulLife.Max")]
+    pub current: f32,
+    #[read("SoulLife.Max")]
+    pub max: f32,
+}
+
+impl Default for SoulLife {
+    fn default() -> Self {
+        Self {
+            current: 0.,
+            max: 0.,
+        }
+    }
+}
 
 impl Default for CardPile {
     fn default() -> Self {
-        Self(vec![])
+        Self { cards: vec![] }
     }
 }
 
