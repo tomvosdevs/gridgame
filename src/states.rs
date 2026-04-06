@@ -29,7 +29,10 @@ use bevy::{
 };
 use bevy_gauge::prelude::{Attributes, AttributesMut};
 use bevy_ghx_grid::ghx_grid::{
-    cartesian::{coordinates::Cartesian3D, grid::CartesianGrid},
+    cartesian::{
+        coordinates::{Cartesian3D, CartesianPosition},
+        grid::CartesianGrid,
+    },
     grid::GridIndex,
 };
 use bevy_ghx_proc_gen::{
@@ -148,20 +151,34 @@ pub fn define_test_gamestatus(mut cmd: Commands) {
     cmd.insert_resource(GameStatus { in_combat: false });
 }
 
-pub trait FromGrid {
-    fn from_grid_pos(grid: &CartesianGrid<Cartesian3D>, pos: UVec3) -> Transform;
+pub trait ToWorldPos {
+    fn as_world_pos(self: &Self, grid_origin_pos: Vec3) -> Vec3;
+}
 
-    fn from_grid_ground_pos(
+impl ToWorldPos for CartesianPosition {
+    fn as_world_pos(self: &Self, grid_origin_pos: Vec3) -> Vec3 {
+        Vec3::new(
+            (self.x as f32 * NODE_SIZE.x) - (NODE_SIZE.x * 0.5),
+            (self.y as f32 * NODE_SIZE.y) + (NODE_SIZE.y * 0.5),
+            (self.z as f32 * NODE_SIZE.z) - (NODE_SIZE.z * 0.5),
+        ) + grid_origin_pos
+    }
+}
+
+pub trait FromGrid {
+    fn crate_grid_pos_bundle(grid: &CartesianGrid<Cartesian3D>, pos: UVec3) -> impl Bundle;
+
+    fn create_ground_grid_pos_bundle(
         grid: &CartesianGrid<Cartesian3D>,
         grid_origin_offset: Vec3,
         player_mesh_size: Vec2,
         pos: UVec2,
         grid_nodes: &Vec<&GridNode>,
-    ) -> Transform;
+    ) -> impl Bundle;
 }
 
 impl FromGrid for Transform {
-    fn from_grid_pos(grid: &CartesianGrid<Cartesian3D>, pos: UVec3) -> Transform {
+    fn crate_grid_pos_bundle(grid: &CartesianGrid<Cartesian3D>, pos: UVec3) -> impl Bundle {
         let node_size = NODE_SIZE;
         let index = grid.index_from_coords(pos.x, pos.y, pos.z);
         let grid_pos = grid.pos_from_index(index);
@@ -170,16 +187,16 @@ impl FromGrid for Transform {
             grid_pos.y as f32 * node_size.y,
             grid_pos.z as f32 * node_size.z,
         );
-        Transform::from_translation(translation)
+        (Transform::from_translation(translation), grid_pos)
     }
 
-    fn from_grid_ground_pos(
+    fn create_ground_grid_pos_bundle(
         grid: &CartesianGrid<Cartesian3D>,
         grid_origin_offset: Vec3,
         player_mesh_size: Vec2,
         pos: UVec2,
         grid_nodes: &Vec<&GridNode>,
-    ) -> Transform {
+    ) -> impl Bundle {
         let node_size = NODE_SIZE;
 
         println!("grid nodes : {:?}", grid_nodes.iter().count());
@@ -206,7 +223,7 @@ impl FromGrid for Transform {
             (cell_grid_pos.y as f32 * node_size.y) + player_mesh_size.y + node_size.y,
             (cell_grid_pos.z as f32 * node_size.z) - (node_size.z * 0.5),
         ) + grid_origin_offset;
-        Transform::from_translation(translation)
+        (Transform::from_translation(translation), cell_grid_pos)
     }
 }
 
@@ -234,14 +251,13 @@ pub fn spawn_combat_playing_entities(
 
     let grid_origin_pos = grid_tf.translation();
     let center_pos = UVec2::new(grid.size_x() / 2, grid.size_z() / 2);
-    let found_tf = Transform::from_grid_ground_pos(
+    let found_tf = Transform::create_ground_grid_pos_bundle(
         &grid,
         grid_origin_pos,
         player_size,
         center_pos,
         &grid_nodes,
     );
-    println!("generated ground pos : {:?}", found_tf.translation);
     println!("grid pos is : {:?}", grid_origin_pos);
 
     cmd.spawn((
@@ -257,7 +273,7 @@ pub fn spawn_combat_playing_entities(
         Mesh3d::from(player_test_mesh_handle.clone()),
         MeshMaterial3d::from(player_test_mat_handle.clone()),
         Creature::from_stats(1, 3, 1),
-        Transform::from_grid_ground_pos(
+        Transform::create_ground_grid_pos_bundle(
             &grid,
             grid_origin_pos,
             player_size,
@@ -271,7 +287,7 @@ pub fn spawn_combat_playing_entities(
         Mesh3d::from(player_test_mesh_handle.clone()),
         MeshMaterial3d::from(player_test_mat_handle.clone()),
         Creature::from_stats(5, 4, 1),
-        Transform::from_grid_ground_pos(
+        Transform::create_ground_grid_pos_bundle(
             &grid,
             grid_origin_pos,
             player_size,

@@ -12,6 +12,7 @@ use bevy::log::LogPlugin;
 use bevy::math::VectorSpace;
 use bevy::platform::collections::Equivalent;
 use bevy::prelude::*;
+use bevy_diesel::prelude::SpatialBackend;
 use bevy_ecs_tilemap::helpers::square_grid::diamond::INV_DIAMOND_BASIS;
 use bevy_ecs_tilemap::helpers::square_grid::neighbors::Neighbors;
 use bevy_ecs_tilemap::prelude::*;
@@ -49,6 +50,7 @@ use crate::actions::{
 use crate::combat::{CombatPlugin, SelectedAction};
 use crate::deck_and_cards::DeckAndCardsPlugin;
 use crate::effects::{Burning, EffectsPlugin};
+use crate::grid_abilities_backend::Grid3DBackend;
 use crate::states::{CombatState, TurnsPlugin};
 use crate::tiles_templates::Targetable;
 use crate::ui::GameUiPlugin;
@@ -57,6 +59,7 @@ pub mod actions;
 pub mod combat;
 pub mod deck_and_cards;
 pub mod effects;
+pub mod grid_abilities_backend;
 pub mod states;
 pub mod tiles_templates;
 pub mod ui;
@@ -591,8 +594,8 @@ pub fn rules_and_assets(
 
 /// Modify these values to control the map size.
 const GRID_HEIGHT: u32 = 7;
-const GRID_X: u32 = 30;
-const GRID_Z: u32 = 70;
+const GRID_X: u32 = 40;
+const GRID_Z: u32 = 40;
 // ------------------------------------------------------------------
 
 /// Size of a block in world units
@@ -829,7 +832,7 @@ fn main() {
             GridDebugPlugin::<Cartesian3D>::new(),
         ))
         .add_plugins(TilemapPlugin)
-        .add_plugins(AttributesPlugin)
+        .add_plugins(Grid3DBackend::plugin())
         .add_plugins((
             EffectsPlugin,
             ActionPlugin,

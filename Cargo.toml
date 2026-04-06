@@ -6,10 +6,10 @@ edition = "2024"
 [dependencies]
 bevy = { version = "0.18.0", features = ["bevy_gltf", "debug"] }
 bevy-trait-query = "0.18.0"
-bevy_diesel = "0.1.0"
-bevy_ecs_tilemap = "0.18.1"
+bevy_diesel = { git = "https://github.com/DEMIURGE-studio/bevy_diesel.git" }
 bevy_gauge = "0.4.5"
-bevy_gearbox = {version = "0.6.0", features = ["gauge"]}
+bevy_gearbox = "0.6.0"
+bevy_ecs_tilemap = "0.18.1"
 bevy_ghx_grid = "0.8.0"
 bevy_ghx_proc_gen = {version = "0.8.0", features = ["bevy_ghx_grid"]}
 bevy_tween = "0.12.0"
@@ -17,7 +17,14 @@ bevy_tweening = "0.15.0"
 bevy_ui_anchor = "0.11.0"
 haalka = "0.7.1"
 inventory = "0.3.24"
-rand = "0.10.0"
+rand = "0.10"
+bevy_rand = "0.14"
+bevy_prng = { version = "0.14.2", features = ["wyrand"] }
+wyrand = {version = "0.4.1", features=["rand_core"]}
+
+[patch."https://github.com/DEMIURGE-studio/bevy_diesel.git"]
+bevy_gauge = "0.4.5"
+bevy_gearbox = "0.6.0"
 
 # Enable a small amount of optimization in the dev profile.
 [profile.dev]
