@@ -74,131 +74,13 @@ pub struct ProjectilePlugin;
 impl Plugin for ProjectilePlugin {
     fn build(&self, app: &mut App) {
         app.add_observer(init_projectile)
-            .add_systems(
-                Update,
-                (
-                    move_projectiles,
-                    test_log_projectile,
-                    debug_propagate_system::<Grid3DBackend>,
-                ),
-            )
+            .add_systems(Update, (move_projectiles, test_log_projectile))
             .add_observer(|e: On<Add, Name>, q: Query<&Name>| {
                 if let Ok(name) = q.get(e.entity) {
                     println!("New name spawned : {:?}", name);
                 }
             })
             .add_systems(Update, debug_pipeline);
-    }
-}
-
-pub fn debug_propagate_system<B: SpatialBackend>(
-    mut reader: MessageReader<GoOffOrigin<B::Pos>>,
-    mut ctx: B::Context<'_, '_>,
-    q_sub_effects: Query<&SubEffects>,
-    q_target_mutator: Query<Option<&TargetMutator<B>>>,
-    q_invoker: Query<&InvokedBy>,
-    q_child_of: Query<&ChildOf>,
-    q_invoker_target: Query<&InvokerTarget<B::Pos>>,
-    mut writer: MessageWriter<GoOff<B::Pos>>,
-) {
-    for origin in reader.read() {
-        let root_entity = origin.entity;
-        let passed_target = origin.target;
-
-        let invoker = resolve_invoker(&q_invoker, root_entity);
-        let root = resolve_root(&q_child_of, root_entity);
-        let invoker_target: Target<B::Pos> = q_invoker_target
-            .get(invoker)
-            .copied()
-            .map(Target::from)
-            .unwrap_or_default();
-
-        println!("got here == 1");
-
-        // Resolve the root's own target list — apply its TargetMutator if
-        // present, otherwise use the passed target verbatim. This matches
-        // the behavior applied to children below.
-        let root_targets: Vec<Target<B::Pos>> =
-            if let Ok(Some(mutator)) = q_target_mutator.get(root_entity) {
-                println!("got here == 2");
-                let mut targets = generate_targets::<B>(
-                    &mutator.generator,
-                    &mut ctx,
-                    invoker,
-                    invoker_target,
-                    root,
-                    B::Pos::default(),
-                    passed_target,
-                );
-                targets = B::apply_filter(
-                    &mut ctx,
-                    targets,
-                    &mutator.generator.filter,
-                    invoker,
-                    passed_target.position,
-                );
-                targets
-            } else {
-                vec![passed_target]
-            };
-
-        // Fire GoOff on the root entity itself (one per resolved target).
-        for &target in &root_targets {
-            println!(
-                "SENDING GO_OFF => target entity, position: {:?}, {:?}",
-                target.entity, target.position
-            );
-            // writer.write(GoOff::new(root_entity, target));
-        }
-
-        // Walk the tree: (entity, targets_for_this_entity)
-        let mut stack: Vec<(Entity, Vec<Target<B::Pos>>)> = vec![(root_entity, root_targets)];
-
-        while let Some((parent, in_targets)) = stack.pop() {
-            println!("got here == 3");
-            let Ok(subs) = q_sub_effects.get(parent) else {
-                continue;
-            };
-
-            for &child in subs.into_iter() {
-                println!("got here == 4");
-                let out_targets = if let Ok(Some(mutator)) = q_target_mutator.get(child) {
-                    println!("got here == 5");
-                    let mut aggregated = Vec::new();
-                    for passed in in_targets.iter() {
-                        println!("got here == 6");
-                        let mut targets = generate_targets::<B>(
-                            &mutator.generator,
-                            &mut ctx,
-                            invoker,
-                            invoker_target,
-                            root,
-                            B::Pos::default(),
-                            *passed,
-                        );
-                        let origin_pos = passed.position;
-                        targets = B::apply_filter(
-                            &mut ctx,
-                            targets,
-                            &mutator.generator.filter,
-                            invoker,
-                            origin_pos,
-                        );
-                        aggregated.append(&mut targets);
-                    }
-                    aggregated
-                } else {
-                    in_targets.clone()
-                };
-
-                // Write one GoOff per target (batch messages instead of Vec)
-                for &target in &out_targets {
-                    println!("GO_OFF bis => {:?}", target.position);
-                    // writer.write(GoOff::new(child, target));
-                }
-                stack.push((child, out_targets));
-            }
-        }
     }
 }
 
@@ -305,8 +187,15 @@ fn init_projectile(
     };
 
     let target_world_pos = target.position.as_world_pos(grid_tf.translation());
+    println!(
+        "pos of target was and is : {:?} -> {:?}",
+        target.position, target_world_pos
+    );
     let dir = (target_world_pos - transform.translation).normalize_or_zero();
+
     let dir = if dir == Vec3::ZERO { Vec3::NEG_Y } else { dir };
+
+    println!("sending projectile to dir : {:?}", dir);
 
     commands
         .entity(entity)

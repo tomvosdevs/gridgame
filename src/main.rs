@@ -835,7 +835,6 @@ fn main() {
             GridDebugPlugin::<Cartesian3D>::new(),
         ))
         .add_plugins(TilemapPlugin)
-        .add_plugins(Grid3DBackend::plugin())
         .add_plugins((
             EffectsPlugin,
             ActionPlugin,
@@ -845,6 +844,7 @@ fn main() {
             DeckAndCardsPlugin,
         ))
         .add_plugins(AbilitiesTemplatePlugin)
+        .add_plugins(Grid3DBackend::plugin())
         .insert_resource(DirectionalLightShadowMap { size: 4096 })
         .insert_resource(HoveredCell(None))
         .insert_state(CombatState::DeterminePlayOrder)

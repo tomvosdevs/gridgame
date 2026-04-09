@@ -255,8 +255,9 @@ impl<T: ComponentMarker> Marker<T> {
 // ==================
 
 fn register_templates(mut registry: ResMut<TemplateRegistry>) {
-    registry.register("projectile", projectile_template);
     registry.register("projectile_ability", basic_projectile_ability);
+    registry.register("projectile", projectile_template);
+    registry.register("projectile", projectile_template);
 }
 
 pub fn projectile_template(commands: &mut Commands, entity: Option<Entity>) -> Entity {
@@ -296,6 +297,44 @@ pub fn projectile_template(commands: &mut Commands, entity: Option<Entity>) -> E
     entity
 }
 
+pub fn test_some_ability(commands: &mut Commands, entity: Option<Entity>) -> Entity {
+    let entity = entity.unwrap_or_else(|| commands.spawn_empty().id());
+
+    commands.entity(entity).with_children(|parent| {
+        let active = parent
+            .spawn_diesel_substate(entity, Name::new("Active"))
+            .id();
+
+        let spawn = parent
+            .spawn_diesel_substate(
+                entity,
+                (Name::new("Spawn"), GridGoOffConfig::invoker_target()),
+            )
+            .id();
+
+        parent.spawn_subeffect(
+            spawn,
+            (
+                Name::new("EffectSpawn"),
+                GridSpawnConfig::passed("projectile"),
+            ),
+        );
+
+        let done = parent.spawn_diesel_substate(entity, Name::new("Done")).id();
+
+        parent.spawn_transition::<GridStartInvoke>(active, spawn);
+        parent.spawn_transition::<GridStartInvoke>(spawn, done);
+
+        let commands = parent.commands_mut();
+        commands
+            .entity(entity)
+            .insert(Ability)
+            .init_state_machine(active);
+    });
+
+    entity
+}
+
 pub fn basic_projectile_ability(commands: &mut Commands, entity: Option<Entity>) -> Entity {
     let entity = entity.unwrap_or_else(|| commands.spawn_empty().id());
 
@@ -320,8 +359,7 @@ pub fn basic_projectile_ability(commands: &mut Commands, entity: Option<Entity>)
                 Name::new("SpawnProjectile"),
                 PrintLn::new("Spawning GoOff:"),
                 GridSpawnConfig::invoker("projectile")
-                    .with_offset(GridPosOffset::None)
-                    .with_target_generator(GridTargetGenerator::at_invoker()),
+                    .with_target_generator(GridTargetGenerator::at_invoker_target()),
             ),
         );
 

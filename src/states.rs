@@ -25,7 +25,7 @@ use bevy::{
     input::{ButtonInput, keyboard::KeyCode},
     log::warn,
     math::{
-        UVec2, UVec3, Vec3,
+        IVec2, UVec2, UVec3, Vec3,
         primitives::{Capsule3d, Sphere},
     },
     mesh::{Mesh, Mesh3d},
@@ -72,7 +72,7 @@ impl Plugin for TurnsPlugin {
                 let projectile_ability = basic_projectile_ability(&mut cmd, None);
                 cmd.spawn(AbilityTest(projectile_ability));
             })
-            .add_systems(Update, flush_pending_ability_cast)
+            .add_systems(Update, flush_pending_ability_cast.before(bevy_gearbox::GearboxSet))
             .add_observer(spawn_combat_playing_entities)
             .add_observer(
             |_: On<CombatStart>,
@@ -333,14 +333,16 @@ pub fn spawn_combat_playing_entities(
         CurrentDeckReference(test_deck),
     ));
 
-    let rand_val = rand::rng().random_range(0..(cells_q.count() - 1));
-    let (_, (rand_cell_ent, rand_cell_node)) = cells_q
-        .iter()
-        .enumerate()
-        .find(|(i, (_, _))| *i == rand_val)
-        .unwrap();
+    let rand_offset_x = rand::rng().random_range(2..4);
+    let rand_offset_z = rand::rng().random_range(2..4);
 
-    let rand_grid_pos = grid.pos_from_index(rand_cell_node.0);
+    let rand_pos = center_pos.as_ivec2() + IVec2::new(rand_offset_x, rand_offset_z);
+
+    let rand_grid_pos = CartesianPosition {
+        x: rand_pos.x as u32,
+        y: 6,
+        z: rand_pos.y as u32,
+    };
 
     let mut registry_cmds = cmd;
     let ability = ability_test.0;
@@ -351,7 +353,7 @@ pub fn spawn_combat_playing_entities(
     registry_cmds.insert_resource(PendingAbilityCast(
         ability,
         player_1,
-        Timer::from_seconds(0.5, bevy::time::TimerMode::Once),
+        Timer::from_seconds(0.1, bevy::time::TimerMode::Once),
     ));
 
     registry_cmds.entity(player_1).insert(target);
@@ -380,7 +382,7 @@ pub fn flush_pending_ability_cast(
         return;
     }
 
-    println!("called start invoke");
+    println!("called start invoke with target : {:?}", target.position);
     writer.write(GridStartInvoke::new(
         pending.0,
         GridTarget::position(target.position),
@@ -419,6 +421,7 @@ fn attach_visuals(
     mut meshes: ResMut<Assets<Mesh>>,
 ) {
     for entity in q_projectiles.iter() {
+        println!("adding mesh to projectile");
         let mesh_handle = Sphere::new(3.0);
         let mat_handle = StandardMaterial::from_color(RED);
         let mesh = meshes.add(mesh_handle);
