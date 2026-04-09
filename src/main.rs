@@ -43,6 +43,7 @@ use bevy_ghx_proc_gen::simple_plugin::ProcGenSimplePlugins;
 use bevy_ghx_proc_gen::spawner_plugin::NodesSpawner;
 use rand::RngExt;
 
+use crate::abilities::AbilitiesTemplatePlugin;
 use crate::actions::{
     Action, ActionCast, ActionEffect, ActionPlugin, ActionPoints, Damage, Electric, Fire,
     MainTarget, Melee, MovementPoints, Physical, Piercing, Range, Ranged, UsedAction, Water,
@@ -50,16 +51,18 @@ use crate::actions::{
 use crate::combat::{CombatPlugin, SelectedAction};
 use crate::deck_and_cards::DeckAndCardsPlugin;
 use crate::effects::{Burning, EffectsPlugin};
-use crate::grid_abilities_backend::Grid3DBackend;
-use crate::states::{CombatState, TurnsPlugin};
+use crate::grid_abilities_backend::{Grid3DBackend, HitFilterPlugin};
+use crate::states::{CombatState, TeamHitFilter, TurnsPlugin};
 use crate::tiles_templates::Targetable;
 use crate::ui::GameUiPlugin;
 
+pub mod abilities;
 pub mod actions;
 pub mod combat;
 pub mod deck_and_cards;
 pub mod effects;
 pub mod grid_abilities_backend;
+pub mod projectiles;
 pub mod states;
 pub mod tiles_templates;
 pub mod ui;
@@ -841,6 +844,7 @@ fn main() {
             TurnsPlugin,
             DeckAndCardsPlugin,
         ))
+        .add_plugins(AbilitiesTemplatePlugin)
         .insert_resource(DirectionalLightShadowMap { size: 4096 })
         .insert_resource(HoveredCell(None))
         .insert_state(CombatState::DeterminePlayOrder)

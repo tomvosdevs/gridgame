@@ -721,7 +721,7 @@ dependencies = [
 [[package]]
 name = "bevy_diesel"
 version = "0.2.0"
-source = "git+https://github.com/DEMIURGE-studio/bevy_diesel.git#2a63e87e409db499c2584ad0ecdbbb7978782428"
+source = "git+https://github.com/DEMIURGE-studio/bevy_diesel.git?branch=main#2765c8a550982daa466e1b3e1097f76fb7fb0b85"
 dependencies = [
  "bevy",
  "bevy_gauge",
@@ -865,8 +865,7 @@ dependencies = [
 [[package]]
 name = "bevy_gauge"
 version = "0.4.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d438d3b3064a7f798d25bdc87e7dba61e8f6b4d5edef16b2e3351dea847a7a80"
+source = "git+https://github.com/DEMIURGE-studio/bevy_gauge.git?branch=main#1c77d4b124b2743e06da1e63eb300f2b3d4d8a64"
 dependencies = [
  "bevy",
  "bevy_gauge_macros",
@@ -877,8 +876,7 @@ dependencies = [
 [[package]]
 name = "bevy_gauge_macros"
 version = "0.4.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9c3d4f32fd411099ca0dce9caeeb6640b471978c5863d89c1e1d7322e99a4e16"
+source = "git+https://github.com/DEMIURGE-studio/bevy_gauge.git?branch=main#1c77d4b124b2743e06da1e63eb300f2b3d4d8a64"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -888,8 +886,7 @@ dependencies = [
 [[package]]
 name = "bevy_gearbox"
 version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4aa7ed865924bf56259de9af6fb719da299e7ed74a6958d88229a2e57951faa7"
+source = "git+https://github.com/DEMIURGE-studio/bevy_gearbox.git?branch=Fix-core#e149af1e42c3858f11a69ec90feab3e43338e619"
 dependencies = [
  "bevy",
  "bevy_gearbox_core",
@@ -903,8 +900,7 @@ dependencies = [
 [[package]]
 name = "bevy_gearbox_core"
 version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5f0e869cb37e9a1cb861e7a3c9a060b75d267eb8749ebd4ade7586b0f428e4d7"
+source = "git+https://github.com/DEMIURGE-studio/bevy_gearbox.git?branch=Fix-core#e149af1e42c3858f11a69ec90feab3e43338e619"
 dependencies = [
  "bevy",
  "bevy_gauge",
@@ -914,8 +910,7 @@ dependencies = [
 [[package]]
 name = "bevy_gearbox_macros"
 version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "605b43da074607fc13783f3e8df72b96a8eaaaf0b16f762c7a3c6a65cabec9bb"
+source = "git+https://github.com/DEMIURGE-studio/bevy_gearbox.git?branch=Fix-core#e149af1e42c3858f11a69ec90feab3e43338e619"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -925,8 +920,7 @@ dependencies = [
 [[package]]
 name = "bevy_gearbox_protocol"
 version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a068706424e2d20dbd95dde0269a532ea047d167aab7ee689ad89cf2808f0031"
+source = "git+https://github.com/DEMIURGE-studio/bevy_gearbox.git?branch=Fix-core#e149af1e42c3858f11a69ec90feab3e43338e619"
 dependencies = [
  "bevy",
  "bevy_gearbox_core",
@@ -2883,9 +2877,9 @@ dependencies = [
 
 [[package]]
 name = "fastrand"
-version = "2.4.0"
+version = "2.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a043dc74da1e37d6afe657061213aa6f425f855399a11d3463c6ecccc4dfda1f"
+checksum = "9f1f227452a390804cdb637b74a86990f2a7d7ba4b7d5693aac9b4dd6defd8d6"
 
 [[package]]
 name = "fdeflate"

@@ -6,9 +6,9 @@ edition = "2024"
 [dependencies]
 bevy = { version = "0.18.0", features = ["bevy_gltf", "debug"] }
 bevy-trait-query = "0.18.0"
-bevy_diesel = { git = "https://github.com/DEMIURGE-studio/bevy_diesel.git" }
-bevy_gauge = "0.4.5"
-bevy_gearbox = "0.6.0"
+bevy_diesel = { git = "https://github.com/DEMIURGE-studio/bevy_diesel.git", branch="main" }
+bevy_gauge = { git = "https://github.com/DEMIURGE-studio/bevy_gauge.git", branch="main" }
+bevy_gearbox = { git = "https://github.com/DEMIURGE-studio/bevy_gearbox.git", branch="Fix-core", features=["gauge"] }
 bevy_ecs_tilemap = "0.18.1"
 bevy_ghx_grid = "0.8.0"
 bevy_ghx_proc_gen = {version = "0.8.0", features = ["bevy_ghx_grid"]}
@@ -23,8 +23,14 @@ bevy_prng = { version = "0.14.2", features = ["wyrand"] }
 wyrand = {version = "0.4.1", features=["rand_core"]}
 
 [patch."https://github.com/DEMIURGE-studio/bevy_diesel.git"]
-bevy_gauge = "0.4.5"
-bevy_gearbox = "0.6.0"
+# Fixes bevy_diesel looking for its siblings
+bevy_gauge = { git = "https://github.com/DEMIURGE-studio/bevy_gauge.git", branch="main" }
+bevy_gearbox = { git = "https://github.com/DEMIURGE-studio/bevy_gearbox.git", branch="Fix-core" }
+
+[patch."https://github.com/DEMIURGE-studio/bevy_gearbox.git"]
+# Fixes bevy_gearbox (and bevy_gearbox_core) looking for bevy_gauge
+bevy_gauge = { git = "https://github.com/DEMIURGE-studio/bevy_gauge.git", branch="main" }
+
 
 # Enable a small amount of optimization in the dev profile.
 [profile.dev]

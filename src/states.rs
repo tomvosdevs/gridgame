@@ -3,15 +3,19 @@ use std::collections::HashMap;
 use bevy::{
     app::{App, Plugin, Startup, Update},
     asset::Assets,
-    color::Srgba,
+    color::{Srgba, palettes::css::RED},
     ecs::{
         bundle::Bundle,
         change_detection::DetectChanges,
         component::Component,
         entity::Entity,
         event::{EntityEvent, Event},
+        hierarchy::Children,
+        lifecycle::Add,
+        message::MessageWriter,
+        name::Name,
         observer::On,
-        query::{Changed, With},
+        query::{Added, Changed, With},
         relationship::RelationshipTarget,
         resource::Resource,
         schedule::IntoScheduleConfigs,
@@ -20,12 +24,20 @@ use bevy::{
     },
     input::{ButtonInput, keyboard::KeyCode},
     log::warn,
-    math::{UVec2, UVec3, Vec3, primitives::Capsule3d},
+    math::{
+        UVec2, UVec3, Vec3,
+        primitives::{Capsule3d, Sphere},
+    },
     mesh::{Mesh, Mesh3d},
     pbr::{MeshMaterial3d, StandardMaterial},
     sprite::Text2d,
     state::state::States,
+    time::{Time, Timer},
     transform::components::{GlobalTransform, Transform},
+};
+use bevy_diesel::{
+    prelude::{InvokedBy, Invokes},
+    target::InvokerTarget,
 };
 use bevy_gauge::prelude::{Attributes, AttributesMut};
 use bevy_ghx_grid::ghx_grid::{
@@ -39,13 +51,16 @@ use bevy_ghx_proc_gen::{
     GridNode, bevy_egui::egui::Vec2, proc_gen::generator::Generator,
     simple_plugin::PendingGenerations,
 };
+use rand::{RngExt, rngs::ThreadRng};
 
 use crate::{
     BLOCK_SIZE, GridCell, NODE_SIZE,
+    abilities::{Marker, Projectile, basic_projectile_ability, projectile_template},
     deck_and_cards::{
         ActiveDeck, CardPile, CardState, Deck, DrawHand, InDrawPile, StatelessCard,
         UnassignedDeckState, spawn_test_deck,
     },
+    grid_abilities_backend::{GridInvokerTarget, GridStartInvoke, GridTarget, HitFilter},
 };
 
 pub struct TurnsPlugin;
@@ -53,6 +68,11 @@ pub struct TurnsPlugin;
 impl Plugin for TurnsPlugin {
     fn build(&self, app: &mut App) {
         app
+            .add_systems(Startup, |mut cmd: Commands| {
+                let projectile_ability = basic_projectile_ability(&mut cmd, None);
+                cmd.spawn(AbilityTest(projectile_ability));
+            })
+            .add_systems(Update, flush_pending_ability_cast)
             .add_observer(spawn_combat_playing_entities)
             .add_observer(
             |_: On<CombatStart>,
@@ -143,7 +163,7 @@ impl Plugin for TurnsPlugin {
                 .chain()
                 .after(spawn_test_deck),
         )
-        .add_systems(Update, (draw_dev_text, keyboard_update_turn_test, start_combat_test));
+        .add_systems(Update, (draw_dev_text, keyboard_update_turn_test, start_combat_test, attach_visuals));
     }
 }
 
@@ -174,7 +194,7 @@ pub trait FromGrid {
         player_mesh_size: Vec2,
         pos: UVec2,
         grid_nodes: &Vec<&GridNode>,
-    ) -> impl Bundle;
+    ) -> (Transform, CartesianPosition);
 }
 
 impl FromGrid for Transform {
@@ -196,7 +216,7 @@ impl FromGrid for Transform {
         player_mesh_size: Vec2,
         pos: UVec2,
         grid_nodes: &Vec<&GridNode>,
-    ) -> impl Bundle {
+    ) -> (Transform, CartesianPosition) {
         let node_size = NODE_SIZE;
 
         println!("grid nodes : {:?}", grid_nodes.iter().count());
@@ -227,12 +247,22 @@ impl FromGrid for Transform {
     }
 }
 
+#[derive(Resource)]
+pub struct PendingAbilityCast(pub Entity, pub Entity, Timer);
+
+#[derive(Component)]
+pub struct AbilityTest(pub Entity);
+
 pub fn spawn_combat_playing_entities(
     _: On<CombatInit>,
     mut cmd: Commands,
     q: Query<Entity, With<Deck>>,
     grid_q: Query<(&CartesianGrid<Cartesian3D>, &GlobalTransform)>,
     grid_nodes_q: Query<&GridNode, With<GridCell>>,
+    players_q: Query<Entity, With<PlayingEntity>>,
+    cells_q: Query<(Entity, &GridNode)>,
+    grid: Single<&CartesianGrid<Cartesian3D>>,
+    ability_test: Single<&AbilityTest>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut meshes: ResMut<Assets<Mesh>>,
 ) {
@@ -260,14 +290,20 @@ pub fn spawn_combat_playing_entities(
     );
     println!("grid pos is : {:?}", grid_origin_pos);
 
-    cmd.spawn((
-        PlayingEntity::new_ally(),
-        Mesh3d::from(player_test_mesh_handle.clone()),
-        MeshMaterial3d::from(player_test_mat_handle.clone()),
-        Creature::from_stats(6, 3, 1),
-        found_tf,
-        CurrentDeckReference(test_deck),
-    ));
+    let player_1 = cmd
+        .spawn((
+            Name::new("Player 1"),
+            PlayingEntity::new_ally(),
+            Mesh3d::from(player_test_mesh_handle.clone()),
+            MeshMaterial3d::from(player_test_mat_handle.clone()),
+            Creature::from_stats(6, 3, 1),
+            found_tf,
+            // TODO: Use actual target
+            // GridInvokerTarget::position(found_tf.1),
+            Invokes::new(),
+            CurrentDeckReference(test_deck),
+        ))
+        .id();
     cmd.spawn((
         PlayingEntity::new_ally(),
         Mesh3d::from(player_test_mesh_handle.clone()),
@@ -297,7 +333,59 @@ pub fn spawn_combat_playing_entities(
         CurrentDeckReference(test_deck),
     ));
 
-    cmd.trigger(CombatStart);
+    let rand_val = rand::rng().random_range(0..(cells_q.count() - 1));
+    let (_, (rand_cell_ent, rand_cell_node)) = cells_q
+        .iter()
+        .enumerate()
+        .find(|(i, (_, _))| *i == rand_val)
+        .unwrap();
+
+    let rand_grid_pos = grid.pos_from_index(rand_cell_node.0);
+
+    let mut registry_cmds = cmd;
+    let ability = ability_test.0;
+    registry_cmds.entity(ability).insert(InvokedBy(player_1));
+
+    let target = GridInvokerTarget::position(rand_grid_pos);
+
+    registry_cmds.insert_resource(PendingAbilityCast(
+        ability,
+        player_1,
+        Timer::from_seconds(0.5, bevy::time::TimerMode::Once),
+    ));
+
+    registry_cmds.entity(player_1).insert(target);
+
+    println!("====> projectile invoked!!!!!!");
+
+    registry_cmds.trigger(CombatStart);
+}
+
+pub fn flush_pending_ability_cast(
+    pending: Option<ResMut<PendingAbilityCast>>,
+    mut writer: MessageWriter<GridStartInvoke>,
+    invoker_targets_q: Query<&GridInvokerTarget>,
+    mut cmd: Commands,
+    time: Res<Time>,
+) {
+    let Some(mut pending) = pending else { return };
+
+    let Ok(target) = invoker_targets_q.get(pending.1) else {
+        return;
+    };
+
+    pending.2.tick(time.delta());
+
+    if !pending.2.just_finished() {
+        return;
+    }
+
+    println!("called start invoke");
+    writer.write(GridStartInvoke::new(
+        pending.0,
+        GridTarget::position(target.position),
+    ));
+    cmd.remove_resource::<PendingAbilityCast>();
 }
 
 #[derive(Resource)]
@@ -320,7 +408,25 @@ pub fn start_combat_test(
     }
 
     game_status.in_combat = true;
+
     cmd.trigger(CombatInit);
+}
+
+fn attach_visuals(
+    mut commands: Commands,
+    q_projectiles: Query<Entity, Added<Marker<Projectile>>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+) {
+    for entity in q_projectiles.iter() {
+        let mesh_handle = Sphere::new(3.0);
+        let mat_handle = StandardMaterial::from_color(RED);
+        let mesh = meshes.add(mesh_handle);
+        let mat = materials.add(mat_handle);
+        commands
+            .entity(entity)
+            .insert((Mesh3d(mesh), MeshMaterial3d(mat)));
+    }
 }
 
 pub fn spawn_dev_text(mut cmd: Commands) {
@@ -464,6 +570,30 @@ pub type AllyTag = MemberOf<0>;
 pub type EnnemyTag = MemberOf<1>;
 pub type EnvironmentTag = MemberOf<2>;
 
+#[derive(Component, PartialEq, Eq)]
+pub enum PlayingTeam {
+    Ally,
+    Ennemy,
+    Environment,
+}
+
+#[derive(Clone, Debug, Component)]
+pub enum TeamHitFilter {
+    Enemies,
+    Allies,
+}
+
+impl HitFilter for TeamHitFilter {
+    type Lookup = PlayingTeam;
+
+    fn can_target(&self, invoker: Option<&Self::Lookup>, target: Option<&Self::Lookup>) -> bool {
+        match (self, invoker, target) {
+            (TeamHitFilter::Enemies, Some(i), Some(t)) => i != t,
+            _ => true, // no team info → allow (e.g. hitting terrain)
+        }
+    }
+}
+
 #[derive(Component, Default)]
 pub struct PlayingEntity;
 
@@ -472,15 +602,15 @@ pub struct CurrentDeckReference(pub Entity);
 
 impl PlayingEntity {
     pub fn new_ally() -> impl Bundle {
-        (PlayingEntity, MemberOf::<0>)
+        (PlayingEntity, MemberOf::<0>, PlayingTeam::Ally)
     }
 
     pub fn new_ennemy() -> impl Bundle {
-        (PlayingEntity, MemberOf::<1>)
+        (PlayingEntity, MemberOf::<1>, PlayingTeam::Ennemy)
     }
 
     pub fn new_environmental() -> impl Bundle {
-        (PlayingEntity, MemberOf::<2>)
+        (PlayingEntity, MemberOf::<2>, PlayingTeam::Environment)
     }
 
     pub fn new_teamless() -> impl Bundle {

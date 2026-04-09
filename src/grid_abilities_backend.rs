@@ -1,18 +1,27 @@
-use std::{f32::consts::TAU, i32, ops::Deref};
+use std::{f32::consts::TAU, fmt::Debug, i32, marker::PhantomData, ops::Deref};
 
 use bevy::{
-    app::{Plugin, Update},
+    app::{App, Plugin, Update},
     ecs::{
+        component::Component,
         entity::Entity,
+        event::EntityEvent,
+        message::{Message, MessageReader, MessageWriter},
         query::{With, Without},
         system::{Local, Query, Single, SystemParam},
     },
     math::{Dir3, I16Vec3, ShapeSample, U16Vec3, UVec3, Vec2, Vec3, primitives::Sphere},
     prelude::IntoScheduleConfigs,
+    reflect::Reflect,
     transform::components::{GlobalTransform, Transform},
+};
+use bevy_diesel::{
+    events::{HasDieselTarget, PosBound},
+    prelude::InvokedBy,
 };
 use bevy_diesel::{pipeline::propagate_system, prelude::SpatialBackend, target::Target};
 use bevy_gauge::{AttributeResolvable, prelude::AttributesAppExt};
+use bevy_gearbox::{AcceptAll, GearboxMessage, RegistrationAppExt};
 use bevy_ghx_grid::ghx_grid::cartesian::{
     coordinates::{Cartesian3D, CartesianPosition},
     grid::CartesianGrid,
@@ -27,18 +36,215 @@ use rand::{Rng, RngExt, SeedableRng};
 
 use crate::{
     GridCell,
-    states::{FromGrid, PlayingEntity, ToWorldPos},
+    projectiles::{ProjectilePlugin, debug_propagate_system},
+    states::{FromGrid, PlayingEntity, TeamHitFilter, ToWorldPos},
 };
+
+// Vec3 type aliases
+pub type GridInvokerTarget = bevy_diesel::target::InvokerTarget<CartesianPosition>;
+pub type GridTarget = bevy_diesel::target::Target<CartesianPosition>;
+pub type GridGoOff = bevy_diesel::effect::GoOff<CartesianPosition>;
+pub type GridStartInvoke = bevy_diesel::events::StartInvoke<CartesianPosition>;
+pub type GridStopInvoke = bevy_diesel::events::StopInvoke<CartesianPosition>;
+pub type GridOnRepeat = bevy_diesel::events::OnRepeat<CartesianPosition>;
+pub type GridOnSpawnOrigin = bevy_diesel::spawn::OnSpawnOrigin<CartesianPosition>;
+pub type GridOnSpawnTarget = bevy_diesel::spawn::OnSpawnTarget<CartesianPosition>;
+pub type GridOnSpawnInvoker = bevy_diesel::spawn::OnSpawnInvoker<CartesianPosition>;
+pub type GridTargetType = bevy_diesel::target::TargetType<CartesianPosition>;
+pub type GridTargetGenerator = bevy_diesel::target::TargetGenerator<crate::Grid3DBackend>;
+pub type GridTargetMutator = bevy_diesel::target::TargetMutator<crate::Grid3DBackend>;
+pub type GridSpawnConfig = bevy_diesel::spawn::SpawnConfig<crate::Grid3DBackend>;
+pub type GridGoOffConfig = bevy_diesel::effect::GoOffConfig<crate::Grid3DBackend>;
+
+#[derive(Debug, Clone, Reflect, PartialEq)]
+pub enum HitTargetKind {
+    Playing,
+    Cell,
+}
+
+/// Collision with an entity target.
+#[derive(Message, Clone, Debug, Reflect)]
+pub struct AbilityHitEntity {
+    pub entity: Entity,
+    pub target: GridTarget,
+    pub target_kind: HitTargetKind,
+}
+
+impl GearboxMessage for AbilityHitEntity {
+    type Validator = AcceptAll;
+    fn target(&self) -> Entity {
+        self.entity
+    }
+}
+
+impl AbilityHitEntity {
+    pub fn new(entity: Entity, target: GridTarget, target_kind: HitTargetKind) -> Self {
+        Self {
+            entity,
+            target,
+            target_kind,
+        }
+    }
+}
+
+/// Collision with a contact point position.
+#[derive(Message, Clone, Debug, Reflect)]
+pub struct AbilityHitPosition {
+    pub entity: Entity,
+    pub target: GridTarget,
+}
+
+impl GearboxMessage for AbilityHitPosition {
+    type Validator = AcceptAll;
+    fn target(&self) -> Entity {
+        self.entity
+    }
+}
+
+impl AbilityHitPosition {
+    pub fn new(entity: Entity, target: GridTarget) -> Self {
+        Self { entity, target }
+    }
+}
+
+impl HasDieselTarget<CartesianPosition> for AbilityHitEntity {
+    fn diesel_target(&self) -> GridTarget {
+        self.target
+    }
+}
+
+impl HasDieselTarget<CartesianPosition> for AbilityHitPosition {
+    fn diesel_target(&self) -> GridTarget {
+        self.target
+    }
+}
+
+pub trait HitFilter: Component + Clone + Debug + Send + Sync + 'static {
+    /// Component queried on invoker and target entities.
+    type Lookup: Component;
+
+    /// Return `true` if the ability should affect this target.
+    fn can_target(
+        &self,
+        invoker_data: Option<&Self::Lookup>,
+        target_data: Option<&Self::Lookup>,
+    ) -> bool;
+}
+
+pub struct HitFilterPlugin<F: HitFilter> {
+    _marker: PhantomData<F>,
+}
+
+impl<F: HitFilter> Default for HitFilterPlugin<F> {
+    fn default() -> Self {
+        Self {
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<F: HitFilter> Plugin for HitFilterPlugin<F> {
+    fn build(&self, app: &mut App) {
+        app.add_systems(Update, handle_hit_system::<F>);
+    }
+}
+
+#[derive(EntityEvent, Message)]
+pub struct HitReceived {
+    entity: Entity,
+    hit_by: Entity,
+}
+
+pub fn handle_unfiltered_hit_system<F: HitFilter>(
+    mut hit_events: MessageReader<HitReceived>,
+    invoker_q: Query<&InvokedBy>,
+    grid: Single<&CartesianGrid<Cartesian3D>>,
+    grid_cells_q: Query<&GridNode, With<GridCell>>,
+    grid_playing_q: Query<&CartesianPosition, With<PlayingEntity>>,
+    mut entity_writer: MessageWriter<AbilityHitEntity>,
+    mut position_writer: MessageWriter<AbilityHitPosition>,
+) {
+    let grid = grid.deref();
+
+    for hit in hit_events.read() {
+        if let Ok(cell) = grid_cells_q.get(hit.entity) {
+            let pos = grid.pos_from_index(cell.0);
+            entity_writer.write(AbilityHitEntity::new(
+                hit.entity,
+                GridTarget::entity(hit.hit_by, pos),
+                HitTargetKind::Cell,
+            ));
+        } else {
+            if let Ok(playing_pos) = grid_playing_q.get(hit.entity) {
+                entity_writer.write(AbilityHitEntity::new(
+                    hit.entity,
+                    GridTarget::entity(hit.hit_by, *playing_pos),
+                    HitTargetKind::Playing,
+                ));
+            }
+        }
+    }
+}
+
+pub fn handle_hit_system<F: HitFilter>(
+    mut hit_events: MessageReader<HitReceived>,
+    invoker_q: Query<&InvokedBy>,
+    grid: Single<&CartesianGrid<Cartesian3D>>,
+    grid_cells_q: Query<&GridNode, With<GridCell>>,
+    grid_playing_q: Query<&CartesianPosition, With<PlayingEntity>>,
+    filters_q: Query<&F>,
+    filter_lookup_q: Query<&F::Lookup>,
+    mut entity_writer: MessageWriter<AbilityHitEntity>,
+    mut position_writer: MessageWriter<AbilityHitPosition>,
+) {
+    let grid = grid.deref();
+
+    for hit in hit_events.read() {
+        match filters_q.get(hit.entity) {
+            Ok(filter) => {
+                let invoker_data = filter_lookup_q.get(hit.hit_by).ok();
+                let target_data = filter_lookup_q.get(hit.entity).ok();
+                if !filter.can_target(invoker_data, target_data) {
+                    continue;
+                }
+            }
+            Err(_) => {}
+        };
+
+        if let Ok(cell) = grid_cells_q.get(hit.entity) {
+            let pos = grid.pos_from_index(cell.0);
+            entity_writer.write(AbilityHitEntity::new(
+                hit.entity,
+                GridTarget::entity(hit.hit_by, pos),
+                HitTargetKind::Cell,
+            ));
+        } else {
+            if let Ok(playing_pos) = grid_playing_q.get(hit.entity) {
+                entity_writer.write(AbilityHitEntity::new(
+                    hit.entity,
+                    GridTarget::entity(hit.hit_by, *playing_pos),
+                    HitTargetKind::Playing,
+                ));
+            }
+        }
+    }
+}
 
 pub struct Grid3dDieselPlugin;
 
 impl Plugin for Grid3dDieselPlugin {
     fn build(&self, app: &mut bevy::app::App) {
+        app.add_message::<HitReceived>();
+        // app.add_message::<AbilityHitEntity>();
+        // app.add_message::<AbilityHitPosition>();
+        // app.add_message::<GridStartInvoke>();
+
+        // app.add_plugins(HitFilterPlugin::<TeamHitFilter>::default());
         app.add_plugins(Grid3DBackend::plugin_core());
 
         use bevy_diesel::bevy_gauge::prelude::AttributesAppExt;
-        app.register_attribute_derived::<bevy_diesel::spawn::SpawnConfig<Grid3DBackend>>();
-        app.register_attribute_derived::<bevy_diesel::target::TargetMutator<Grid3DBackend>>();
+        app.register_attribute_derived::<GridSpawnConfig>();
+        app.register_attribute_derived::<GridTargetMutator>();
 
         app.add_systems(
             bevy_diesel::bevy_gearbox::GearboxSchedule,
@@ -55,7 +261,7 @@ impl Plugin for Grid3dDieselPlugin {
             bevy_diesel::bevy_gearbox::GearboxSchedule,
             (
                 bevy_diesel::spawn::spawn_system::<Grid3DBackend>,
-                bevy_diesel::print::print_effect::<<Grid3DBackend as SpatialBackend>::Pos>,
+                bevy_diesel::print::print_effect::<CartesianPosition>,
             )
                 .in_set(bevy_diesel::DieselSet::Effects),
         );
@@ -68,13 +274,23 @@ impl Plugin for Grid3dDieselPlugin {
                 .in_set(bevy_diesel::gauge::SustainedModifierSet),
         );
 
+        app.add_plugins(ProjectilePlugin);
+
         // #TODO: Will need to do something similar
         // // Collision types + system (unfiltered - entities with Collides marker)
-        // app.register_transition::<collision::CollidedEntity>();
-        // app.register_side_effect::<collision::CollidedEntity, bevy_diesel::effect::GoOffOrigin<Vec3>>();
-        // app.register_transition::<collision::CollidedPosition>();
-        // app.register_side_effect::<collision::CollidedPosition, bevy_diesel::effect::GoOffOrigin<Vec3>>();
-        // collision::plugin(app);
+        app.register_transition::<AbilityHitEntity>();
+        app.register_transition::<AbilityHitPosition>();
+        app.register_transition::<GridStartInvoke>();
+
+        app.add_systems(
+            bevy_diesel::bevy_gearbox::GearboxSchedule,
+            (
+                bevy_diesel::events::go_off_side_effect::<AbilityHitEntity, CartesianPosition>
+                    .in_set(bevy_diesel::bevy_gearbox::GearboxPhase::SideEffectPhase),
+                bevy_diesel::events::go_off_side_effect::<AbilityHitPosition, CartesianPosition>
+                    .in_set(bevy_diesel::bevy_gearbox::GearboxPhase::SideEffectPhase),
+            ),
+        );
     }
 }
 
@@ -418,13 +634,13 @@ pub fn get_entity_targets_in_shape(
     potential_targets: &mut Vec<(Entity, CartesianPosition)>,
     shape: &GridCheckShape,
     sort_by_nearest: bool,
-) -> Vec<Target<CartesianPosition>> {
+) -> Vec<GridTarget> {
     let radius = match shape {
         GridCheckShape::Circle(r) => *r,
         GridCheckShape::Sphere(r) => *r,
     };
 
-    let mut unsorted: Vec<(f32, Target<CartesianPosition>)> = potential_targets
+    let mut unsorted: Vec<(f32, GridTarget)> = potential_targets
         .iter()
         .filter_map(|(e, node_pos)| {
             match shape {
@@ -439,7 +655,7 @@ pub fn get_entity_targets_in_shape(
             let distance = Vec3::new(node_pos.x as f32, node_pos.y as f32, node_pos.z as f32)
                 .distance(Vec3::new(origin.x as f32, origin.y as f32, origin.z as f32));
             if distance <= radius {
-                Some((distance, Target::entity(*e, *node_pos)))
+                Some((distance, GridTarget::entity(*e, *node_pos)))
             } else {
                 None
             }
