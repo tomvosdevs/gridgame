@@ -1,4 +1,4 @@
-use std::{any::Any, f32::consts::TAU, marker::PhantomData};
+use std::{any::Any, f32::consts::TAU, marker::PhantomData, time::Duration};
 
 use bevy::{
     app::{Plugin, Startup, Update},
@@ -19,7 +19,7 @@ use bevy::{
         world::{DeferredWorld, World},
     },
     log::tracing_subscriber::reload::Handle,
-    math::{Vec3, bool},
+    math::{Quat, Vec3, bool},
     mesh::Mesh3d,
     pbr::{MeshMaterial3d, StandardMaterial},
     picking::{
@@ -33,10 +33,15 @@ use bevy_ghx_grid::ghx_grid::cartesian::{
     grid::CartesianGrid,
 };
 use bevy_ghx_proc_gen::GridNode;
+use bevy_tween::{
+    prelude::{AnimationBuilderExt, EaseKind, TransformTargetStateExt},
+    tween::IntoTarget,
+};
 
 use crate::{
-    BLOCK_SIZE, GridCell, Health, HealthState, NODE_SIZE, tiles_templates::Targetable,
-    ui::CardDragData,
+    ActiveCamera, BLOCK_SIZE, GridCell, Health, HealthState, NODE_SIZE,
+    tiles_templates::Targetable,
+    ui::{CardDragData, CardUiTargetMesh, DraggedCard},
 };
 
 pub struct ActionPlugin;
@@ -102,17 +107,38 @@ pub fn handle_targetable_mouseover_check(
     e: On<Pointer<Over>>,
     mut cmd: Commands,
     q: Query<(Entity, &GlobalTransform, &Mesh3d), With<Targetable>>,
-    dragged_card_q: Query<(), With<CardDragData>>,
+    dragged_card: Res<DraggedCard>,
+    card_transforms_q: Query<&Transform, With<CardUiTargetMesh>>,
     mut highlighted_target: ResMut<HighlightedTarget>,
     materials: ResMut<Assets<StandardMaterial>>,
+    main_cam_q: Query<&Transform, With<ActiveCamera>>,
 ) {
-    if dragged_card_q.is_empty() {
+    let Some(card_entity) = dragged_card.entity else {
         return;
-    }
-    if let Ok((ent, global_tf, mesh)) = q.get(e.entity) {
-        println!("started over on : {:?}", ent);
-        highlighted_target.highlight_at_position(&mut cmd, global_tf, mesh, ent, materials);
-    }
+    };
+    let Ok(card_tf) = card_transforms_q.get(card_entity) else {
+        return;
+    };
+    let Ok((ent, global_tf, mesh)) = q.get(e.entity) else {
+        return;
+    };
+    let cam_tf = main_cam_q.single().expect("found more than one active cam");
+
+    let target = card_entity.into_target();
+    let mut tween_start = target.transform_state(*card_tf);
+    let mut new_tf = card_tf.clone();
+    let base_rotation = Transform::default()
+        .looking_to(cam_tf.forward(), Vec3::Y)
+        .rotation;
+    new_tf.rotation = base_rotation * Quat::from_rotation_x(-70.0_f32.to_radians());
+    let tween = tween_start.rotation_to(new_tf.rotation);
+    cmd.entity(card_entity).animation().insert_tween_here(
+        Duration::from_millis(200),
+        EaseKind::CubicOut,
+        tween,
+    );
+
+    highlighted_target.highlight_at_position(&mut cmd, global_tf, mesh, ent, materials);
 }
 
 pub fn handle_targetable_mouseout_check(

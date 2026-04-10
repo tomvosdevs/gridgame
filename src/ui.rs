@@ -20,6 +20,7 @@ use bevy::{
         message::{MessageReader, MessageWriter},
         observer::On,
         query::{Added, With, Without},
+        resource::Resource,
         schedule::IntoScheduleConfigs,
         spawn::SpawnRelated,
         system::{Commands, Local, Query, Res, ResMut},
@@ -28,12 +29,12 @@ use bevy::{
     image::Image,
     input::{ButtonState, mouse::MouseButton},
     math::{
-        AspectRatio, Dir3, Quat, Vec2, Vec3,
+        AspectRatio, Dir3, Quat, Vec2, Vec3, VectorSpace,
         curve::EaseFunction,
         primitives::{Cuboid, InfinitePlane3d, Plane3d, Rectangle},
     },
     mesh::{Mesh, Mesh3d},
-    pbr::{MeshMaterial3d, StandardMaterial},
+    pbr::{ExtendedMaterial, MeshMaterial3d, StandardMaterial},
     picking::{
         Pickable, PickingSystems,
         backend::ray::RayMap,
@@ -67,7 +68,8 @@ use bevy_tween::{
     tween::{AnimationTarget, IntoTarget},
 };
 use bevy_tweening::{
-    EntityCommandsTweeningExtensions, Tween, TweenAnim, TweeningPlugin, lens::TransformPositionLens,
+    EntityCommandsTweeningExtensions, Tween, TweenAnim, TweeningPlugin,
+    lens::{TransformPositionLens, TransformScaleLens},
 };
 use bevy_ui_anchor::{AnchorPoint, AnchorUiConfig, AnchorUiNode, AnchorUiPlugin, AnchoredUiNodes};
 use haalka::{
@@ -81,7 +83,7 @@ use haalka::{
 };
 
 use crate::{
-    ActiveCamera, CursorTarget, Health, MaxHealth,
+    ActiveCamera, CursorTarget, Health, MaxHealth, SkewMaterial,
     actions::HighlightedTarget,
     deck_and_cards::{Card, CardDrawn},
     startup_3d,
@@ -109,6 +111,7 @@ impl Plugin for GameUiPlugin {
             // .add_systems(Startup, setup_diegetic_ui.after(startup_3d))
             // TODO: Add this back for input handling
             // .add_systems(First, drive_diegetic_pointer.in_set(PickingSystems::Input))
+            .insert_resource(DraggedCard::empty())
             .add_systems(Update, tag_active_camera)
             .add_systems(Update, draw_cursor_target_health_ui)
             .add_systems(
@@ -285,7 +288,7 @@ fn spawn_card_diegetic_ui(
     e: On<CardUiSpawned>,
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut materials: ResMut<Assets<ExtendedMaterial<StandardMaterial, SkewMaterial>>>,
     mut images: ResMut<Assets<Image>>,
     main_3d_cam_q: Query<&Transform, (With<Camera3d>, With<ActiveCamera>)>,
 ) {
@@ -350,24 +353,32 @@ fn spawn_card_diegetic_ui(
     let card_mesh_height = card_mesh_max_side_length * aspect_ratio_multiplier.y;
     let mesh_handle = meshes.add(Rectangle::new(card_mesh_width, card_mesh_height));
 
-    // This material has the texture that has been rendered.
-    let material_handle = materials.add(StandardMaterial {
-        base_color_texture: Some(image_handle),
-        perceptual_roughness: 1.0,
-        cull_mode: None,
-        alpha_mode: AlphaMode::Blend,
-        // emissive_exposure_weight: 0.8,
-        // #TODO: See how to make the card react to light
-        // a bit while still being lit enough to be readable
-        unlit: true,
-        ..default()
-    });
-
     let cam_forward = main_cam_tf.forward();
     let cam_left = main_cam_tf.left();
     let cam_right = main_cam_tf.right();
     let cam_down = main_cam_tf.down();
     let cam_up = main_cam_tf.up();
+
+    // This material has the texture that has been rendered.
+    let material_handle = materials.add(ExtendedMaterial {
+        base: StandardMaterial {
+            base_color_texture: Some(image_handle),
+            perceptual_roughness: 1.0,
+            cull_mode: None,
+            alpha_mode: AlphaMode::Blend,
+            // emissive_exposure_weight: 0.8,
+            // #TODO: See how to make the card react to light
+            // a bit while still being lit enough to be readable
+            unlit: true,
+            ..default()
+        },
+        extension: SkewMaterial {
+            skew: Vec3::new(0.3, 0.0, 0.0),
+            offset: Vec3::ZERO,
+            flatten: 1.0,
+            _pad0: 0.0,
+        },
+    });
 
     let gap = 1.0;
     let margin = 0.7;
@@ -419,24 +430,43 @@ pub struct CardDragData {
     pub prev_global_pointer_pos: Option<Vec3>,
 }
 
+#[derive(Resource)]
+pub struct DraggedCard {
+    pub entity: Option<Entity>,
+    pub distance: Vec2,
+}
+
+impl DraggedCard {
+    pub fn new(entity: Entity, distance: Vec2) -> Self {
+        Self {
+            entity: Some(entity),
+            distance,
+        }
+    }
+
+    pub fn empty() -> Self {
+        Self {
+            entity: None,
+            distance: Vec2::ZERO,
+        }
+    }
+
+    pub fn reset(self: &mut Self) {
+        self.entity = None;
+        self.distance = Vec2::ZERO;
+    }
+}
+
 pub fn dragstart_card_mesh(
     e: On<Pointer<DragStart>>,
     mut cmd: Commands,
     time: Res<Time>,
     mut q: Query<(Entity, &Transform, &GlobalTransform), With<CardUiTargetMesh>>,
+    mut dragged_card: ResMut<DraggedCard>,
 ) {
     let (mesh_ent, mesh_tf, mesh_global_tf) = q
         .get_mut(e.entity)
         .expect("didn't find all needed components");
-
-    let tween = Tween::new(
-        EaseFunction::QuadraticOut,
-        Duration::from_secs_f32(0.28),
-        TransformPositionLens {
-            start: mesh_tf.translation,
-            end: mesh_tf.translation,
-        },
-    );
 
     cmd.entity(mesh_ent).insert((
         DragStartWorldPos(mesh_tf.clone()),
@@ -447,24 +477,23 @@ pub fn dragstart_card_mesh(
             prev_global_pointer_pos: None,
             intended_translation: mesh_tf.translation,
         },
-        TweenAnim::new(tween).with_destroy_on_completed(false),
     ));
+
+    dragged_card.entity = Some(mesh_ent);
 }
 
 pub fn drag_card_mesh(
     e: On<Pointer<Drag>>,
     mut cmd: Commands,
     time: Res<Time>,
-    mut q: Query<
-        (&Transform, &mut CardDragData, &mut TweenAnim),
-        (With<Mesh3d>, With<CardUiTargetMesh>),
-    >,
+    mut q: Query<(&Transform, &mut CardDragData), (With<Mesh3d>, With<CardUiTargetMesh>)>,
     main_cam_q: Query<(&Camera, &GlobalTransform), (With<ActiveCamera>, With<Camera3d>)>,
+    mut dragged_card: ResMut<DraggedCard>,
 ) {
     println!("in drag before checks");
     let (main_cam, main_cam_tf) = main_cam_q.single().expect("found more than one cam3d");
-    cmd.entity(e.entity).log_components();
-    let Ok((mesh_tf, mut drag_data, mut tween_anim)) = q.get_mut(e.entity) else {
+    // cmd.entity(e.entity).log_components();
+    let Ok((mesh_tf, mut drag_data)) = q.get_mut(e.entity) else {
         println!("nope");
         // the drag event might fire before DragStart ?
         return;
@@ -510,87 +539,55 @@ pub fn drag_card_mesh(
 
     let movement_since_last_anim = pointer_world_pos - drag_data.prev_global_pointer_pos.unwrap();
     drag_data.intended_translation += movement_since_last_anim;
-    let tween = Tween::new(
-        EaseFunction::QuadraticOut,
-        tween_anim
-            .tweenable()
-            .total_duration()
-            .as_finite()
-            .expect("expected finite duration"),
-        TransformPositionLens {
-            start: mesh_tf.translation,
-            end: drag_data.intended_translation,
-        },
+
+    dragged_card.distance = e.distance;
+
+    let target = e.entity.into_target();
+    let mut tween_start = target.transform_state(*mesh_tf);
+    let min_scale_factor: f32 = 0.5;
+    println!("LEN = {:?}", e.distance.length());
+    let scale_factor = (min_scale_factor
+        - (((e.distance.y.abs() / 130.0).min(1.0)) * min_scale_factor))
+        + min_scale_factor;
+    let scale_end = Vec3::splat(scale_factor);
+    let scale_tween = tween_start.scale_to(scale_end);
+    let translation_tween = tween_start.translation_to(drag_data.intended_translation);
+    cmd.entity(e.entity).animation().insert_tween_here(
+        Duration::from_millis(95),
+        EaseKind::CubicOut,
+        (scale_tween, translation_tween),
     );
-
-    tween_anim
-        .set_tweenable(tween)
-        .expect("could not set tweenable");
-
     drag_data.prev_global_pointer_pos = Some(pointer_world_pos);
 }
 
 pub fn dragend_card_mesh(
     e: On<Pointer<DragEnd>>,
     mut cmd: Commands,
-    mut q: Query<
-        (Entity, &Transform, &DragStartWorldPos, &mut TweenAnim),
-        (With<Mesh3d>, With<CardUiTargetMesh>),
-    >,
+    mut q: Query<(Entity, &Transform, &DragStartWorldPos), (With<Mesh3d>, With<CardUiTargetMesh>)>,
     mut highlighted_target: ResMut<HighlightedTarget>,
+    mut dragged_card: ResMut<DraggedCard>,
 ) {
-    let Ok((mesh_ent, mesh_tf, mesh_drag_start_tf, mut tween_anim)) = q.get_mut(e.entity) else {
+    let Ok((mesh_ent, mesh_tf, mesh_drag_start_tf)) = q.get_mut(e.entity) else {
         return;
     };
 
     highlighted_target.reset_and_remove_highlighter(&mut cmd);
 
-    let tween = Tween::new(
-        EaseFunction::CircularOut,
-        Duration::from_millis(300),
-        TransformPositionLens {
-            start: mesh_tf.translation,
-            end: mesh_drag_start_tf.0.translation,
-        },
+    let target = e.entity.into_target();
+    let mut tween_start = target.transform_state(*mesh_tf);
+    let scale_end = Vec3::splat(1.0);
+    let scale_tween = tween_start.scale_to(scale_end);
+    let translation_tween = tween_start.translation_to(mesh_drag_start_tf.0.translation);
+    cmd.entity(e.entity).animation().insert_tween_here(
+        Duration::from_millis(95),
+        EaseKind::CubicOut,
+        (scale_tween, translation_tween),
     );
 
     let mut mesh_ent_cmds = cmd.entity(mesh_ent);
     mesh_ent_cmds.remove::<CardDragData>();
     mesh_ent_cmds.remove::<DragStartWorldPos>();
-    mesh_ent_cmds.insert(TweenAnim::new(tween).with_destroy_on_completed(true));
-}
-
-pub fn over_moveup_card_mesh(
-    mut e: On<Pointer<Over>>,
-    mut cmd: Commands,
-    mut q: Query<&mut Transform, (With<Mesh3d>, With<CardUiTargetMesh>)>,
-) {
-    let Ok(mut mesh_tf) = q.get_mut(e.entity) else {
-        return;
-    };
-
-    let end = mesh_tf.translation + Vec3::new(0., 3., 0.);
-    let target = e.entity.into_target();
-    let mut transform_state = target.transform_state(*mesh_tf);
-    let tween = transform_state.translation_to(end);
-    cmd.entity(e.entity).animation().insert_tween_here(
-        Duration::from_millis(500),
-        EaseKind::QuadraticIn,
-        tween,
-    );
-}
-
-pub fn leave_moveback_card_mesh(
-    mut e: On<Pointer<Out>>,
-    mut cmd: Commands,
-    mut q: Query<(&mut Transform, &mut TimeRunner), (With<Mesh3d>, With<CardUiTargetMesh>)>,
-) {
-    let Ok((mut mesh_tf, mut time_runner)) = q.get_mut(e.entity) else {
-        return;
-    };
-
-    println!("Over leave");
-    time_runner.set_direction(TimeDirection::Backward);
+    dragged_card.reset();
 }
 
 pub enum UiDataLevel {

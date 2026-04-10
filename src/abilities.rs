@@ -147,12 +147,12 @@ impl<'w, 's, 'c> AbilityTemplateBuilder<'w, 's, 'c, CommandsPassed> {
                     .id();
             });
 
-        println!("inserted effect with comps =>");
-        self.commands
-            .as_mut()
-            .unwrap()
-            .entity(new_effect_entity)
-            .log_components();
+        // println!("inserted effect with comps =>");
+        // self.commands
+        //     .as_mut()
+        //     .unwrap()
+        //     .entity(new_effect_entity)
+        //     .log_components();
 
         self.entities_hierarchy.insert(name, new_effect_entity);
 
@@ -292,7 +292,7 @@ pub fn projectile_template(commands: &mut Commands, entity: Option<Entity>) -> E
     });
 
     println!("projectile components :  -->");
-    commands.entity(entity).log_components();
+    // commands.entity(entity).log_components();
 
     entity
 }
@@ -364,7 +364,7 @@ pub fn basic_projectile_ability(commands: &mut Commands, entity: Option<Entity>)
         );
 
         parent.spawn_transition::<GridStartInvoke>(ready, invoke);
-        // parent.spawn_transition_always(invoke, ready);
+        parent.spawn_transition_always(invoke, ready);
 
         let commands = parent.commands_mut();
         commands

@@ -1066,7 +1066,7 @@ impl SpatialBackend for Grid3DBackend {
                             random_in_shape(rng.clone(), &SmoothingShape::Circle(*radius as u32));
                         let pos = CartesianPosition::new(
                             (origin.x as i32 + rand_x) as u32,
-                            origin.y,
+                            origin.y + 4,
                             (origin.z as i32 + rand_z) as u32,
                         );
                         Target::position(pos)

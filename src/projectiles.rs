@@ -30,6 +30,7 @@ use bevy_ghx_grid::ghx_grid::cartesian::{
 };
 
 use crate::{
+    NODE_SIZE,
     grid_abilities_backend::{Grid3DBackend, GridGoOff, GridStartInvoke, GridTarget},
     states::{FromGrid, ToWorldPos},
 };
@@ -74,103 +75,7 @@ pub struct ProjectilePlugin;
 impl Plugin for ProjectilePlugin {
     fn build(&self, app: &mut App) {
         app.add_observer(init_projectile)
-            .add_systems(Update, (move_projectiles, test_log_projectile))
-            .add_observer(|e: On<Add, Name>, q: Query<&Name>| {
-                if let Ok(name) = q.get(e.entity) {
-                    println!("New name spawned : {:?}", name);
-                }
-            })
-            .add_systems(Update, debug_pipeline);
-    }
-}
-
-fn debug_pipeline(
-    mut origin_reader: MessageReader<GoOffOrigin<CartesianPosition>>,
-    mut go_off_reader: MessageReader<GridGoOff>,
-    mut start_invoke_reader: MessageReader<GridStartInvoke>,
-    mut m_start_invoke_reader: MessageReader<Matched<GridStartInvoke>>,
-    q_entered: Query<(Entity, &Active), Added<Active>>,
-    q_names: Query<&Name>,
-    // q_transitions: Query<&Transitions>,
-    // q_source: Query<&Source>,
-    // q_target: Query<&Target>,
-    q_children: Query<&Children>,
-    mut cmd: Commands,
-) {
-    for i in start_invoke_reader.read() {
-        println!("received START INVOKE : {:?} -> {:?}", i.entity, i.target)
-    }
-    for i in m_start_invoke_reader.read() {
-        println!("received M_START INVOKE : {:?} -> {:?}", i.source, i.target)
-    }
-
-    // for ts in &q_transitions {
-    //     for t in ts {
-    //         if let Ok(src) = q_source.get(*t) {
-    //             if let Ok(tgt) = q_source.get(*t) {
-    //                 println!(
-    //                     "this is a transition from : {:?} to -> {:?}",
-    //                     q_names.get(src.0).unwrap(),
-    //                     q_names.get(tgt.0).unwrap()
-    //                 );
-    //             }
-    //         }
-    //     }
-    // }
-    for (e, a) in &q_entered {
-        println!(
-            "entered state {:?}",
-            q_names.get(e).unwrap_or(&Name::new("No Entity Name"))
-        );
-
-        cmd.entity(e).log_components();
-
-        // if let Ok(ts) = q_transitions.get(e) {
-        //     println!("transitions : {:?}", ts);
-        //     for t in ts {
-        //         if let Ok(tn) = q_names.get(*t) {
-        //             println!("found transitions = {:?}", tn);
-        //         }
-        //     }
-        // }
-
-        if let Ok(ch) = q_children.get(e) {
-            for c in ch {
-                if let Ok(cn) = q_names.get(*c) {
-                    println!("found child = {:?}", cn);
-                }
-            }
-        }
-    }
-    for msg in origin_reader.read() {
-        println!(
-            "GoOffOrigin on {:?} with target {:?}",
-            msg.entity, msg.target
-        );
-    }
-    for msg in go_off_reader.read() {
-        println!("GoOff on {:?} with target {:?}", msg.entity, msg.target);
-    }
-}
-
-fn test_log_projectile(
-    q_projectile: Query<(&ProjectileEffect, Option<&GridTarget>, Option<&Transform>)>,
-    q_grid_target: Query<(Entity, &GridTarget)>,
-    mut cmd: Commands,
-) {
-    for (et, gt) in &q_grid_target {
-        println!("There is a target with -->");
-        cmd.entity(et).log_components();
-    }
-
-    for (proj, gt, tf) in q_projectile {
-        println!("--> found projectile effect");
-        if let Some(gt) = gt {
-            println!("--> found Grid target");
-        }
-        if let Some(tf) = tf {
-            println!("--> found transform");
-        }
+            .add_systems(Update, move_projectiles);
     }
 }
 
@@ -186,7 +91,8 @@ fn init_projectile(
         return;
     };
 
-    let target_world_pos = target.position.as_world_pos(grid_tf.translation());
+    let target_world_pos =
+        target.position.as_world_pos(grid_tf.translation()) - Vec3::new(0., NODE_SIZE.y, 0.);
     println!(
         "pos of target was and is : {:?} -> {:?}",
         target.position, target_world_pos
@@ -207,7 +113,6 @@ pub fn move_projectiles(
     time: Res<Time>,
 ) {
     for (projectile, mut tf) in &mut projectiles_q {
-        println!("--> moving projectile");
         tf.translation += projectile.dir * projectile.speed * time.delta_secs();
     }
 }

@@ -10,8 +10,11 @@ use bevy::color::palettes::tailwind::{GRAY_300, ORANGE_400};
 use bevy::light::DirectionalLightShadowMap;
 use bevy::log::LogPlugin;
 use bevy::math::VectorSpace;
+use bevy::pbr::{ExtendedMaterial, MaterialExtension};
 use bevy::platform::collections::Equivalent;
 use bevy::prelude::*;
+use bevy::render::render_resource::{AsBindGroup, ShaderType};
+use bevy::shader::ShaderRef;
 use bevy_diesel::prelude::SpatialBackend;
 use bevy_ecs_tilemap::helpers::square_grid::diamond::INV_DIAMOND_BASIS;
 use bevy_ecs_tilemap::helpers::square_grid::neighbors::Neighbors;
@@ -693,6 +696,7 @@ fn startup_3d(
     let grid = CartesianGrid::new_cartesian_3d(GRID_X, GRID_HEIGHT, GRID_Z, false, false, false);
 
     let mut initial_grid_constraints = grid.new_grid_data(None);
+    // initial_grid_constraints.set_all_y(0, Some(ground_rock_instance));
     *initial_grid_constraints.get_3d_mut(12, 0, 12) = Some(water_instance);
 
     let gen_builder = GeneratorBuilder::new()
@@ -813,6 +817,30 @@ pub fn sync_cursor_target(
     }
 }
 
+#[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
+pub struct SkewMaterial {
+    #[uniform(100)]
+    pub skew: Vec3,
+    #[uniform(100)]
+    pub _pad0: f32,
+    #[uniform(100)]
+    pub offset: Vec3,
+    #[uniform(100)]
+    pub flatten: f32,
+}
+
+impl MaterialExtension for SkewMaterial {
+    fn vertex_shader() -> ShaderRef {
+        "shaders/skew_material.wgsl".into()
+    }
+    fn prepass_vertex_shader() -> ShaderRef {
+        "shaders/skew_material.wgsl".into()
+    }
+    fn deferred_vertex_shader() -> ShaderRef {
+        "shaders/skew_material.wgsl".into()
+    }
+}
+
 fn main() {
     App::new()
         .add_plugins((
@@ -836,6 +864,7 @@ fn main() {
         ))
         .add_plugins(TilemapPlugin)
         .add_plugins((
+            MaterialPlugin::<ExtendedMaterial<StandardMaterial, SkewMaterial>>::default(),
             EffectsPlugin,
             ActionPlugin,
             GameUiPlugin,

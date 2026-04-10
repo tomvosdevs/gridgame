@@ -336,11 +336,12 @@ pub fn spawn_combat_playing_entities(
     let rand_offset_x = rand::rng().random_range(2..4);
     let rand_offset_z = rand::rng().random_range(2..4);
 
-    let rand_pos = center_pos.as_ivec2() + IVec2::new(rand_offset_x, rand_offset_z);
+    let rand_pos = IVec2::new(found_tf.1.x as i32, found_tf.1.z as i32)
+        + IVec2::new(rand_offset_x, rand_offset_z);
 
     let rand_grid_pos = CartesianPosition {
         x: rand_pos.x as u32,
-        y: 6,
+        y: found_tf.1.y,
         z: rand_pos.y as u32,
     };
 
