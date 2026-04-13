@@ -84,7 +84,7 @@ use haalka::{
 
 use crate::{
     ActiveCamera, CursorTarget, Health, MaxHealth, SkewMaterial,
-    actions::{HighlightedTarget, RotationAnimatedBy},
+    actions::{CardAnimatedBy, HighlightedTarget},
     deck_and_cards::{Card, CardDrawn},
     startup_3d,
 };
@@ -564,14 +564,12 @@ pub fn dragend_card_mesh(
     mut q: Query<(Entity, &Transform, &DragStartWorldPos), (With<Mesh3d>, With<CardUiTargetMesh>)>,
     mut highlighted_target: ResMut<HighlightedTarget>,
     mut dragged_card: ResMut<DraggedCard>,
-    rotation_animated_by_q: Query<&RotationAnimatedBy, With<CardUiTargetMesh>>,
+    mut card_animated_by_q: Query<&mut CardAnimatedBy, With<CardUiTargetMesh>>,
     mut time_runners_q: Query<&mut TimeRunner>,
 ) {
     if let Some(card_entity) = dragged_card.entity {
-        if let Ok(animated_by) = rotation_animated_by_q.get(card_entity) {
-            if let Ok(mut time_runner) = time_runners_q.get_mut(animated_by.animator_entity) {
-                time_runner.set_direction(TimeDirection::Backward);
-            }
+        if let Ok(mut animated_by) = card_animated_by_q.get_mut(card_entity) {
+            animated_by.needs_rotation_setup = true;
         }
     }
     let Ok((mesh_ent, mesh_tf, mesh_drag_start_tf)) = q.get_mut(e.entity) else {
