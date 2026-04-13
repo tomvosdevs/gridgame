@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-bevy = { version = "0.18.0", features = ["bevy_gltf", "debug"] }
+bevy = { version = "0.18.0", features = ["bevy_gltf", "debug", "dynamic_linking"] }
 bevy-trait-query = "0.18.0"
 bevy_diesel = { git = "https://github.com/DEMIURGE-studio/bevy_diesel.git", branch="main" }
 bevy_gauge = { git = "https://github.com/DEMIURGE-studio/bevy_gauge.git", branch="main" }
@@ -12,9 +12,10 @@ bevy_gearbox = { git = "https://github.com/DEMIURGE-studio/bevy_gearbox.git", br
 bevy_ecs_tilemap = "0.18.1"
 bevy_ghx_grid = "0.8.0"
 bevy_ghx_proc_gen = {version = "0.8.0", features = ["bevy_ghx_grid"]}
-bevy_tween = "0.12.0"
+bevy_tween = {version = "0.12.0", features = ["bevy_asset"]}
 bevy_tweening = "0.15.0"
 bevy_ui_anchor = "0.11.0"
+bevy_dylib = { version = "0.18.0-rc.2" }
 haalka = "0.7.1"
 inventory = "0.3.24"
 rand = "0.10"

@@ -3,6 +3,7 @@ use std::{any::Any, f32::consts::TAU, marker::PhantomData, time::Duration};
 use bevy::{
     app::{Plugin, Startup, Update},
     asset::Assets,
+    camera::{Camera, primitives::Aabb},
     color::{Color, Srgba},
     ecs::{
         bundle::Bundle,
@@ -21,10 +22,11 @@ use bevy::{
     log::tracing_subscriber::reload::Handle,
     math::{Quat, Vec3, bool},
     mesh::Mesh3d,
-    pbr::{MeshMaterial3d, StandardMaterial},
+    pbr::{ExtendedMaterial, MeshMaterial3d, StandardMaterial},
     picking::{
         Pickable,
-        events::{DragEnd, Out, Over, Pointer},
+        events::{DragEnd, Move, Out, Over, Pointer},
+        hover::HoverMap,
     },
     transform::components::{GlobalTransform, Transform},
 };
@@ -34,12 +36,14 @@ use bevy_ghx_grid::ghx_grid::cartesian::{
 };
 use bevy_ghx_proc_gen::GridNode;
 use bevy_tween::{
+    bevy_time_runner::TimeRunner,
     prelude::{AnimationBuilderExt, EaseKind, TransformTargetStateExt},
-    tween::IntoTarget,
+    tween::{self, AssetTween, IntoTarget, TargetAsset, Tween},
 };
 
 use crate::{
-    ActiveCamera, BLOCK_SIZE, GridCell, Health, HealthState, NODE_SIZE,
+    ActiveCamera, BLOCK_SIZE, GridCell, Health, HealthState, InterpolateSkew, NODE_SIZE, SkewData,
+    SkewMaterial,
     tiles_templates::Targetable,
     ui::{CardDragData, CardUiTargetMesh, DraggedCard},
 };
@@ -54,6 +58,7 @@ impl Plugin for ActionPlugin {
         })
         .add_systems(Startup, (setup_reactions, setup_actions_observers).chain())
         .add_observer(handle_targetable_mouseover_check)
+        .add_observer(handle_targetable_mousemove_check)
         .add_observer(handle_targetable_mouseout_check);
     }
 }
@@ -103,48 +108,279 @@ impl HighlightedTarget {
     }
 }
 
+#[derive(Component)]
+pub struct RotationAnimatedBy {
+    pub animator_entity: Entity,
+    pub target: TargetAsset<ExtendedMaterial<StandardMaterial, SkewMaterial>>,
+}
+
+impl RotationAnimatedBy {
+    pub fn new(
+        animator_entity: Entity,
+        target: TargetAsset<ExtendedMaterial<StandardMaterial, SkewMaterial>>,
+    ) -> Self {
+        Self {
+            animator_entity,
+            target,
+        }
+    }
+}
+
 pub fn handle_targetable_mouseover_check(
     e: On<Pointer<Over>>,
     mut cmd: Commands,
-    q: Query<(Entity, &GlobalTransform, &Mesh3d), With<Targetable>>,
+    targetables_q: Query<(Entity, &GlobalTransform, &Mesh3d, &Aabb), With<Targetable>>,
     dragged_card: Res<DraggedCard>,
-    card_transforms_q: Query<&Transform, With<CardUiTargetMesh>>,
+    rotation_animated_by_q: Query<&RotationAnimatedBy, With<CardUiTargetMesh>>,
+    skew_material_q: Query<
+        &MeshMaterial3d<ExtendedMaterial<StandardMaterial, SkewMaterial>>,
+        With<CardUiTargetMesh>,
+    >,
+    mut time_runners_q: Query<&mut TimeRunner>,
+    cards_q: Query<(&Transform, &GlobalTransform, &Aabb), With<CardUiTargetMesh>>,
     mut highlighted_target: ResMut<HighlightedTarget>,
     materials: ResMut<Assets<StandardMaterial>>,
-    main_cam_q: Query<&Transform, With<ActiveCamera>>,
+    main_cam_q: Query<(&Transform, &GlobalTransform, &Camera), With<ActiveCamera>>,
+    skew_materials: Res<Assets<ExtendedMaterial<StandardMaterial, SkewMaterial>>>,
+    mut tweens: Query<
+        &mut Tween<TargetAsset<ExtendedMaterial<StandardMaterial, SkewMaterial>>, InterpolateSkew>,
+    >,
 ) {
+    // ==> Handle highlight
+    let Ok((target_ent, target_global_tf, target_mesh, target_aabb)) = targetables_q.get(e.entity)
+    else {
+        return;
+    };
     let Some(card_entity) = dragged_card.entity else {
         return;
     };
-    let Ok(card_tf) = card_transforms_q.get(card_entity) else {
-        return;
-    };
-    let Ok((ent, global_tf, mesh)) = q.get(e.entity) else {
-        return;
-    };
-    let cam_tf = main_cam_q.single().expect("found more than one active cam");
 
-    let target = card_entity.into_target();
-    let mut tween_start = target.transform_state(*card_tf);
-    let mut new_tf = card_tf.clone();
+    highlighted_target.highlight_at_position(
+        &mut cmd,
+        target_global_tf,
+        target_mesh,
+        target_ent,
+        materials,
+    );
+
+    let Ok(card_material) = skew_material_q.get(card_entity) else {
+        return;
+    };
+
+    let Ok((card_tf, card_global_tf, card_aabb)) = cards_q.get(card_entity) else {
+        return;
+    };
+
+    let (cam_tf, cam_global_tf, cam) = main_cam_q.single().expect("found more than one active cam");
+
+    let viewport_size = cam.logical_viewport_size().unwrap();
+    let card_center = card_global_tf.translation() + card_aabb.center.to_vec3();
+    let card_view_pos = cam
+        .world_to_viewport(cam_global_tf, card_center)
+        .expect("card isn't in the view")
+        / viewport_size;
+
+    let target_center = target_global_tf.translation() + target_aabb.center.to_vec3();
+    let target_view_pos = cam
+        .world_to_viewport(cam_global_tf, target_center)
+        .expect("target isn't in the view")
+        / viewport_size;
+
+    // If the animator is already setup, we can just modify the existing animation
+    if let Ok(animated_by) = rotation_animated_by_q.get(card_entity) {
+        if let Ok(mut time_runner) = time_runners_q.get_mut(animated_by.animator_entity) {
+            // for mut tw in &mut tweens {
+            //     time_runner.set(duration)
+            //     tw.interpolator.end =
+            // }
+            println!("tweens count : {:?}", tweens.count());
+            time_runner.set_direction(bevy_tween::prelude::TimeDirection::Forward);
+
+            let current_skew: SkewData = skew_materials
+                .get(card_material.id())
+                .expect("could not find skew material")
+                .clone()
+                .extension
+                .into();
+
+            let tween_end = current_skew
+                .clone()
+                .with_target_pos(target_view_pos)
+                .with_card_pos(card_view_pos)
+                .with_tilt_strength(0.35);
+
+            let tween_interpolator = InterpolateSkew {
+                start: current_skew,
+                end: tween_end,
+            };
+
+            let mut tween = AssetTween::new(tween_interpolator);
+            tween.target = animated_by.target.clone();
+
+            cmd.entity(animated_by.animator_entity)
+                .animation()
+                .insert_tween_here(Duration::from_millis(200), EaseKind::CubicOut, tween);
+            return;
+        }
+    };
+
+    // ==> Handle tween setup (only called first time, or should only lol)
     let base_rotation = Transform::default()
         .looking_to(cam_tf.forward(), Vec3::Y)
         .rotation;
-    new_tf.rotation = base_rotation * Quat::from_rotation_x(-70.0_f32.to_radians());
-    let tween = tween_start.rotation_to(new_tf.rotation);
-    cmd.entity(card_entity).animation().insert_tween_here(
-        Duration::from_millis(200),
-        EaseKind::CubicOut,
-        tween,
-    );
 
-    highlighted_target.highlight_at_position(&mut cmd, global_tf, mesh, ent, materials);
+    let rotation_tween = {
+        let target = card_entity.into_target();
+        let mut tween_start = target.transform_state(*card_tf);
+        let mut new_tf = card_tf.clone();
+
+        new_tf.rotation = base_rotation * Quat::from_rotation_x(-40.0_f32.to_radians());
+        tween_start.rotation_to(new_tf.rotation)
+    };
+
+    let asset_target = TargetAsset::Asset(card_material.0.clone());
+    let skew_tween = {
+        let current_skew: SkewData = skew_materials
+            .get(card_material.id())
+            .expect("could not find skew material")
+            .clone()
+            .extension
+            .into();
+
+        let tween_start = current_skew
+            .clone()
+            .with_target_pos(target_view_pos)
+            .with_card_pos(card_view_pos)
+            .with_tilt_strength(0.0);
+
+        let tween_end = current_skew
+            .clone()
+            .with_target_pos(target_view_pos)
+            .with_card_pos(card_view_pos)
+            .with_tilt_strength(0.35);
+
+        let tween_interpolator = InterpolateSkew {
+            start: tween_start,
+            end: tween_end,
+        };
+
+        let mut tween = AssetTween::new(tween_interpolator);
+        tween.target = asset_target.clone();
+        tween
+    };
+
+    let animation_handler_entity = cmd
+        .spawn_empty()
+        .animation()
+        .insert_tween_here(
+            Duration::from_millis(200),
+            EaseKind::CubicOut,
+            // (
+            //     rotation_tween,
+            skew_tween, // ),
+        )
+        .id();
+
+    cmd.entity(card_entity).insert(RotationAnimatedBy::new(
+        animation_handler_entity,
+        asset_target,
+    ));
+}
+
+pub fn handle_targetable_mousemove_check(
+    e: On<Pointer<Move>>,
+    mut cmd: Commands,
+    targetables_q: Query<(&GlobalTransform, &Aabb), With<Targetable>>,
+    dragged_card: Res<DraggedCard>,
+    rotation_animated_by_q: Query<&RotationAnimatedBy, With<CardUiTargetMesh>>,
+    skew_material_q: Query<
+        &MeshMaterial3d<ExtendedMaterial<StandardMaterial, SkewMaterial>>,
+        With<CardUiTargetMesh>,
+    >,
+    mut time_runners_q: Query<&mut TimeRunner>,
+    cards_q: Query<(&GlobalTransform, &Aabb), With<CardUiTargetMesh>>,
+    main_cam_q: Query<(&GlobalTransform, &Camera), With<ActiveCamera>>,
+    skew_materials: Res<Assets<ExtendedMaterial<StandardMaterial, SkewMaterial>>>,
+) {
+    // ==> Handle highlight
+    let Ok((target_global_tf, target_aabb)) = targetables_q.get(e.entity) else {
+        return;
+    };
+    let Some(card_entity) = dragged_card.entity else {
+        return;
+    };
+
+    let Ok(card_material) = skew_material_q.get(card_entity) else {
+        return;
+    };
+
+    let Ok((card_global_tf, card_aabb)) = cards_q.get(card_entity) else {
+        return;
+    };
+
+    let (cam_global_tf, cam) = main_cam_q.single().expect("found more than one active cam");
+
+    let viewport_size = cam.logical_viewport_size().unwrap();
+    let card_center = card_global_tf.translation() + card_aabb.center.to_vec3();
+    let card_view_pos = cam
+        .world_to_viewport(cam_global_tf, card_center)
+        .expect("card isn't in the view")
+        / viewport_size;
+
+    let target_center = target_global_tf.translation() + target_aabb.center.to_vec3();
+    let target_view_pos = cam
+        .world_to_viewport(cam_global_tf, target_center)
+        .expect("target isn't in the view")
+        / viewport_size;
+
+    // If the animator is already setup, we can just modify the existing animation
+    let Ok(animated_by) = rotation_animated_by_q.get(card_entity) else {
+        return;
+    };
+    let Ok(mut time_runner) = time_runners_q.get_mut(animated_by.animator_entity) else {
+        return;
+    };
+
+    time_runner.set_direction(bevy_tween::prelude::TimeDirection::Forward);
+
+    let current_skew: SkewData = skew_materials
+        .get(card_material.id())
+        .expect("could not find skew material")
+        .clone()
+        .extension
+        .into();
+
+    let tween_end = current_skew
+        .clone()
+        .with_target_pos(target_view_pos)
+        .with_card_pos(card_view_pos)
+        .with_tilt_strength(0.35);
+
+    let tween_interpolator = InterpolateSkew {
+        start: current_skew,
+        end: tween_end,
+    };
+
+    let mut tween = AssetTween::new(tween_interpolator);
+    tween.target = animated_by.target.clone();
+
+    cmd.entity(animated_by.animator_entity)
+        .animation()
+        .insert_tween_here(Duration::from_millis(200), EaseKind::CubicOut, tween);
 }
 
 pub fn handle_targetable_mouseout_check(
     e: On<Pointer<Out>>,
     mut cmd: Commands,
+    dragged_card: Res<DraggedCard>,
+    rotation_animated_by_q: Query<&RotationAnimatedBy, With<CardUiTargetMesh>>,
+    mut time_runners_q: Query<&mut TimeRunner>,
     mut highlighted_target: ResMut<HighlightedTarget>,
+    skew_materials: Res<Assets<ExtendedMaterial<StandardMaterial, SkewMaterial>>>,
+    skew_material_q: Query<
+        &MeshMaterial3d<ExtendedMaterial<StandardMaterial, SkewMaterial>>,
+        With<CardUiTargetMesh>,
+    >,
 ) {
     let Some(highlighter_ent) = highlighted_target.highlighter_entity else {
         return;
@@ -159,12 +395,52 @@ pub fn handle_targetable_mouseout_check(
     }
 
     highlighted_target.reset();
-    cmd.entity(highlighter_ent).despawn();
+    {
+        cmd.entity(highlighter_ent).despawn();
+    }
+
+    let Some(card_entity) = dragged_card.entity else {
+        return;
+    };
+
+    let Ok(card_material) = skew_material_q.get(card_entity) else {
+        return;
+    };
+
+    // Already being tweened on rotation, we ignore it
+    let Ok(animated_by) = rotation_animated_by_q.get(card_entity) else {
+        return;
+    };
+    let Ok(mut time_runner) = time_runners_q.get_mut(animated_by.animator_entity) else {
+        return;
+    };
+
+    let current_skew: SkewData = skew_materials
+        .get(card_material.id())
+        .expect("could not find skew material")
+        .clone()
+        .extension
+        .into();
+
+    let tween_end = current_skew.clone().with_tilt_strength(0.0);
+
+    let tween_interpolator = InterpolateSkew {
+        start: tween_end,
+        end: current_skew,
+    };
+
+    let mut tween = AssetTween::new(tween_interpolator);
+    tween.target = animated_by.target.clone();
+
+    cmd.entity(animated_by.animator_entity)
+        .animation()
+        .insert_tween_here(Duration::from_millis(200), EaseKind::CubicOut, tween);
+    time_runner.set_direction(bevy_tween::prelude::TimeDirection::Backward);
 }
 
 pub struct Confusion;
 #[derive(Component, Debug, Default)]
-pub struct Range(i32);
+pub struct Range(pub i32);
 
 pub trait AsAny: Any {
     fn as_any(&self) -> &dyn Any;

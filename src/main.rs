@@ -9,7 +9,6 @@ use bevy::camera::ScalingMode;
 use bevy::color::palettes::tailwind::{GRAY_300, ORANGE_400};
 use bevy::light::DirectionalLightShadowMap;
 use bevy::log::LogPlugin;
-use bevy::math::VectorSpace;
 use bevy::pbr::{ExtendedMaterial, MaterialExtension};
 use bevy::platform::collections::Equivalent;
 use bevy::prelude::*;
@@ -44,6 +43,8 @@ use bevy_ghx_proc_gen::proc_gen::generator::socket::{
 };
 use bevy_ghx_proc_gen::simple_plugin::ProcGenSimplePlugins;
 use bevy_ghx_proc_gen::spawner_plugin::NodesSpawner;
+use bevy_tween::BevyTweenRegisterSystems;
+use bevy_tween::prelude::Interpolator;
 use rand::RngExt;
 
 use crate::abilities::AbilitiesTemplatePlugin;
@@ -820,13 +821,111 @@ pub fn sync_cursor_target(
 #[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
 pub struct SkewMaterial {
     #[uniform(100)]
-    pub skew: Vec3,
+    pub target_pos: Vec2,
     #[uniform(100)]
-    pub _pad0: f32,
+    pub card_pos: Vec2,
     #[uniform(100)]
-    pub offset: Vec3,
+    pub tilt_strength: f32,
     #[uniform(100)]
     pub flatten: f32,
+}
+
+impl Default for SkewMaterial {
+    fn default() -> Self {
+        Self {
+            target_pos: Vec2::ZERO,
+            card_pos: Vec2::ZERO,
+            tilt_strength: 0.0,
+            flatten: 1.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct SkewData {
+    pub target_pos: Vec2,
+    pub card_pos: Vec2,
+    pub tilt_strength: f32,
+}
+
+impl SkewData {
+    pub fn with_target_pos_offset(mut self: Self, offset: Vec2) -> Self {
+        self.target_pos += offset;
+        self
+    }
+
+    pub fn with_card_pos_offset(mut self: Self, offset: Vec2) -> Self {
+        self.card_pos += offset;
+        self
+    }
+
+    pub fn with_tilt_strength_offset(mut self: Self, offset: f32) -> Self {
+        self.tilt_strength += offset;
+        self
+    }
+
+    pub fn with_target_pos(mut self: Self, val: Vec2) -> Self {
+        self.target_pos = val;
+        self
+    }
+
+    pub fn with_card_pos(mut self: Self, val: Vec2) -> Self {
+        self.card_pos = val;
+        self
+    }
+
+    pub fn with_tilt_strength(mut self: Self, val: f32) -> Self {
+        self.tilt_strength = val;
+        self
+    }
+}
+
+impl From<SkewData> for SkewMaterial {
+    fn from(value: SkewData) -> Self {
+        Self {
+            target_pos: value.target_pos,
+            card_pos: value.card_pos,
+            tilt_strength: value.tilt_strength,
+            flatten: 1.0,
+        }
+    }
+}
+
+impl From<SkewMaterial> for SkewData {
+    fn from(value: SkewMaterial) -> Self {
+        Self {
+            target_pos: value.target_pos,
+            card_pos: value.card_pos,
+            tilt_strength: value.tilt_strength,
+        }
+    }
+}
+
+pub struct InterpolateSkew {
+    pub start: SkewData,
+    pub end: SkewData,
+}
+
+impl Interpolator for InterpolateSkew {
+    type Item = ExtendedMaterial<bevy::prelude::StandardMaterial, SkewMaterial>;
+
+    fn interpolate(
+        &self,
+        item: &mut Self::Item,
+        value: bevy_tween::interpolate::CurrentValue,
+        _previous_value: bevy_tween::interpolate::PreviousValue,
+    ) {
+        item.extension.card_pos = self.start.card_pos.lerp(self.end.card_pos, value);
+        item.extension.target_pos = self.start.target_pos.lerp(self.end.target_pos, value);
+        item.extension.tilt_strength = self.start.tilt_strength.lerp(self.end.tilt_strength, value);
+    }
+}
+
+pub fn custom_interpolators_plugin(app: &mut App) {
+    app.add_tween_systems(
+        PostUpdate,
+        bevy_tween::asset_tween_system::<InterpolateSkew, ()>(),
+    );
 }
 
 impl MaterialExtension for SkewMaterial {
@@ -865,6 +964,7 @@ fn main() {
         .add_plugins(TilemapPlugin)
         .add_plugins((
             MaterialPlugin::<ExtendedMaterial<StandardMaterial, SkewMaterial>>::default(),
+            custom_interpolators_plugin,
             EffectsPlugin,
             ActionPlugin,
             GameUiPlugin,

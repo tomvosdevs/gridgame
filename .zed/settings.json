@@ -1,0 +1,10 @@
+{
+  "lsp": {
+    "rust-analyzer": {
+      "binary": {
+        "path": "/Users/tommischler/.rustup/toolchains/nightly-aarch64-apple-darwin/bin/rust-analyzer",
+        "arguments": [],
+      },
+    },
+  },
+}

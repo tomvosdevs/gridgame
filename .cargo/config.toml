@@ -1,2 +1,9 @@
 [net]
 git-fetch-with-cli = true
+
+[target.aarch64-apple-darwin]
+rustflags = [
+  # Nightly
+  "-Zshare-generics=y",
+  "-Zthreads=0",
+]

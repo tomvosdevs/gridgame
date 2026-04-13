@@ -84,7 +84,7 @@ use haalka::{
 
 use crate::{
     ActiveCamera, CursorTarget, Health, MaxHealth, SkewMaterial,
-    actions::HighlightedTarget,
+    actions::{HighlightedTarget, RotationAnimatedBy},
     deck_and_cards::{Card, CardDrawn},
     startup_3d,
 };
@@ -161,7 +161,10 @@ pub fn card_ui(card_text_entity: Entity) -> impl Element {
             n.padding = UiRect::all(Val::Px(10.0));
             n.position_type = PositionType::Relative;
         })
-        .insert(Pickable::default())
+        .insert(Pickable {
+            should_block_lower: false,
+            is_hoverable: true,
+        })
         .insert(BackgroundColor::from(Color::hsla(0., 0., 0., 0.)))
         .insert(CardUiRoot)
         .cursor(CursorIcon::default())
@@ -372,12 +375,7 @@ fn spawn_card_diegetic_ui(
             unlit: true,
             ..default()
         },
-        extension: SkewMaterial {
-            skew: Vec3::new(0.3, 0.0, 0.0),
-            offset: Vec3::ZERO,
-            flatten: 1.0,
-            _pad0: 0.0,
-        },
+        extension: SkewMaterial::default(),
     });
 
     let gap = 1.0;
@@ -566,7 +564,16 @@ pub fn dragend_card_mesh(
     mut q: Query<(Entity, &Transform, &DragStartWorldPos), (With<Mesh3d>, With<CardUiTargetMesh>)>,
     mut highlighted_target: ResMut<HighlightedTarget>,
     mut dragged_card: ResMut<DraggedCard>,
+    rotation_animated_by_q: Query<&RotationAnimatedBy, With<CardUiTargetMesh>>,
+    mut time_runners_q: Query<&mut TimeRunner>,
 ) {
+    if let Some(card_entity) = dragged_card.entity {
+        if let Ok(animated_by) = rotation_animated_by_q.get(card_entity) {
+            if let Ok(mut time_runner) = time_runners_q.get_mut(animated_by.animator_entity) {
+                time_runner.set_direction(TimeDirection::Backward);
+            }
+        }
+    }
     let Ok((mesh_ent, mesh_tf, mesh_drag_start_tf)) = q.get_mut(e.entity) else {
         return;
     };
