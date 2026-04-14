@@ -84,7 +84,7 @@ use haalka::{
 
 use crate::{
     ActiveCamera, CursorTarget, Health, MaxHealth, SkewMaterial,
-    actions::{CardAnimatedBy, HighlightedTarget},
+    actions::{CardAnimatedBy, CardReleased, HighlightedTarget},
     deck_and_cards::{Card, CardDrawn},
     startup_3d,
 };
@@ -550,6 +550,7 @@ pub fn drag_card_mesh(
     let scale_end = Vec3::splat(scale_factor);
     let scale_tween = tween_start.scale_to(scale_end);
     let translation_tween = tween_start.translation_to(drag_data.intended_translation);
+    println!("here");
     cmd.entity(e.entity).animation().insert_tween_here(
         Duration::from_millis(95),
         EaseKind::CubicOut,
@@ -567,16 +568,38 @@ pub fn dragend_card_mesh(
     mut card_animated_by_q: Query<&mut CardAnimatedBy, With<CardUiTargetMesh>>,
     mut time_runners_q: Query<&mut TimeRunner>,
 ) {
-    if let Some(card_entity) = dragged_card.entity {
-        if let Ok(mut animated_by) = card_animated_by_q.get_mut(card_entity) {
-            animated_by.needs_rotation_setup = true;
-        }
-    }
     let Ok((mesh_ent, mesh_tf, mesh_drag_start_tf)) = q.get_mut(e.entity) else {
         return;
     };
 
+    let ignore_tween = match dragged_card.entity {
+        Some(card_entity) => {
+            let mut ignore = false;
+            if let Ok(mut animated_by) = card_animated_by_q.get_mut(card_entity) {
+                animated_by.needs_rotation_setup = true;
+
+                if highlighted_target.target_entity.is_some() {
+                    ignore = true;
+                    let mut mesh_ent_cmds = cmd.entity(mesh_ent);
+                    mesh_ent_cmds.remove::<CardDragData>();
+                    mesh_ent_cmds.remove::<DragStartWorldPos>();
+                    dragged_card.reset();
+                }
+                cmd.trigger(CardReleased {
+                    entity: card_entity,
+                    selected_target: highlighted_target.target_entity,
+                });
+            }
+            ignore
+        }
+        None => true,
+    };
+
     highlighted_target.reset_and_remove_highlighter(&mut cmd);
+
+    if ignore_tween {
+        return;
+    }
 
     let target = e.entity.into_target();
     let mut tween_start = target.transform_state(*mesh_tf);
