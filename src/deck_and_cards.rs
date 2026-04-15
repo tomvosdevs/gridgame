@@ -22,8 +22,12 @@ use bevy_gauge::{
     prelude::{AttributeDerived, Attributes, AttributesAppExt, AttributesMut, WriteBack},
     register_derived, register_write_back,
 };
+use serde::{Deserialize, Serialize};
 
-use crate::states::EntityTurnEnd;
+use crate::{
+    states::EntityTurnEnd,
+    ui::{CardUiTextContent, TextSection},
+};
 
 pub struct DeckAndCardsPlugin;
 
@@ -237,6 +241,43 @@ impl Default for CardPile {
         Self { cards: vec![] }
     }
 }
+
+// pub enum CardEffectSpecifier {
+//     UnlockAtLevel(u32),
+//     ApplicableIf()
+// }
+
+// pub enum CardEffectKind {
+//     Damage {
+//         element: String,
+//         amount: f32
+//     },
+
+// }
+//
+
+pub trait BundleOutputer {
+    fn generate_bundle(self) -> impl Bundle;
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CardDefinition {
+    pub title: String,
+}
+
+impl BundleOutputer for CardDefinition {
+    fn generate_bundle(self) -> impl Bundle {
+        (
+            Card,
+            TemplateCard::new(),
+            CardUiTextContent {
+                sections: vec![TextSection::Title(self.title)],
+            },
+        )
+    }
+}
+
+impl CardDefinition {}
 
 #[derive(Component)]
 #[relationship(relationship_target = CardPile)]

@@ -5,5 +5,5 @@ git-fetch-with-cli = true
 rustflags = [
   # Nightly
   "-Zshare-generics=y",
-  "-Zthreads=0",
+  "-Zthreads=8",
 ]
