@@ -1,12 +1,11 @@
 use bevy::{
-    app::{App, Plugin, Startup, Update},
+    app::{App, Plugin, Startup},
     ecs::{
         entity::Entity,
         resource::Resource,
         schedule::IntoScheduleConfigs,
         system::{Query, ResMut},
     },
-    state::condition::in_state,
 };
 
 use crate::{
@@ -15,7 +14,6 @@ use crate::{
         Ranged, Water,
     },
     startup_3d,
-    states::CombatState,
 };
 
 pub struct CombatPlugin;

@@ -1,42 +1,46 @@
 use std::{any::type_name, collections::HashMap, marker::PhantomData};
 
 use bevy::{
-    app::{Plugin, Startup},
+    app::{Plugin, Startup, Update},
     camera::visibility::Visibility,
     ecs::{
         bundle::Bundle,
         component::Component,
         entity::Entity,
         name::Name,
-        system::{Commands, EntityCommands, ResMut},
+        query::With,
+        system::{Commands, EntityCommands, Query, ResMut},
     },
 };
 use bevy_diesel::{
-    effect::GoOffConfig,
     invoke::Ability,
-    prelude::{
-        DelayedDespawn, RequiresStatsOf, SpawnDieselSubstate, SpawnSubEffect, template_single_shot,
-    },
+    prelude::{DelayedDespawn, SpawnDieselSubstate, SpawnSubEffect},
     print::PrintLn,
     spawn::TemplateRegistry,
 };
-use bevy_gearbox::{GearboxMessage, InitStateMachine, SpawnTransition, StateComponent};
-use bevy_ghx_grid::ghx_grid::cartesian::coordinates::CartesianPosition;
+use bevy_gearbox::{Active, GearboxMessage, InitStateMachine, SpawnTransition, StateComponent};
 
 use crate::{
     grid_abilities_backend::{
-        AbilityHitEntity, GridGoOffConfig, GridPosOffset, GridSpawnConfig, GridStartInvoke,
-        GridTargetGenerator, GridTargetMutator,
+        AbilityHitEntity, GridGoOffConfig, GridSpawnConfig, GridStartInvoke, GridTargetGenerator,
     },
     projectiles::ProjectileEffect,
-    states::TeamHitFilter,
 };
 
 pub struct AbilitiesTemplatePlugin;
 
 impl Plugin for AbilitiesTemplatePlugin {
     fn build(&self, app: &mut bevy::app::App) {
-        app.add_systems(Startup, register_templates);
+        app.add_systems(Startup, register_templates).add_systems(
+            Update,
+            |q: Query<&Name, With<Active>>| {
+                for n in &q {
+                    if n.contains("Done") {
+                        println!("IM DONEEEEEEEEE : {:?}", n);
+                    }
+                }
+            },
+        );
     }
 }
 
@@ -253,10 +257,15 @@ impl<T: ComponentMarker> Marker<T> {
 // ==================
 // ==== TEMPLATES ====
 // ==================
+//
+pub enum AbilityTemplateKey {
+    BasicProjectile,
+}
+
+pub const PROJECTILE_ABILITY: &str = "projectile_ability";
 
 fn register_templates(mut registry: ResMut<TemplateRegistry>) {
-    registry.register("projectile_ability", basic_projectile_ability);
-    registry.register("projectile", projectile_template);
+    registry.register(PROJECTILE_ABILITY, basic_projectile_ability);
     registry.register("projectile", projectile_template);
 }
 
@@ -268,8 +277,6 @@ pub fn projectile_template(commands: &mut Commands, entity: Option<Entity>) -> E
             .spawn_diesel_substate(entity, Name::new("Flying"))
             .id();
 
-        // let hit = parent.spawn_diesel_substate(entity, Name::new("Hit")).id();
-        //
         let done = parent
             .spawn_diesel_substate(
                 entity,
@@ -289,47 +296,6 @@ pub fn projectile_template(commands: &mut Commands, entity: Option<Entity>) -> E
                 Visibility::Inherited,
             ))
             .init_state_machine(flying);
-    });
-
-    println!("projectile components :  -->");
-    // commands.entity(entity).log_components();
-
-    entity
-}
-
-pub fn test_some_ability(commands: &mut Commands, entity: Option<Entity>) -> Entity {
-    let entity = entity.unwrap_or_else(|| commands.spawn_empty().id());
-
-    commands.entity(entity).with_children(|parent| {
-        let active = parent
-            .spawn_diesel_substate(entity, Name::new("Active"))
-            .id();
-
-        let spawn = parent
-            .spawn_diesel_substate(
-                entity,
-                (Name::new("Spawn"), GridGoOffConfig::invoker_target()),
-            )
-            .id();
-
-        parent.spawn_subeffect(
-            spawn,
-            (
-                Name::new("EffectSpawn"),
-                GridSpawnConfig::passed("projectile"),
-            ),
-        );
-
-        let done = parent.spawn_diesel_substate(entity, Name::new("Done")).id();
-
-        parent.spawn_transition::<GridStartInvoke>(active, spawn);
-        parent.spawn_transition::<GridStartInvoke>(spawn, done);
-
-        let commands = parent.commands_mut();
-        commands
-            .entity(entity)
-            .insert(Ability)
-            .init_state_machine(active);
     });
 
     entity
@@ -364,7 +330,6 @@ pub fn basic_projectile_ability(commands: &mut Commands, entity: Option<Entity>)
         );
 
         parent.spawn_transition::<GridStartInvoke>(ready, invoke);
-        parent.spawn_transition_always(invoke, ready);
 
         let commands = parent.commands_mut();
         commands

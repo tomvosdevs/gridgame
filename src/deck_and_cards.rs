@@ -1,7 +1,7 @@
 use std::marker::PhantomData;
 
 use bevy::{
-    app::{App, Plugin, Startup, Update},
+    app::{App, Plugin, Startup},
     ecs::{
         bundle::Bundle,
         component::Component,
@@ -9,22 +9,21 @@ use bevy::{
         event::EntityEvent,
         name::Name,
         observer::On,
-        query::{QueryFilter, With, Without},
-        related,
+        query::{QueryFilter, With},
         relationship::RelationshipTarget,
         schedule::IntoScheduleConfigs,
-        system::{Commands, EntityCommands, Query},
-        world::World,
+        system::{Commands, Query},
     },
 };
 use bevy_gauge::{
     AttributeComponent, attributes,
-    prelude::{AttributeDerived, Attributes, AttributesAppExt, AttributesMut, WriteBack},
-    register_derived, register_write_back,
+    prelude::{Attributes, AttributesAppExt, AttributesMut, WriteBack},
+    register_write_back,
 };
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    abilities::PROJECTILE_ABILITY,
     states::EntityTurnEnd,
     ui::{CardUiTextContent, TextSection},
 };
@@ -60,7 +59,7 @@ pub fn spawn_test_template_cards(mut cmd: Commands) {
         "souris",
     ];
     for name in cards_names {
-        cmd.spawn(Card::new_template(name));
+        cmd.spawn(Card::new_template(PROJECTILE_ABILITY, name));
     }
 }
 
@@ -242,49 +241,14 @@ impl Default for CardPile {
     }
 }
 
-// pub enum CardEffectSpecifier {
-//     UnlockAtLevel(u32),
-//     ApplicableIf()
-// }
-
-// pub enum CardEffectKind {
-//     Damage {
-//         element: String,
-//         amount: f32
-//     },
-
-// }
-//
-
-pub trait BundleOutputer {
-    fn generate_bundle(self) -> impl Bundle;
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CardDefinition {
-    pub title: String,
-}
-
-impl BundleOutputer for CardDefinition {
-    fn generate_bundle(self) -> impl Bundle {
-        (
-            Card,
-            TemplateCard::new(),
-            CardUiTextContent {
-                sections: vec![TextSection::Title(self.title)],
-            },
-        )
-    }
-}
-
-impl CardDefinition {}
-
 #[derive(Component)]
 #[relationship(relationship_target = CardPile)]
 pub struct InDeck(Entity);
 
 #[derive(Component, Clone, Default)]
-pub struct Card;
+pub struct Card {
+    pub ability: &'static str,
+}
 
 pub trait CardStateMarker {}
 
@@ -321,9 +285,15 @@ impl<S: CardStateMarker> CardState<S> {
 }
 
 impl Card {
-    pub fn new_template(name: &'static str) -> impl Bundle {
+    pub fn new(ability_name: &'static str) -> Self {
+        Self {
+            ability: ability_name,
+        }
+    }
+
+    pub fn new_template(ability_name: &'static str, name: &'static str) -> impl Bundle {
         (
-            Card,
+            Card::new(ability_name),
             CardState::<InCardTemplateRegistry>::new(),
             Name::new(name),
         )
@@ -336,7 +306,7 @@ pub fn add_card_to_deck(cmd: &mut Commands, card_template: Entity, deck_entity: 
         .id();
 
     // clone template component into the instance
-    let instance = cmd
+    let _instance = cmd
         .entity(card_template)
         .clone_with_opt_out(new_card_instance, |builder| {
             builder.deny::<CardState<InCardTemplateRegistry>>();

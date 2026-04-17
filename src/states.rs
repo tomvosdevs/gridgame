@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, ops::Deref};
 
 use bevy::{
     app::{App, Plugin, Startup, Update},
@@ -10,17 +10,14 @@ use bevy::{
         component::Component,
         entity::Entity,
         event::{EntityEvent, Event},
-        hierarchy::Children,
-        lifecycle::Add,
         message::MessageWriter,
         name::Name,
         observer::On,
-        query::{Added, Changed, With},
+        query::{Added, With},
         relationship::RelationshipTarget,
         resource::Resource,
         schedule::IntoScheduleConfigs,
         system::{Commands, Query, Res, ResMut, Single},
-        world::Ref,
     },
     input::{ButtonInput, keyboard::KeyCode},
     log::warn,
@@ -35,27 +32,18 @@ use bevy::{
     time::{Time, Timer},
     transform::components::{GlobalTransform, Transform},
 };
-use bevy_diesel::{
-    prelude::{InvokedBy, Invokes},
-    target::InvokerTarget,
+use bevy_diesel::prelude::{InvokedBy, Invokes};
+use bevy_gauge::prelude::AttributesMut;
+use bevy_ghx_grid::ghx_grid::cartesian::{
+    coordinates::{Cartesian3D, CartesianPosition},
+    grid::CartesianGrid,
 };
-use bevy_gauge::prelude::{Attributes, AttributesMut};
-use bevy_ghx_grid::ghx_grid::{
-    cartesian::{
-        coordinates::{Cartesian3D, CartesianPosition},
-        grid::CartesianGrid,
-    },
-    grid::GridIndex,
-};
-use bevy_ghx_proc_gen::{
-    GridNode, bevy_egui::egui::Vec2, proc_gen::generator::Generator,
-    simple_plugin::PendingGenerations,
-};
-use rand::{RngExt, rngs::ThreadRng};
+use bevy_ghx_proc_gen::{GridNode, bevy_egui::egui::Vec2, proc_gen::generator::Generator};
+use rand::RngExt;
 
 use crate::{
-    BLOCK_SIZE, GridCell, NODE_SIZE,
-    abilities::{Marker, Projectile, basic_projectile_ability, projectile_template},
+    GridCell, NODE_SIZE,
+    abilities::{Marker, Projectile, basic_projectile_ability},
     deck_and_cards::{
         ActiveDeck, CardPile, CardState, Deck, DrawHand, InDrawPile, StatelessCard,
         UnassignedDeckState, spawn_test_deck,
@@ -72,7 +60,6 @@ impl Plugin for TurnsPlugin {
                 let projectile_ability = basic_projectile_ability(&mut cmd, None);
                 cmd.spawn(AbilityTest(projectile_ability));
             })
-            .add_systems(Update, flush_pending_ability_cast.before(bevy_gearbox::GearboxSet))
             .add_observer(spawn_combat_playing_entities)
             .add_observer(
             |_: On<CombatStart>,
@@ -258,10 +245,10 @@ pub fn spawn_combat_playing_entities(
     mut cmd: Commands,
     q: Query<Entity, With<Deck>>,
     grid_q: Query<(&CartesianGrid<Cartesian3D>, &GlobalTransform)>,
-    grid_nodes_q: Query<&GridNode, With<GridCell>>,
-    players_q: Query<Entity, With<PlayingEntity>>,
-    cells_q: Query<(Entity, &GridNode)>,
-    grid: Single<&CartesianGrid<Cartesian3D>>,
+    grid_nodes_q: Query<(Entity, &GridNode), With<GridCell>>,
+    _players_q: Query<Entity, With<PlayingEntity>>,
+    _cells_q: Query<(Entity, &GridNode)>,
+    _grid: Single<&CartesianGrid<Cartesian3D>>,
     ability_test: Single<&AbilityTest>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -277,7 +264,7 @@ pub fn spawn_combat_playing_entities(
         .next()
         .expect("expected to find at least one Deck entity");
 
-    let grid_nodes: Vec<&GridNode> = grid_nodes_q.iter().collect();
+    let grid_nodes: Vec<&GridNode> = grid_nodes_q.iter().map(|(e, n)| n).collect();
 
     let grid_origin_pos = grid_tf.translation();
     let center_pos = UVec2::new(grid.size_x() / 2, grid.size_z() / 2);
@@ -333,62 +320,7 @@ pub fn spawn_combat_playing_entities(
         CurrentDeckReference(test_deck),
     ));
 
-    let rand_offset_x = rand::rng().random_range(2..4);
-    let rand_offset_z = rand::rng().random_range(2..4);
-
-    let rand_pos = IVec2::new(found_tf.1.x as i32, found_tf.1.z as i32)
-        + IVec2::new(rand_offset_x, rand_offset_z);
-
-    let rand_grid_pos = CartesianPosition {
-        x: rand_pos.x as u32,
-        y: found_tf.1.y,
-        z: rand_pos.y as u32,
-    };
-
-    let mut registry_cmds = cmd;
-    let ability = ability_test.0;
-    registry_cmds.entity(ability).insert(InvokedBy(player_1));
-
-    let target = GridInvokerTarget::position(rand_grid_pos);
-
-    registry_cmds.insert_resource(PendingAbilityCast(
-        ability,
-        player_1,
-        Timer::from_seconds(0.1, bevy::time::TimerMode::Once),
-    ));
-
-    registry_cmds.entity(player_1).insert(target);
-
-    println!("====> projectile invoked!!!!!!");
-
-    registry_cmds.trigger(CombatStart);
-}
-
-pub fn flush_pending_ability_cast(
-    pending: Option<ResMut<PendingAbilityCast>>,
-    mut writer: MessageWriter<GridStartInvoke>,
-    invoker_targets_q: Query<&GridInvokerTarget>,
-    mut cmd: Commands,
-    time: Res<Time>,
-) {
-    let Some(mut pending) = pending else { return };
-
-    let Ok(target) = invoker_targets_q.get(pending.1) else {
-        return;
-    };
-
-    pending.2.tick(time.delta());
-
-    if !pending.2.just_finished() {
-        return;
-    }
-
-    println!("called start invoke with target : {:?}", target.position);
-    writer.write(GridStartInvoke::new(
-        pending.0,
-        GridTarget::position(target.position),
-    ));
-    cmd.remove_resource::<PendingAbilityCast>();
+    cmd.trigger(CombatStart);
 }
 
 #[derive(Resource)]

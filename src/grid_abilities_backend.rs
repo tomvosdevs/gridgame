@@ -9,16 +9,16 @@ use bevy::{
         hierarchy::ChildOf,
         message::{Message, MessageReader, MessageWriter},
         query::{With, Without},
-        system::{Commands, Local, Query, Res, Single, SystemParam},
+        system::{Commands, Query, Res, Single, SystemParam},
     },
-    math::{Dir3, I16Vec3, ShapeSample, U16Vec3, UVec3, Vec2, Vec3, primitives::Sphere},
+    math::{Dir3, ShapeSample, Vec3, primitives::Sphere},
     prelude::IntoScheduleConfigs,
     reflect::Reflect,
     transform::components::{GlobalTransform, Transform},
 };
 use bevy_diesel::{
     effect::{GoOff, GoOffOrigin, SubEffects},
-    events::{HasDieselTarget, PosBound},
+    events::HasDieselTarget,
     invoke::Ability,
     prelude::{InvokedBy, generate_targets, resolve_invoker, resolve_root},
     spawn::{OnSpawnInvoker, OnSpawnOrigin, OnSpawnTarget, SpawnConfig, TemplateRegistry},
@@ -29,24 +29,20 @@ use bevy_gauge::{
     AttributeResolvable,
     prelude::{AttributesAppExt, AttributesMut},
 };
-use bevy_gearbox::{AcceptAll, GearboxMessage, RegistrationAppExt};
+use bevy_gearbox::{AcceptAll, GearboxMessage, GearboxSet, RegistrationAppExt};
 use bevy_ghx_grid::ghx_grid::cartesian::{
     coordinates::{Cartesian3D, CartesianPosition},
     grid::CartesianGrid,
 };
 use bevy_ghx_proc_gen::GridNode;
 use bevy_prng::WyRand;
-use bevy_rand::{
-    plugin::EntropyPlugin,
-    prelude::GlobalRng,
-    traits::{ForkableAsRng, ForkableRng},
-};
+use bevy_rand::{plugin::EntropyPlugin, prelude::GlobalRng};
 use rand::{Rng, RngExt, SeedableRng};
 
 use crate::{
     GridCell,
     projectiles::ProjectilePlugin,
-    states::{FromGrid, PlayingEntity, TeamHitFilter, ToWorldPos},
+    states::{PlayingEntity, TeamHitFilter, ToWorldPos},
 };
 
 // Vec3 type aliases
@@ -140,7 +136,7 @@ pub trait HitFilter: Component + Clone + Debug + Send + Sync + 'static {
     ) -> bool;
 }
 
-pub struct HitFilterPlugin<F: HitFilter> {
+struct HitFilterPlugin<F: HitFilter> {
     _marker: PhantomData<F>,
 }
 
@@ -158,20 +154,29 @@ impl<F: HitFilter> Plugin for HitFilterPlugin<F> {
     }
 }
 
-#[derive(EntityEvent, Message)]
-pub struct HitReceived {
-    entity: Entity,
-    hit_by: Entity,
+pub struct HitHandlingPlugin;
+
+impl Plugin for HitHandlingPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_plugins(HitFilterPlugin::<TeamHitFilter>::default())
+            .add_systems(Update, handle_unfiltered_hit_system.before(GearboxSet));
+    }
 }
 
-pub fn handle_unfiltered_hit_system<F: HitFilter>(
+#[derive(EntityEvent, Message)]
+pub struct HitReceived {
+    pub entity: Entity,
+    pub hit_by: Entity,
+}
+
+pub fn handle_unfiltered_hit_system(
     mut hit_events: MessageReader<HitReceived>,
-    invoker_q: Query<&InvokedBy>,
+    _invoker_q: Query<&InvokedBy>,
     grid: Single<&CartesianGrid<Cartesian3D>>,
     grid_cells_q: Query<&GridNode, With<GridCell>>,
     grid_playing_q: Query<&CartesianPosition, With<PlayingEntity>>,
     mut entity_writer: MessageWriter<AbilityHitEntity>,
-    mut position_writer: MessageWriter<AbilityHitPosition>,
+    _position_writer: MessageWriter<AbilityHitPosition>,
 ) {
     let grid = grid.deref();
 
@@ -179,15 +184,17 @@ pub fn handle_unfiltered_hit_system<F: HitFilter>(
         if let Ok(cell) = grid_cells_q.get(hit.entity) {
             let pos = grid.pos_from_index(cell.0);
             entity_writer.write(AbilityHitEntity::new(
-                hit.entity,
-                GridTarget::entity(hit.hit_by, pos),
+                hit.hit_by,
+                GridTarget::entity(hit.entity, pos),
                 HitTargetKind::Cell,
             ));
+            println!("received a hit I guess");
         } else {
             if let Ok(playing_pos) = grid_playing_q.get(hit.entity) {
+                println!("received a hit I guess");
                 entity_writer.write(AbilityHitEntity::new(
-                    hit.entity,
-                    GridTarget::entity(hit.hit_by, *playing_pos),
+                    hit.hit_by,
+                    GridTarget::entity(hit.entity, *playing_pos),
                     HitTargetKind::Playing,
                 ));
             }
@@ -197,14 +204,14 @@ pub fn handle_unfiltered_hit_system<F: HitFilter>(
 
 pub fn handle_hit_system<F: HitFilter>(
     mut hit_events: MessageReader<HitReceived>,
-    invoker_q: Query<&InvokedBy>,
+    _invoker_q: Query<&InvokedBy>,
     grid: Single<&CartesianGrid<Cartesian3D>>,
     grid_cells_q: Query<&GridNode, With<GridCell>>,
     grid_playing_q: Query<&CartesianPosition, With<PlayingEntity>>,
     filters_q: Query<&F>,
     filter_lookup_q: Query<&F::Lookup>,
     mut entity_writer: MessageWriter<AbilityHitEntity>,
-    mut position_writer: MessageWriter<AbilityHitPosition>,
+    _position_writer: MessageWriter<AbilityHitPosition>,
 ) {
     let grid = grid.deref();
 
@@ -240,13 +247,13 @@ pub fn handle_hit_system<F: HitFilter>(
 }
 
 pub fn propag_log(mut reader: MessageReader<GoOffOrigin<CartesianPosition>>) {
-    for m in reader.read() {
+    for _m in reader.read() {
         println!("found go off origin msg");
     }
 }
 
 pub fn propag_log_b<B: SpatialBackend>(mut reader: MessageReader<GoOffOrigin<B::Pos>>) {
-    for m in reader.read() {
+    for _m in reader.read() {
         println!("found go off origin msg GENERIC");
     }
 }
@@ -259,11 +266,9 @@ pub fn debug_propagate_system(
     q_invoker: Query<&InvokedBy>,
     q_child_of: Query<&ChildOf>,
     q_invoker_target: Query<&InvokerTarget<CartesianPosition>>,
-    mut writer: MessageWriter<GoOff<CartesianPosition>>,
+    _writer: MessageWriter<GoOff<CartesianPosition>>,
 ) {
-    println!("hey mate");
     for origin in reader.read() {
-        println!("inside debug propage");
         let root_entity = origin.entity;
         let passed_target = origin.target;
 
@@ -369,13 +374,9 @@ pub struct Grid3dDieselPlugin;
 
 impl Plugin for Grid3dDieselPlugin {
     fn build(&self, app: &mut bevy::app::App) {
-        // app.add_message::<HitReceived>();
-        // app.add_message::<AbilityHitEntity>();
-        // app.add_message::<AbilityHitPosition>();
-        // app.add_message::<GridStartInvoke>();
+        app.add_message::<HitReceived>();
 
         app.add_plugins(EntropyPlugin::<bevy_prng::WyRand>::default());
-        // app.add_plugins(HitFilterPlugin::<TeamHitFilter>::default());
         app.add_plugins(Grid3DBackend::plugin_core());
 
         use bevy_diesel::bevy_gauge::prelude::AttributesAppExt;
@@ -427,216 +428,8 @@ impl Plugin for Grid3dDieselPlugin {
                     .in_set(bevy_diesel::bevy_gearbox::GearboxPhase::SideEffectPhase),
             ),
         );
-    }
-}
 
-fn find_ability(
-    entity: Entity,
-    q_invoker: &Query<&InvokedBy>,
-    q_ability: &Query<(), With<Ability>>,
-) -> Option<Entity> {
-    let mut current = entity;
-    loop {
-        if q_ability.get(current).is_ok() {
-            return Some(current);
-        }
-        let Ok(invoked_by) = q_invoker.get(current) else {
-            return None;
-        };
-        current = invoked_by.0;
-    }
-}
-
-fn test_generate_targets_with_spawn_positions<B: SpatialBackend>(
-    generator: &TargetGenerator<B>,
-    spawn_targets: &[Target<B::Pos>],
-    in_targets: &[Target<B::Pos>],
-    invoker: Entity,
-    invoker_target: Target<B::Pos>,
-    root: Entity,
-    ctx: &mut B::Context<'_, '_>,
-) -> Vec<Target<B::Pos>> {
-    if matches!(generator.target_type, TargetType::Spawn) {
-        let mut all_targets = Vec::new();
-        for (idx, spawn_target) in spawn_targets.iter().enumerate() {
-            let passed_target = in_targets
-                .get(idx % in_targets.len())
-                .copied()
-                .unwrap_or(*spawn_target);
-            let mut targets = generate_targets::<B>(
-                generator,
-                ctx,
-                invoker,
-                invoker_target,
-                root,
-                spawn_target.position,
-                passed_target,
-            );
-            all_targets.append(&mut targets);
-        }
-        all_targets
-    } else {
-        let mut all_targets = Vec::new();
-        for passed_target in in_targets.iter() {
-            let mut t = generate_targets::<B>(
-                generator,
-                ctx,
-                invoker,
-                invoker_target,
-                root,
-                B::Pos::default(),
-                *passed_target,
-            );
-            all_targets.append(&mut t);
-        }
-        all_targets
-    }
-}
-
-pub fn test_check_go_off(mut reader: MessageReader<GridGoOff>) {
-    for go in reader.read() {
-        println!("found go off!");
-    }
-}
-
-pub fn test_spawn_system<B: SpatialBackend>(
-    mut reader: MessageReader<GoOff<B::Pos>>,
-    q_effect: Query<&SpawnConfig<B>>,
-    q_invoker: Query<&InvokedBy>,
-    q_child_of: Query<&ChildOf>,
-    q_invoker_target: Query<&InvokerTarget<B::Pos>>,
-    q_ability: Query<(), With<Ability>>,
-    template_registry: Res<TemplateRegistry>,
-    mut ctx: B::Context<'_, '_>,
-    mut commands: Commands,
-    mut attributes: AttributesMut,
-    mut spawn_target_writer: MessageWriter<OnSpawnTarget<B::Pos>>,
-    mut spawn_origin_writer: MessageWriter<OnSpawnOrigin<B::Pos>>,
-    mut spawn_invoker_writer: MessageWriter<OnSpawnInvoker<B::Pos>>,
-) {
-    println!("hey there");
-    for go_off in reader.read() {
-        let effect_entity = go_off.entity;
-        let passed = go_off.target;
-
-        let invoker = q_invoker.root_ancestor(effect_entity);
-        let invoker_target: Target<B::Pos> = q_invoker_target
-            .get(invoker)
-            .copied()
-            .map(Target::from)
-            .unwrap_or_default();
-        let Ok(spawn_config) = q_effect.get(effect_entity) else {
-            continue;
-        };
-        let root = q_child_of.root_ancestor(effect_entity);
-
-        let mut spawn_targets = generate_targets::<B>(
-            &spawn_config.spawn_position_generator,
-            &mut ctx,
-            invoker,
-            invoker_target,
-            root,
-            B::Pos::default(),
-            passed,
-        );
-
-        if spawn_targets.is_empty() {
-            continue;
-        }
-
-        let target_targets = if let Some(target_generator) = &spawn_config.spawn_target_generator {
-            let targets = test_generate_targets_with_spawn_positions::<B>(
-                target_generator,
-                &spawn_targets,
-                &[passed],
-                invoker,
-                invoker_target,
-                root,
-                &mut ctx,
-            );
-            if targets.is_empty() {
-                continue;
-            }
-            Some(targets)
-        } else {
-            None
-        };
-
-        let parent_entity = if let Some(parent_target_type) = &spawn_config.as_child_of {
-            let parent = match parent_target_type {
-                TargetType::Invoker => Some(invoker),
-                TargetType::InvokerTarget => invoker_target.entity,
-                TargetType::Root => Some(root),
-                TargetType::Passed => passed.entity,
-                TargetType::Spawn => None,
-                TargetType::Position(_) => None,
-            };
-            if parent.is_none() {
-                continue;
-            }
-            parent
-        } else {
-            None
-        };
-
-        for (i, spawn_target) in spawn_targets.iter().enumerate() {
-            let spawned_entity = commands.spawn(InvokedBy(invoker)).id();
-            B::insert_position(
-                &mut commands.entity(spawned_entity),
-                &ctx,
-                spawn_target.position,
-                parent_entity,
-            );
-            template_registry.get(&spawn_config.template_id).unwrap()(
-                &mut commands,
-                Some(spawned_entity),
-            );
-
-            // Register gauge sources for cross-entity attribute expressions.
-            // The aliases are stored in the DependencyGraph immediately; when
-            // Attributes + modifiers are applied later (during command flush),
-            // expressions like "Damage@root" or "Cooldown@ability" will resolve.
-            attributes.register_source(spawned_entity, "root", root);
-            if let Some(ability) = find_ability(effect_entity, &q_invoker, &q_ability) {
-                attributes.register_source(spawned_entity, "ability", ability);
-            }
-
-            match (&target_targets, parent_entity) {
-                (Some(targets), Some(parent)) => {
-                    let target_target = targets
-                        .get(i % targets.len())
-                        .copied()
-                        .unwrap_or(*spawn_target);
-                    commands
-                        .entity(spawned_entity)
-                        .insert((target_target, ChildOf(parent)));
-                    spawn_target_writer.write(OnSpawnTarget::new(spawned_entity, target_target));
-                }
-                (Some(targets), None) => {
-                    let target_target = targets
-                        .get(i % targets.len())
-                        .copied()
-                        .unwrap_or(*spawn_target);
-                    commands.entity(spawned_entity).insert(target_target);
-                    spawn_target_writer.write(OnSpawnTarget::new(spawned_entity, target_target));
-                }
-                (None, Some(parent)) => {
-                    commands.entity(spawned_entity).insert(ChildOf(parent));
-                }
-                (None, None) => {}
-            }
-
-            spawn_origin_writer.write(OnSpawnOrigin::new(
-                spawned_entity,
-                Target::entity(spawned_entity, spawn_target.position),
-            ));
-
-            let invoker_position = B::position_of(&ctx, invoker).unwrap_or_default();
-            spawn_invoker_writer.write(OnSpawnInvoker::new(
-                spawned_entity,
-                Target::entity(invoker, invoker_position),
-            ));
-        }
+        app.add_plugins(HitHandlingPlugin);
     }
 }
 
@@ -1166,8 +959,8 @@ impl SpatialBackend for Grid3DBackend {
         ctx: &mut Self::Context<'_, '_>,
         targets: Vec<bevy_diesel::prelude::Target<Self::Pos>>,
         filter: &Self::Filter,
-        invoker: bevy::ecs::entity::Entity,
-        origin: Self::Pos,
+        _invoker: bevy::ecs::entity::Entity,
+        _origin: Self::Pos,
     ) -> Vec<bevy_diesel::prelude::Target<Self::Pos>> {
         let resolved_count = match filter.count {
             NumberType::All => usize::MAX,

@@ -10,37 +10,25 @@ use bevy::color::palettes::tailwind::{GRAY_300, ORANGE_400};
 use bevy::light::DirectionalLightShadowMap;
 use bevy::log::LogPlugin;
 use bevy::pbr::{ExtendedMaterial, MaterialExtension};
-use bevy::platform::collections::Equivalent;
 use bevy::prelude::*;
 use bevy::render::render_resource::{AsBindGroup, ShaderType};
 use bevy::shader::ShaderRef;
 use bevy_diesel::prelude::SpatialBackend;
-use bevy_ecs_tilemap::helpers::square_grid::diamond::INV_DIAMOND_BASIS;
-use bevy_ecs_tilemap::helpers::square_grid::neighbors::Neighbors;
 use bevy_ecs_tilemap::prelude::*;
-use bevy_gauge::plugin::AttributesPlugin;
 use bevy_ghx_grid::debug_plugin::view::DebugGridView;
 use bevy_ghx_grid::debug_plugin::{DebugGridView3dBundle, GridDebugPlugin};
-use bevy_ghx_grid::ghx_grid::cartesian::coordinates::{
-    CARTESIAN_3D_DIRECTIONS, Cartesian3D, CartesianPosition, GridDelta,
-};
+use bevy_ghx_grid::ghx_grid::cartesian::coordinates::{Cartesian3D, GridDelta};
 use bevy_ghx_grid::ghx_grid::cartesian::grid::CartesianGrid;
-use bevy_ghx_grid::ghx_grid::coordinate_system::CoordinateSystem;
 use bevy_ghx_grid::ghx_grid::direction::Direction;
 use bevy_ghx_grid::ghx_grid::grid::{Grid, GridIndex};
 use bevy_ghx_proc_gen::GridNode;
-use bevy_ghx_proc_gen::assets::{BundleInserter, ModelAsset, ModelsAssets};
-use bevy_ghx_proc_gen::debug_plugin::generation::GenerationViewMode;
-use bevy_ghx_proc_gen::debug_plugin::{DebugPluginConfig, ProcGenDebugPlugins};
-use bevy_ghx_proc_gen::default_bundles::PbrMesh;
+use bevy_ghx_proc_gen::assets::{BundleInserter, ModelsAssets};
 use bevy_ghx_proc_gen::proc_gen::generator::builder::GeneratorBuilder;
 use bevy_ghx_proc_gen::proc_gen::generator::model::{
-    Model, ModelCollection, ModelInstance, ModelRotation,
+    ModelCollection, ModelInstance, ModelRotation,
 };
 use bevy_ghx_proc_gen::proc_gen::generator::rules::RulesBuilder;
-use bevy_ghx_proc_gen::proc_gen::generator::socket::{
-    Socket, SocketCollection, SocketsCartesian3D,
-};
+use bevy_ghx_proc_gen::proc_gen::generator::socket::{SocketCollection, SocketsCartesian3D};
 use bevy_ghx_proc_gen::simple_plugin::ProcGenSimplePlugins;
 use bevy_ghx_proc_gen::spawner_plugin::NodesSpawner;
 use bevy_tween::BevyTweenRegisterSystems;
@@ -49,18 +37,18 @@ use rand::RngExt;
 
 use crate::abilities::AbilitiesTemplatePlugin;
 use crate::actions::{
-    Action, ActionCast, ActionEffect, ActionPlugin, ActionPoints, Damage, Electric, Fire,
-    MainTarget, Melee, MovementPoints, Physical, Piercing, Range, Ranged, UsedAction, Water,
+    Action, ActionCast, ActionEffect, ActionPlugin, ActionPoints, MainTarget, Range, UsedAction,
 };
 use crate::combat::{CombatPlugin, SelectedAction};
 use crate::deck_and_cards::DeckAndCardsPlugin;
 use crate::effects::{Burning, EffectsPlugin};
-use crate::grid_abilities_backend::{Grid3DBackend, HitFilterPlugin};
-use crate::states::{CombatState, TeamHitFilter, TurnsPlugin};
+use crate::grid_abilities_backend::Grid3DBackend;
+use crate::states::{CombatState, TurnsPlugin};
 use crate::tiles_templates::Targetable;
 use crate::ui::GameUiPlugin;
 
 pub mod abilities;
+pub mod abilities_definitions;
 pub mod actions;
 pub mod combat;
 pub mod deck_and_cards;
@@ -160,7 +148,7 @@ pub fn tick_tilemap_effects_timer(time: Res<Time>, mut q: Query<&mut TilemapEffe
 
 pub fn spread_tiles_effects(
     mut cmd: Commands,
-    tilemap_effects_timer_q: Query<(&TilemapEffectsTimer)>,
+    tilemap_effects_timer_q: Query<&TilemapEffectsTimer>,
     grid_q: Query<&CartesianGrid<Cartesian3D>>,
     cell_q: Query<(
         Entity,
@@ -191,7 +179,7 @@ pub fn spread_tiles_effects(
         })
         .collect();
 
-    for (burning_entity, burning_node, _, _) in cell_q
+    for (_burning_entity, burning_node, _, _) in cell_q
         .iter()
         .filter(|(_, _, _, burning_opt)| burning_opt.is_some())
     {
@@ -211,7 +199,7 @@ pub fn spread_tiles_effects(
 
 fn update_tiles_texture(
     assets_refs_q: Query<&AssetsReferences>,
-    materials: ResMut<Assets<StandardMaterial>>,
+    _materials: ResMut<Assets<StandardMaterial>>,
     mut cell_q: Query<(&mut MeshMaterial3d<StandardMaterial>, &GridNode), With<Burning>>,
 ) {
     let assets_references = assets_refs_q
@@ -222,7 +210,7 @@ fn update_tiles_texture(
     {
         match burning_material_untyped_handle.clone().try_typed() {
             Ok(handle) => {
-                for (mut material, node) in &mut cell_q {
+                for (mut material, _node) in &mut cell_q {
                     if material.0 != handle {
                         material.0 = handle.clone();
                     }
@@ -340,12 +328,12 @@ impl GridRulesGenerator {
         }
     }
 
-    pub fn add_cell(mut self: Self, name: &'static str) -> GridCellSockets {
+    pub fn add_cell(self: Self, name: &'static str) -> GridCellSockets {
         let cell = GridCellSockets::empty(name);
         cell
     }
 
-    fn add_socket_to_cell(direction: Direction, cell_name: &'static str) {}
+    fn add_socket_to_cell(_direction: Direction, _cell_name: &'static str) {}
 }
 
 #[derive(Component, Clone, Debug, Default)]
@@ -426,7 +414,7 @@ impl<A: Bundle + Clone + Default> BundleInserter for GridCellSocketsComponents<A
 pub struct AssetsReferences(HashMap<String, UntypedHandle>);
 
 pub fn rules_and_assets(
-    mut cmd: &mut Commands,
+    cmd: &mut Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) -> (
@@ -614,9 +602,9 @@ const ASSETS_SCALE: Vec3 = Vec3::splat(ASSETS_SCALE_FACTOR);
 
 fn startup_3d(
     mut cmd: Commands,
-    asset_server: Res<AssetServer>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    _asset_server: Res<AssetServer>,
+    meshes: ResMut<Assets<Mesh>>,
+    materials: ResMut<Assets<StandardMaterial>>,
 ) {
     let camera_position = Vec3::new(45., 3. * GRID_HEIGHT as f32 + 20.0, 0.75 * GRID_Z as f32);
 
@@ -686,7 +674,7 @@ fn startup_3d(
         },
     ));
 
-    let (water_instance, ground_rock_instance, models_assets, models, socket_collection) =
+    let (water_instance, _ground_rock_instance, models_assets, models, socket_collection) =
         rules_and_assets(&mut cmd, meshes, materials);
 
     let rules = Arc::new(
@@ -762,9 +750,9 @@ pub fn untag_hoverout_gridcell(mut hover: On<Pointer<Out>>, mut hovered: ResMut<
 }
 
 pub fn trigger_action(
-    mut click: On<Pointer<Click>>,
+    click: On<Pointer<Click>>,
     mut cmd: Commands,
-    mut actions_q: Query<
+    actions_q: Query<
         (
             &Action,
             &Range,
@@ -787,7 +775,7 @@ pub fn trigger_action(
         return;
     };
     // Get the relevant stats (range, ap etc will serve for cast checks later)
-    let Ok((action, range, ap)) = actions_q.get(action_ent) else {
+    let Ok((_action, _range, _ap)) = actions_q.get(action_ent) else {
         return;
     };
 

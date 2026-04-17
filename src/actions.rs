@@ -1,52 +1,51 @@
-use std::{any::Any, f32::consts::TAU, marker::PhantomData, time::Duration};
+use std::{any::Any, marker::PhantomData, time::Duration};
 
 use bevy::{
-    app::{Plugin, Startup, Update},
+    app::{Plugin, Startup},
     asset::Assets,
     camera::{Camera, primitives::Aabb},
-    color::{Color, Srgba},
+    color::Srgba,
     ecs::{
-        bundle::Bundle,
-        change_detection::DetectChanges,
-        component::{Component, ComponentId},
+        component::Component,
         entity::Entity,
         event::EntityEvent,
+        message::MessageWriter,
         name::Name,
         observer::On,
-        query::{QueryData, QueryFilter, QueryState, ReadOnlyQueryData, With},
+        query::{With, Without},
         resource::Resource,
         schedule::IntoScheduleConfigs,
-        system::{Commands, EntityCommand, EntityCommands, Query, Res, ResMut},
+        system::{Commands, EntityCommand, EntityCommands, Query, Res, ResMut, Single},
         world::{DeferredWorld, World},
     },
-    log::tracing_subscriber::reload::Handle,
-    math::{Quat, Vec2, Vec3, Vec3Swizzles, VectorSpace, bool},
+    math::{Quat, Vec2, Vec3Swizzles, VectorSpace, bool},
     mesh::Mesh3d,
     pbr::{ExtendedMaterial, MeshMaterial3d, StandardMaterial},
     picking::{
         Pickable,
-        events::{DragEnd, Move, Out, Over, Pointer},
-        hover::HoverMap,
+        events::{Move, Out, Over, Pointer},
     },
     transform::components::{GlobalTransform, Transform},
 };
+use bevy_diesel::{prelude::InvokedBy, spawn::TemplateRegistry};
 use bevy_ghx_grid::ghx_grid::cartesian::{
     coordinates::{Cartesian3D, CartesianPosition},
     grid::CartesianGrid,
 };
 use bevy_ghx_proc_gen::GridNode;
 use bevy_tween::{
-    bevy_time_runner::TimeRunner,
     combinator::TransformTargetState,
     prelude::{AnimationBuilderExt, EaseKind, TransformTargetStateExt},
-    tween::{self, AssetTween, IntoTarget, TargetAsset, Tween},
+    tween::{AssetTween, IntoTarget, TargetAsset},
 };
 
 use crate::{
-    ActiveCamera, BLOCK_SIZE, GridCell, Health, HealthState, InterpolateSkew, NODE_SIZE,
-    SkewMaterial,
+    ActiveCamera, GridCell, InterpolateSkew, NODE_SIZE, SkewMaterial,
+    deck_and_cards::{Card, TemplateCard},
+    grid_abilities_backend::{GridInvokerTarget, GridStartInvoke, GridTarget},
+    states::{CurrentPlayingEntity, PlayingEntity},
     tiles_templates::Targetable,
-    ui::{CardDragData, CardUiTargetMesh, DraggedCard},
+    ui::{CardUiTargetMesh, DraggedCard},
 };
 
 pub struct ActionPlugin;
@@ -362,34 +361,64 @@ fn animate_card_to_initial(
 pub fn handle_card_release(
     e: On<CardReleased>,
     mut cmd: Commands,
-    card_animated_by_q: Query<&CardAnimatedBy, With<CardUiTargetMesh>>,
+    ui_cards_q: Query<(&Transform, &CardAnimatedBy, &CardUiTargetMesh)>,
+    cards_q: Query<&Card, Without<TemplateCard>>,
     skew_materials: Res<Assets<ExtendedMaterial<StandardMaterial, SkewMaterial>>>,
     skew_material_q: Query<
         &MeshMaterial3d<ExtendedMaterial<StandardMaterial, SkewMaterial>>,
         With<CardUiTargetMesh>,
     >,
-    cards_q: Query<&Transform, With<CardUiTargetMesh>>,
+    abilities: Res<TemplateRegistry>,
+    currently_playing: Res<CurrentPlayingEntity>,
+    mut writer: MessageWriter<GridStartInvoke>,
+    cells_q: Query<&GridNode, With<GridCell>>,
+    playing_q: Query<&CartesianPosition, With<PlayingEntity>>,
+    grid: Single<&mut CartesianGrid<Cartesian3D>>,
 ) {
-    let card_entity = e.entity;
+    let ui_card_entity = e.entity;
 
-    let Ok(animated_by) = card_animated_by_q.get(card_entity) else {
+    let Ok((card_tf, animated_by, ui_card_data)) = ui_cards_q.get(ui_card_entity) else {
         return;
     };
 
-    if let Some(target) = e.selected_target {
+    let Ok(card) = cards_q.get(ui_card_data.source_card) else {
+        return;
+    };
+
+    if let Some(target_entity) = e.selected_target {
+        println!("in handle card release : {:?}", card.ability);
+        let ability = abilities
+            .get(card.ability)
+            .expect("ability name should be valid and inside registry");
+        let ability_instance_entity = ability(&mut cmd, None);
+        cmd.entity(ability_instance_entity)
+            .insert(InvokedBy(currently_playing.0));
+
+        let position = cells_q.get(target_entity).map_or_else(
+            |_| {
+                *playing_q
+                    .get(target_entity)
+                    .expect("Target should be a GridCell or PlayingEntity")
+            },
+            |node| grid.pos_from_index(node.0),
+        );
+        println!("spawning ability to grid pos : {:?}", position);
+        let target = GridTarget::entity(target_entity, position);
+        cmd.entity(currently_playing.0)
+            .insert(GridInvokerTarget::entity(target_entity, position));
+
+        writer.write(GridStartInvoke::new(ability_instance_entity, target));
+
         cmd.entity(animated_by.rotation_animator_entity)
             .despawn_children();
         cmd.entity(animated_by.rotation_animator_entity).despawn();
-        cmd.entity(card_entity).despawn_children();
-        cmd.entity(card_entity).despawn();
+        cmd.entity(ui_card_entity).despawn_children();
+        cmd.entity(ui_card_entity).despawn();
+
         return;
     }
 
-    let Ok(card_tf) = cards_q.get(card_entity) else {
-        return;
-    };
-
-    let Ok(card_material) = skew_material_q.get(card_entity) else {
+    let Ok(card_material) = skew_material_q.get(ui_card_entity) else {
         return;
     };
 
@@ -400,7 +429,7 @@ pub fn handle_card_release(
         .extension
         .skew_amount;
 
-    let target = card_entity.into_target();
+    let target = ui_card_entity.into_target();
     let current_rotation = target.transform_state(*card_tf);
 
     let mut animated_by = animated_by.clone();
@@ -828,9 +857,9 @@ pub fn setup_reactions(mut cmd: Commands) {
             let (new_pos, new_index, new_tf) = {
                 let mut grid_q = w.query::<&CartesianGrid<Cartesian3D>>();
                 let grid = grid_q.iter(w).next().unwrap();
-                let mut curr_pos = grid.pos_from_index(curr_node.clone());
+                let curr_pos = grid.pos_from_index(curr_node.clone());
                 // TODO - ERR - Currently this crashes if used on a Y = grid height cell
-                let mut new_pos = grid
+                let new_pos = grid
                     .get_next_pos_in_direction(
                         &curr_pos,
                         bevy_ghx_grid::ghx_grid::direction::Direction::YForward,

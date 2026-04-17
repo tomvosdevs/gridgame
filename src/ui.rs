@@ -1,13 +1,12 @@
-use std::{collections::HashMap, f32::consts::PI, ops::Mul, time::Duration};
+use std::time::Duration;
 
 use bevy::{
-    app::{First, Plugin, Startup, Update},
+    app::{Plugin, Update},
     asset::{Assets, RenderAssetUsages, uuid::Uuid},
-    audio::Sample,
     camera::{Camera, Camera2d, Camera3d, ClearColorConfig, RenderTarget},
     color::{
         Color, Srgba,
-        palettes::css::{BLUE, GRAY, GREY, RED, WHITE},
+        palettes::css::{GREY, RED, WHITE},
     },
     ecs::{
         children,
@@ -15,7 +14,6 @@ use bevy::{
         entity::Entity,
         error::Result,
         event::EntityEvent,
-        hierarchy::Children,
         lifecycle::RemovedComponents,
         message::{MessageReader, MessageWriter},
         observer::On,
@@ -29,16 +27,15 @@ use bevy::{
     image::Image,
     input::{ButtonState, mouse::MouseButton},
     math::{
-        AspectRatio, Dir3, Quat, Vec2, Vec3, VectorSpace,
-        curve::EaseFunction,
-        primitives::{Cuboid, InfinitePlane3d, Plane3d, Rectangle},
+        AspectRatio, Vec2, Vec3, VectorSpace,
+        primitives::{InfinitePlane3d, Rectangle},
     },
     mesh::{Mesh, Mesh3d},
     pbr::{ExtendedMaterial, MeshMaterial3d, StandardMaterial},
     picking::{
-        Pickable, PickingSystems,
+        Pickable,
         backend::ray::RayMap,
-        events::{Drag, DragEnd, DragStart, Out, Over, Pointer},
+        events::{Drag, DragEnd, DragStart, Pointer},
         mesh_picking::ray_cast::{MeshRayCast, MeshRayCastSettings, RayCastVisibility},
         pointer::{Location, PointerAction, PointerButton, PointerId, PointerInput},
     },
@@ -49,13 +46,13 @@ use bevy::{
         render_resource::{Extent3d, TextureDimension, TextureFormat, TextureUsages},
         texture::ManualTextureViews,
     },
-    text::{TextColor, TextFont},
+    text::TextFont,
     time::{Time, Timer, TimerMode},
     transform::components::{GlobalTransform, Transform},
     ui::{
-        AlignItems, BackgroundColor, BorderColor, BorderRadius, ComputedNode, Display,
-        FlexDirection, IsDefaultUiCamera, JustifyContent, JustifyItems, Node, Outline,
-        PositionType, UiRect, UiTargetCamera, Val, ZIndex, percent, px, widget::Text,
+        AlignItems, BackgroundColor, BorderColor, BorderRadius, Display, IsDefaultUiCamera,
+        JustifyContent, Node, Outline, PositionType, UiRect, UiTargetCamera, Val, ZIndex, px,
+        widget::Text,
     },
     utils::default,
     window::{CursorIcon, PrimaryWindow, Window, WindowEvent},
@@ -63,30 +60,22 @@ use bevy::{
 use bevy_tween::{
     DefaultTweenPlugins,
     bevy_time_runner::TimeRunner,
-    interpolate::{translation, translation_by},
-    prelude::{AnimationBuilderExt, EaseKind, TimeDirection, TransformTargetStateExt},
-    tween::{AnimationTarget, IntoTarget},
+    prelude::{AnimationBuilderExt, EaseKind, TransformTargetStateExt},
+    tween::IntoTarget,
 };
-use bevy_tweening::{
-    EntityCommandsTweeningExtensions, Tween, TweenAnim, TweeningPlugin,
-    lens::{TransformPositionLens, TransformScaleLens},
-};
-use bevy_ui_anchor::{AnchorPoint, AnchorUiConfig, AnchorUiNode, AnchorUiPlugin, AnchoredUiNodes};
+use bevy_tweening::{EntityCommandsTweeningExtensions, TweeningPlugin};
+use bevy_ui_anchor::{AnchorPoint, AnchorUiConfig, AnchorUiPlugin, AnchoredUiNodes};
 use haalka::{
     HaalkaPlugin,
     align::{Align, Alignable},
     jonmo::signal,
-    prelude::{
-        BuilderPassThrough, Column, Cursorable, El, Element, LazyEntity, Row, SignalExt, Spawnable,
-        deref_copied,
-    },
+    prelude::{BuilderPassThrough, Column, Cursorable, El, Element, SignalExt, Spawnable},
 };
 
 use crate::{
     ActiveCamera, CursorTarget, Health, MaxHealth, SkewMaterial,
     actions::{CardAnimatedBy, CardReleased, HighlightedTarget},
-    deck_and_cards::{Card, CardDrawn},
-    startup_3d,
+    deck_and_cards::CardDrawn,
 };
 
 const CUBE_POINTER_ID: PointerId = PointerId::Custom(Uuid::from_u128(90870987));
@@ -238,7 +227,15 @@ pub struct CardTextureCamera;
 
 #[derive(Component)]
 #[require(Mesh3d)]
-pub struct CardUiTargetMesh;
+pub struct CardUiTargetMesh {
+    pub source_card: Entity,
+}
+
+impl CardUiTargetMesh {
+    pub fn new(source_card: Entity) -> Self {
+        Self { source_card }
+    }
+}
 
 #[derive(Component)]
 pub struct DragStartWorldPos(Transform);
@@ -247,6 +244,7 @@ pub struct DragStartWorldPos(Transform);
 pub struct CardUiSpawned {
     pub entity: Entity,
     pub card_hand_index: u16,
+    pub source_card_entity: Entity,
 }
 
 #[derive(Component, Clone)]
@@ -282,6 +280,7 @@ fn handle_card_drawn_notifiers(world: &mut World) {
         world.trigger(CardUiSpawned {
             entity: card_ui_root,
             card_hand_index: notifier.card_hand_index,
+            source_card_entity: notifier.card_entity,
         });
         world.commands().entity(notifier_ent).despawn();
     }
@@ -395,7 +394,7 @@ fn spawn_card_diegetic_ui(
     // Cube with material containing the rendered UI texture.
     commands
         .spawn((
-            CardUiTargetMesh,
+            CardUiTargetMesh::new(e.source_card_entity),
             Mesh3d(mesh_handle.clone()),
             MeshMaterial3d(material_handle),
             Transform::from_translation(card_translation).looking_to(cam_forward, Vec3::Y),
@@ -566,7 +565,7 @@ pub fn dragend_card_mesh(
     mut highlighted_target: ResMut<HighlightedTarget>,
     mut dragged_card: ResMut<DraggedCard>,
     mut card_animated_by_q: Query<&mut CardAnimatedBy, With<CardUiTargetMesh>>,
-    mut time_runners_q: Query<&mut TimeRunner>,
+    _time_runners_q: Query<&mut TimeRunner>,
 ) {
     let Ok((mesh_ent, mesh_tf, mesh_drag_start_tf)) = q.get_mut(e.entity) else {
         return;

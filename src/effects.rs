@@ -3,12 +3,11 @@ use std::collections::HashMap;
 use bevy::{
     app::{App, Plugin, Startup, Update},
     ecs::{
-        bundle::Bundle,
         component::{Component, ComponentId},
         entity::Entity,
-        query::{AnyOf, With},
+        query::AnyOf,
         resource::Resource,
-        system::{Commands, EntityCommands, Query, Res, ResMut},
+        system::{Commands, EntityCommands, Query, Res},
         world::World,
     },
 };
@@ -179,7 +178,7 @@ fn resolve_effects(
     mut cmd: Commands,
     world: &World,
     reactions_q: Query<&Reaction>,
-    effects_equivalence: Res<EffectsEquivalence>,
+    _effects_equivalence: Res<EffectsEquivalence>,
     effects_q: Query<(
         Entity,
         AnyOf<(&Humid, &Heat, &Cold, &Iced, &Burning, &Steam)>,

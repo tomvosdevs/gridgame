@@ -3,13 +3,11 @@ use bevy::{
     ecs::{
         component::Component,
         entity::Entity,
-        hierarchy::{ChildOf, Children},
         lifecycle::Add,
-        message::{MessageReader, MessageWriter},
-        name::Name,
+        message::MessageWriter,
         observer::On,
-        query::{Added, With},
-        schedule::{IntoScheduleConfigs, common_conditions::run_once},
+        query::With,
+        schedule::IntoScheduleConfigs,
         system::{Commands, Query, Res, Single},
     },
     math::Vec3,
@@ -18,21 +16,13 @@ use bevy::{
     transform::components::{GlobalTransform, Transform},
 };
 
-use bevy_diesel::{
-    effect::{GoOff, GoOffOrigin, SubEffects},
-    prelude::{InvokedBy, SpatialBackend, generate_targets, resolve_invoker, resolve_root},
-    target::{InvokerTarget, Target, TargetMutator},
-};
-use bevy_gearbox::{Active, GearboxMessage, Matched, Source, Transitions};
-use bevy_ghx_grid::ghx_grid::cartesian::{
-    coordinates::{Cartesian3D, CartesianPosition},
-    grid::CartesianGrid,
-};
+use bevy_gearbox::GearboxSet;
+use bevy_ghx_grid::ghx_grid::cartesian::{coordinates::Cartesian3D, grid::CartesianGrid};
 
 use crate::{
     NODE_SIZE,
-    grid_abilities_backend::{Grid3DBackend, GridGoOff, GridStartInvoke, GridTarget},
-    states::{FromGrid, ToWorldPos},
+    grid_abilities_backend::{GridTarget, HitReceived},
+    states::ToWorldPos,
 };
 
 pub enum ProjectilePath {}
@@ -57,12 +47,19 @@ impl ProjectileEffect {
 #[derive(Component, Clone, Debug, Reflect)]
 pub struct MovingProjectile {
     pub dir: Vec3,
+    pub target_pos: Vec3,
+    pub target_entity: Option<Entity>,
     pub speed: f32,
 }
 
 impl MovingProjectile {
-    pub fn new(dir: Vec3, speed: f32) -> Self {
-        Self { dir, speed }
+    pub fn new(dir: Vec3, target_pos: Vec3, target_entity: Option<Entity>, speed: f32) -> Self {
+        Self {
+            dir,
+            target_pos,
+            target_entity,
+            speed,
+        }
     }
 }
 
@@ -75,7 +72,7 @@ pub struct ProjectilePlugin;
 impl Plugin for ProjectilePlugin {
     fn build(&self, app: &mut App) {
         app.add_observer(init_projectile)
-            .add_systems(Update, move_projectiles);
+            .add_systems(Update, move_projectiles.before(GearboxSet));
     }
 }
 
@@ -91,8 +88,8 @@ fn init_projectile(
         return;
     };
 
-    let target_world_pos =
-        target.position.as_world_pos(grid_tf.translation()) - Vec3::new(0., NODE_SIZE.y, 0.);
+    let target_world_pos = target.position.clone().as_world_pos(grid_tf.translation())
+        - Vec3::new(0., NODE_SIZE.y, 0.);
     println!(
         "pos of target was and is : {:?} -> {:?}",
         target.position, target_world_pos
@@ -103,16 +100,32 @@ fn init_projectile(
 
     println!("sending projectile to dir : {:?}", dir);
 
-    commands
-        .entity(entity)
-        .insert(MovingProjectile::new(dir, effect.speed));
+    commands.entity(entity).insert(MovingProjectile::new(
+        dir,
+        target_world_pos,
+        target.entity,
+        effect.speed,
+    ));
 }
 
 pub fn move_projectiles(
-    mut projectiles_q: Query<(&MovingProjectile, &mut Transform)>,
+    mut projectiles_q: Query<(Entity, &MovingProjectile, &mut Transform)>,
     time: Res<Time>,
+    mut hit_writer: MessageWriter<HitReceived>,
+    mut cmd: Commands,
 ) {
-    for (projectile, mut tf) in &mut projectiles_q {
+    for (projectile_entity, projectile, mut tf) in &mut projectiles_q {
+        println!("moving a projectile");
         tf.translation += projectile.dir * projectile.speed * time.delta_secs();
+        if tf.translation.distance(projectile.target_pos) < 0.1 {
+            if let Some(entity) = projectile.target_entity {
+                println!("component on target :");
+                cmd.entity(entity).log_components();
+                hit_writer.write(HitReceived {
+                    entity: entity,
+                    hit_by: projectile_entity,
+                });
+            }
+        }
     }
 }
