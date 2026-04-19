@@ -9,7 +9,7 @@ use bevy::{
         hierarchy::ChildOf,
         message::{Message, MessageReader, MessageWriter},
         query::{With, Without},
-        system::{Commands, Query, Res, Single, SystemParam},
+        system::{Query, Single, SystemParam},
     },
     math::{Dir3, ShapeSample, Vec3, primitives::Sphere},
     prelude::IntoScheduleConfigs,
@@ -19,16 +19,11 @@ use bevy::{
 use bevy_diesel::{
     effect::{GoOff, GoOffOrigin, SubEffects},
     events::HasDieselTarget,
-    invoke::Ability,
     prelude::{InvokedBy, generate_targets, resolve_invoker, resolve_root},
-    spawn::{OnSpawnInvoker, OnSpawnOrigin, OnSpawnTarget, SpawnConfig, TemplateRegistry},
-    target::{InvokerTarget, TargetGenerator, TargetMutator, TargetType},
+    target::{InvokerTarget, TargetMutator},
 };
 use bevy_diesel::{pipeline::propagate_system, prelude::SpatialBackend, target::Target};
-use bevy_gauge::{
-    AttributeResolvable,
-    prelude::{AttributesAppExt, AttributesMut},
-};
+use bevy_gauge::AttributeResolvable;
 use bevy_gearbox::{AcceptAll, GearboxMessage, GearboxSet, RegistrationAppExt};
 use bevy_ghx_grid::ghx_grid::cartesian::{
     coordinates::{Cartesian3D, CartesianPosition},
@@ -41,8 +36,8 @@ use rand::{Rng, RngExt, SeedableRng};
 
 use crate::{
     GridCell,
+    game_flow::turns::{PlayingEntity, TeamHitFilter, ToWorldPos},
     projectiles::ProjectilePlugin,
-    states::{PlayingEntity, TeamHitFilter, ToWorldPos},
 };
 
 // Vec3 type aliases

@@ -9,12 +9,13 @@ use bevy::{
         entity::Entity,
         name::Name,
         query::With,
+        resource::Resource,
         system::{Commands, EntityCommands, Query, ResMut},
     },
 };
 use bevy_diesel::{
     invoke::Ability,
-    prelude::{DelayedDespawn, SpawnDieselSubstate, SpawnSubEffect},
+    prelude::{DelayedDespawn, SpawnDieselSubstate, SpawnSubEffect, template_repeater},
     print::PrintLn,
     spawn::TemplateRegistry,
 };
@@ -31,16 +32,15 @@ pub struct AbilitiesTemplatePlugin;
 
 impl Plugin for AbilitiesTemplatePlugin {
     fn build(&self, app: &mut bevy::app::App) {
-        app.add_systems(Startup, register_templates).add_systems(
-            Update,
-            |q: Query<&Name, With<Active>>| {
+        app.insert_resource(AbilityTemplateRegistry::default())
+            .add_systems(Startup, register_templates)
+            .add_systems(Update, |q: Query<&Name, With<Active>>| {
                 for n in &q {
                     if n.contains("Done") {
                         println!("IM DONEEEEEEEEE : {:?}", n);
                     }
                 }
-            },
-        );
+            });
     }
 }
 
@@ -151,13 +151,6 @@ impl<'w, 's, 'c> AbilityTemplateBuilder<'w, 's, 'c, CommandsPassed> {
                     .id();
             });
 
-        // println!("inserted effect with comps =>");
-        // self.commands
-        //     .as_mut()
-        //     .unwrap()
-        //     .entity(new_effect_entity)
-        //     .log_components();
-
         self.entities_hierarchy.insert(name, new_effect_entity);
 
         self
@@ -263,6 +256,79 @@ pub enum AbilityTemplateKey {
 }
 
 pub const PROJECTILE_ABILITY: &str = "projectile_ability";
+
+#[repr(u32)]
+#[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
+pub enum AbilityKind {
+    Projectile,
+}
+
+#[derive(Debug, PartialEq, Eq, Hash)]
+pub enum AbilityModifierKind {
+    Multicast(u32),
+}
+
+impl AbilityModifierKind {
+    pub fn apply(
+        self: &Self,
+        base_spawner_fn: &dyn Fn(&mut Commands, Option<Entity>) -> Entity,
+        cmd: &mut Commands,
+    ) -> Entity {
+        match self {
+            AbilityModifierKind::Multicast(n) => {
+                let root = cmd.spawn_empty().id();
+                for _ in 0_u32..*n {
+                    let inner = base_spawner_fn(cmd, None);
+                    cmd.entity(root).add_child(inner);
+                }
+                root
+            }
+        }
+    }
+}
+
+#[derive(Resource)]
+pub struct AbilityTemplateRegistry {
+    templates:
+        HashMap<AbilityKind, Box<dyn Fn(&mut Commands, Option<Entity>) -> Entity + Send + Sync>>,
+}
+
+impl Default for AbilityTemplateRegistry {
+    fn default() -> Self {
+        let mut instance = Self {
+            templates: Default::default(),
+        };
+
+        // TODO : This NEEDS to have an entry for each enum entry, if it crashes this might be the reason
+        instance.register_kind(AbilityKind::Projectile, basic_projectile_ability);
+
+        instance
+    }
+}
+
+impl AbilityTemplateRegistry {
+    pub fn register_kind<F>(&mut self, kind: AbilityKind, template: F)
+    where
+        F: Fn(&mut Commands, Option<Entity>) -> Entity + Send + Sync + 'static,
+    {
+        self.templates.insert(kind, Box::new(template));
+    }
+
+    pub fn build_ability(
+        &self,
+        cmd: &mut Commands,
+        kind: AbilityKind,
+        modifiers: Vec<AbilityModifierKind>,
+    ) -> Entity {
+        let ability_spawner_fn = self.templates.get(&kind).unwrap();
+        let mut entity: Option<Entity> = None;
+        for modifier in modifiers.iter() {
+            entity = Some(modifier.apply(ability_spawner_fn, cmd));
+        }
+
+        entity.unwrap_or_else(|| ability_spawner_fn(cmd, None))
+    }
+}
 
 fn register_templates(mut registry: ResMut<TemplateRegistry>) {
     registry.register(PROJECTILE_ABILITY, basic_projectile_ability);

@@ -5,27 +5,27 @@ use bevy::{
     ecs::{
         bundle::Bundle,
         component::Component,
-        entity::{Entity, MapEntities},
-        event::EntityEvent,
+        entity::Entity,
+        event::{EntityEvent, Event},
         name::Name,
         observer::On,
         query::{QueryFilter, With},
         relationship::RelationshipTarget,
         schedule::IntoScheduleConfigs,
-        system::{Commands, Query},
+        system::{Commands, Query, Res},
     },
 };
 use bevy_gauge::{
     AttributeComponent, attributes,
-    prelude::{Attributes, AttributesAppExt, AttributesMut, WriteBack},
+    prelude::{Attributes, AttributesMut, WriteBack},
     register_write_back,
 };
-use serde::{Deserialize, Serialize};
 
 use crate::{
-    abilities::PROJECTILE_ABILITY,
-    states::EntityTurnEnd,
-    ui::{CardUiTextContent, TextSection},
+    abilities::abilities_templates::{AbilityKind, AbilityTemplateRegistry, PROJECTILE_ABILITY},
+    deck::card_builders::{CardBuilder, StaticCardBuilder},
+    game_flow::turns::EntityTurnEnd,
+    ui::{CardTextureCamera, CardUiTargetMesh},
 };
 
 pub struct DeckAndCardsPlugin;
@@ -33,7 +33,7 @@ pub struct DeckAndCardsPlugin;
 impl Plugin for DeckAndCardsPlugin {
     fn build(&self, app: &mut App) {
         app.add_observer(set_hand_cards)
-            .add_observer(discard_hand)
+            .add_observer(handle_entity_turn_end)
             .add_systems(
                 Startup,
                 (
@@ -46,7 +46,7 @@ impl Plugin for DeckAndCardsPlugin {
     }
 }
 
-pub fn spawn_test_template_cards(mut cmd: Commands) {
+pub fn spawn_test_template_cards(mut cmd: Commands, registry: Res<AbilityTemplateRegistry>) {
     let cards_names = vec![
         "Une carte",
         "Une autre",
@@ -59,7 +59,8 @@ pub fn spawn_test_template_cards(mut cmd: Commands) {
         "souris",
     ];
     for name in cards_names {
-        cmd.spawn(Card::new_template(PROJECTILE_ABILITY, name));
+        let bundle = StaticCardBuilder::new(AbilityKind::Projectile).build(&registry, &mut cmd);
+        cmd.spawn((bundle, Name::new(name)));
     }
 }
 
@@ -126,11 +127,15 @@ pub fn set_hand_cards(
     }
 }
 
-pub fn discard_hand(
+pub fn handle_entity_turn_end(
     _: On<EntityTurnEnd>,
     mut cmd: Commands,
     hand_cards: Query<Entity, (With<Card>, With<HandCard>)>,
+    ui_cards: Query<Entity, With<CardUiTargetMesh>>,
+    ui_card_textures: Query<Entity, With<CardTextureCamera>>,
 ) {
+    // TODO: Also remove the Image and Material asset entries for the UI cards and UI card source
+    cmd.trigger(HandDiscarded);
     for card_entity in &hand_cards {
         let mut entity_cmds = cmd.entity(card_entity);
         entity_cmds.remove::<HandCard>();
@@ -139,6 +144,14 @@ pub fn discard_hand(
             entity: card_entity,
         });
     }
+
+    for ui_card_entity in &ui_cards {
+        cmd.entity(ui_card_entity).despawn();
+    }
+
+    for tex in &ui_card_textures {
+        cmd.entity(tex).despawn();
+    }
 }
 
 // Structs etc
@@ -146,6 +159,29 @@ pub fn discard_hand(
 #[derive(Component, Clone, Debug)]
 #[require(CardPile, HandDrawData, SoulLife)]
 pub struct Deck;
+
+pub struct DeckBuilder;
+
+// impl DeckBuilder {
+//     pub fn spawn_default_deck(cmd: &mut Commands, cards_count: u32) {
+//         let mut cards: Vec<Entity> =
+//             (0..cards_count).map(|_| cmd.spawn(Card::new(ability_name)).id());
+
+//         let deck_entity = cmd
+//             .spawn((
+//                 Deck,
+//                 CardPile::default(),
+//                 HandDrawData::default(),
+//                 SoulLife::default(),
+//             ))
+//             .id();
+//     }
+// }
+
+#[derive(EntityEvent)]
+pub struct DeckGenerationRequested {
+    entity: Entity,
+}
 
 #[derive(Component)]
 pub struct ActiveDeck;
@@ -174,6 +210,9 @@ pub struct CardDrawn {
     pub entity: Entity,
     pub card_hand_index: u16,
 }
+
+#[derive(Event)]
+pub struct HandDiscarded;
 
 #[derive(EntityEvent)]
 pub struct CardDiscarded {
@@ -245,9 +284,9 @@ impl Default for CardPile {
 #[relationship(relationship_target = CardPile)]
 pub struct InDeck(Entity);
 
-#[derive(Component, Clone, Default)]
+#[derive(Component, Clone)]
 pub struct Card {
-    pub ability: &'static str,
+    pub ability_entity: Entity,
 }
 
 pub trait CardStateMarker {}
@@ -265,7 +304,6 @@ pub struct UnassignedDeckState;
 impl CardStateMarker for UnassignedDeckState {}
 
 #[derive(Component, Clone)]
-#[require(Card)]
 pub struct CardState<S: CardStateMarker> {
     pub _state: PhantomData<S>,
 }
@@ -285,15 +323,13 @@ impl<S: CardStateMarker> CardState<S> {
 }
 
 impl Card {
-    pub fn new(ability_name: &'static str) -> Self {
-        Self {
-            ability: ability_name,
-        }
+    pub fn new(ability_entity: Entity) -> Self {
+        Self { ability_entity }
     }
 
-    pub fn new_template(ability_name: &'static str, name: &'static str) -> impl Bundle {
+    pub fn new_template(ability_entity: Entity, name: &'static str) -> impl Bundle {
         (
-            Card::new(ability_name),
+            Card::new(ability_entity),
             CardState::<InCardTemplateRegistry>::new(),
             Name::new(name),
         )

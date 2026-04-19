@@ -11,7 +11,7 @@ use bevy::light::DirectionalLightShadowMap;
 use bevy::log::LogPlugin;
 use bevy::pbr::{ExtendedMaterial, MaterialExtension};
 use bevy::prelude::*;
-use bevy::render::render_resource::{AsBindGroup, ShaderType};
+use bevy::render::render_resource::AsBindGroup;
 use bevy::shader::ShaderRef;
 use bevy_diesel::prelude::SpatialBackend;
 use bevy_ecs_tilemap::prelude::*;
@@ -35,29 +35,28 @@ use bevy_tween::BevyTweenRegisterSystems;
 use bevy_tween::prelude::Interpolator;
 use rand::RngExt;
 
-use crate::abilities::AbilitiesTemplatePlugin;
-use crate::actions::{
-    Action, ActionCast, ActionEffect, ActionPlugin, ActionPoints, MainTarget, Range, UsedAction,
-};
-use crate::combat::{CombatPlugin, SelectedAction};
-use crate::deck_and_cards::DeckAndCardsPlugin;
+use crate::abilities::abilities_templates::AbilitiesTemplatePlugin;
+use crate::actions::{Action, ActionEffect, ActionPlugin};
+use crate::debug::ui::DebugUiPlugin;
+use crate::deck::deck_and_cards::DeckAndCardsPlugin;
 use crate::effects::{Burning, EffectsPlugin};
+use crate::game_flow::turns::TurnsPlugin;
 use crate::grid_abilities_backend::Grid3DBackend;
-use crate::states::{CombatState, TurnsPlugin};
 use crate::tiles_templates::Targetable;
 use crate::ui::GameUiPlugin;
+use crate::visuals::cards::animation::DiegeticCardTweenPlugin;
 
 pub mod abilities;
-pub mod abilities_definitions;
 pub mod actions;
-pub mod combat;
-pub mod deck_and_cards;
+pub mod debug;
+pub mod deck;
 pub mod effects;
+pub mod game_flow;
 pub mod grid_abilities_backend;
 pub mod projectiles;
-pub mod states;
 pub mod tiles_templates;
 pub mod ui;
+pub mod visuals;
 
 #[derive(Resource)]
 pub struct CursorPos(Vec2);
@@ -749,41 +748,6 @@ pub fn untag_hoverout_gridcell(mut hover: On<Pointer<Out>>, mut hovered: ResMut<
     hover.propagate(false);
 }
 
-pub fn trigger_action(
-    click: On<Pointer<Click>>,
-    mut cmd: Commands,
-    actions_q: Query<
-        (
-            &Action,
-            &Range,
-            &ActionPoints,
-            // Option<&MovementPoints>,
-            // Option<&Physical>,
-            // Option<&Ranged>,
-            // Option<&Melee>,
-            // Option<&Piercing>,
-            // Option<&Fire>,
-            // Option<&Electric>,
-            // Option<&Water>,
-        ),
-        (Without<MainTarget>, Without<UsedAction>),
-    >,
-    selected_action: Res<SelectedAction>,
-) {
-    // Is an action selected ?
-    let Some(action_ent) = selected_action.0 else {
-        return;
-    };
-    // Get the relevant stats (range, ap etc will serve for cast checks later)
-    let Ok((_action, _range, _ap)) = actions_q.get(action_ent) else {
-        return;
-    };
-
-    cmd.entity(action_ent).insert(MainTarget(click.entity));
-    cmd.trigger(ActionCast { entity: action_ent });
-    cmd.entity(action_ent).insert(UsedAction);
-}
-
 pub fn sync_cursor_target(
     mut cmd: Commands,
     hovered: Res<HoveredCell>,
@@ -893,29 +857,20 @@ fn main() {
             custom_interpolators_plugin,
             EffectsPlugin,
             ActionPlugin,
+            DiegeticCardTweenPlugin,
             GameUiPlugin,
-            CombatPlugin,
             TurnsPlugin,
             DeckAndCardsPlugin,
+            DebugUiPlugin,
         ))
         .add_plugins(AbilitiesTemplatePlugin)
         .add_plugins(Grid3DBackend::plugin())
         .insert_resource(DirectionalLightShadowMap { size: 4096 })
         .insert_resource(HoveredCell(None))
-        .insert_state(CombatState::DeterminePlayOrder)
         .add_systems(Startup, startup_3d)
-        // .init_resource::<CursorPos>()
-        // .add_systems(Startup, (startup, spawn_beasts))
-        // .add_systems(Update, update_cursor_pos)
-        // .add_systems(Update, tag_hovered_tile)
-        // // .add_systems(Update, print_transforms)
-        // // .add_systems(Update, print_tooltip_pos)
         .add_systems(Update, tick_tilemap_effects_timer)
         .add_systems(Update, spread_tiles_effects)
         .add_systems(Update, update_tiles_texture)
         .add_systems(Update, sync_cursor_target)
-        // .add_systems(Update, log_actions)
-        //
-        // .add_systems(Update, count_cells)
         .run();
 }

@@ -1,4 +1,4 @@
-use std::{collections::HashMap, ops::Deref};
+use std::collections::HashMap;
 
 use bevy::{
     app::{App, Plugin, Startup, Update},
@@ -10,7 +10,6 @@ use bevy::{
         component::Component,
         entity::Entity,
         event::{EntityEvent, Event},
-        message::MessageWriter,
         name::Name,
         observer::On,
         query::{Added, With},
@@ -22,136 +21,146 @@ use bevy::{
     input::{ButtonInput, keyboard::KeyCode},
     log::warn,
     math::{
-        IVec2, UVec2, UVec3, Vec3,
+        UVec2, UVec3, Vec3,
         primitives::{Capsule3d, Sphere},
     },
     mesh::{Mesh, Mesh3d},
     pbr::{MeshMaterial3d, StandardMaterial},
     sprite::Text2d,
-    state::state::States,
-    time::{Time, Timer},
+    state::{app::AppExtStates, state::States},
     transform::components::{GlobalTransform, Transform},
 };
-use bevy_diesel::prelude::{InvokedBy, Invokes};
+use bevy_diesel::prelude::Invokes;
 use bevy_gauge::prelude::AttributesMut;
 use bevy_ghx_grid::ghx_grid::cartesian::{
     coordinates::{Cartesian3D, CartesianPosition},
     grid::CartesianGrid,
 };
 use bevy_ghx_proc_gen::{GridNode, bevy_egui::egui::Vec2, proc_gen::generator::Generator};
-use rand::RngExt;
 
 use crate::{
     GridCell, NODE_SIZE,
-    abilities::{Marker, Projectile, basic_projectile_ability},
-    deck_and_cards::{
+    abilities::abilities_templates::{Marker, Projectile, basic_projectile_ability},
+    deck::deck_and_cards::{
         ActiveDeck, CardPile, CardState, Deck, DrawHand, InDrawPile, StatelessCard,
         UnassignedDeckState, spawn_test_deck,
     },
-    grid_abilities_backend::{GridInvokerTarget, GridStartInvoke, GridTarget, HitFilter},
+    grid_abilities_backend::HitFilter,
 };
 
 pub struct TurnsPlugin;
 
 impl Plugin for TurnsPlugin {
     fn build(&self, app: &mut App) {
-        app
+        app.insert_state(CombatState::DeterminePlayOrder)
             .add_systems(Startup, |mut cmd: Commands| {
                 let projectile_ability = basic_projectile_ability(&mut cmd, None);
                 cmd.spawn(AbilityTest(projectile_ability));
             })
             .add_observer(spawn_combat_playing_entities)
-            .add_observer(
-            |_: On<CombatStart>,
-             mut cmd: Commands,
-             playing_q: Query<(Entity, &Speed), With<PlayingEntity>>,
-             deck_pile_q: Query<(Entity, &CardPile), With<Deck>>,
-             instance_cards_q: Query<&CardState<UnassignedDeckState>>,
-             playing_current_deck_ref_q: Query<&CurrentDeckReference, With<PlayingEntity>>,
-             mut attributes: AttributesMut<(With<Deck>, With<CardPile>)>
-             | {
-                 println!("combat start got triggered");
-
-                 let current_deck_entities: Vec<Entity> = playing_current_deck_ref_q.iter().map(|p| p.0).collect();
-
-                 for (deck_entity, deck_pile) in deck_pile_q.iter().filter(|(e, _)| current_deck_entities.contains(e)) {
-                     let cards_count = deck_pile.iter().count();
-                     cmd.entity(deck_entity).insert(ActiveDeck);
-                     attributes.set(deck_entity, "SoulLife.Max", cards_count as f32);
-                     attributes.set(deck_entity, "SoulLife.Current", cards_count as f32);
-
-                     for card_entity in deck_pile.iter() {
-                         println!("found active deck pile");
-
-                         if !instance_cards_q.contains(card_entity) {
-                             warn!("All card attached to entities with 'CurrentDeck' should have be in the 'StatelessCard' state when CombatStart is triggered");
-                             continue;
-                         }
-
-                        let mut card_cmds = cmd.entity(card_entity);
-                        card_cmds.remove::<StatelessCard>();
-                        card_cmds.insert(CardState::<InDrawPile>::new());
-                        println!("updated deck cards state");
-                    }
-                }
-
-                let entities_by_turn_order: Vec<Entity> = playing_q
-                    .iter()
-                    .sort_by::<&Speed>(|val1, val2| val2.0.cmp(&val1.0))
-                    .map(|(ent, _)| ent)
-                    .collect();
-
-                cmd.insert_resource(CombatData::init_new_combat(&entities_by_turn_order));
-                for (idx, ent) in entities_by_turn_order.iter().enumerate() {
-                    cmd.entity(*ent).insert(TurnOrder(idx as i32));
-                    if idx == 0 {
-                        cmd.trigger(EntityTurnStart { entity: *ent });
-                    }
-                }
-            },
-        )
-        .add_observer(
-            |e: On<EntityTurnStart>,
-             mut cmd: Commands,
-             q: Query<&CurrentDeckReference>,
-             q_decks: Query<Entity, With<ActiveDeck>>| {
-                let entity_current_deck = q.get(e.entity).expect("entity doesn have a deck");
-                let deck_entity = q_decks
-                    .get(entity_current_deck.0)
-                    .expect("deck doesn't exist");
-
-                cmd.trigger(DrawHand::from_deck_entity(deck_entity));
-                cmd.insert_resource(CurrentPlayingEntity(e.entity));
-                println!("turn started on : {:?}", e.entity);
-            },
-        )
-        .add_observer(
-            |e: On<EntityTurnEnd>, mut cmd: Commands, mut combat_data: ResMut<CombatData>| {
-                combat_data.end_entity_turn(e.entity);
-
-                let next_playing_entity = combat_data.get_next_playing_entity();
-
-                // Add back if the end of a GLOBAL turn should do something
-                // if combat_data.turn_just_ended() {
-
-                // }
-
-                cmd.trigger(EntityTurnStart {
-                    entity: next_playing_entity,
-                });
-            },
-        )
-        .add_systems(
-            Startup,
-            (
-                spawn_dev_text,
-                define_test_gamestatus
+            .add_observer(handle_combat_start)
+            .add_observer(handle_turn_start)
+            .add_observer(handle_turn_end)
+            .add_systems(
+                Startup,
+                (spawn_dev_text, define_test_gamestatus)
+                    .chain()
+                    .after(spawn_test_deck),
             )
-                .chain()
-                .after(spawn_test_deck),
-        )
-        .add_systems(Update, (draw_dev_text, keyboard_update_turn_test, start_combat_test, attach_visuals));
+            .add_systems(
+                Update,
+                (
+                    draw_dev_text,
+                    keyboard_update_turn_test,
+                    start_combat_test,
+                    attach_visuals,
+                ),
+            );
     }
+}
+
+fn handle_combat_start(
+    _: On<CombatStart>,
+    mut cmd: Commands,
+    playing_q: Query<(Entity, &Speed), With<PlayingEntity>>,
+    deck_pile_q: Query<(Entity, &CardPile), With<Deck>>,
+    instance_cards_q: Query<&CardState<UnassignedDeckState>>,
+    playing_current_deck_ref_q: Query<&CurrentDeckReference, With<PlayingEntity>>,
+    mut attributes: AttributesMut<(With<Deck>, With<CardPile>)>,
+) {
+    let current_deck_entities: Vec<Entity> =
+        playing_current_deck_ref_q.iter().map(|p| p.0).collect();
+
+    for (deck_entity, deck_pile) in deck_pile_q
+        .iter()
+        .filter(|(e, _)| current_deck_entities.contains(e))
+    {
+        let cards_count = deck_pile.iter().count();
+        cmd.entity(deck_entity).insert(ActiveDeck);
+        attributes.set(deck_entity, "SoulLife.Max", cards_count as f32);
+        attributes.set(deck_entity, "SoulLife.Current", cards_count as f32);
+
+        for card_entity in deck_pile.iter() {
+            println!("found active deck pile");
+
+            if !instance_cards_q.contains(card_entity) {
+                warn!(
+                    "All card attached to entities with 'CurrentDeck' should have be in the 'StatelessCard' state when CombatStart is triggered"
+                );
+                continue;
+            }
+
+            let mut card_cmds = cmd.entity(card_entity);
+            card_cmds.remove::<StatelessCard>();
+            card_cmds.insert(CardState::<InDrawPile>::new());
+            println!("updated deck cards state");
+        }
+    }
+
+    let entities_by_turn_order: Vec<Entity> = playing_q
+        .iter()
+        .sort_by::<&Speed>(|val1, val2| val2.0.cmp(&val1.0))
+        .map(|(ent, _)| ent)
+        .collect();
+
+    cmd.insert_resource(CombatData::init_new_combat(&entities_by_turn_order));
+    for (idx, ent) in entities_by_turn_order.iter().enumerate() {
+        cmd.entity(*ent).insert(TurnOrder(idx as i32));
+        if idx == 0 {
+            cmd.trigger(EntityTurnStart { entity: *ent });
+        }
+    }
+}
+
+fn handle_turn_start(
+    e: On<EntityTurnStart>,
+    mut cmd: Commands,
+    q: Query<&CurrentDeckReference>,
+    q_decks: Query<Entity, With<ActiveDeck>>,
+) {
+    let entity_current_deck = q.get(e.entity).expect("entity doesn have a deck");
+    let deck_entity = q_decks
+        .get(entity_current_deck.0)
+        .expect("deck doesn't exist");
+
+    cmd.trigger(DrawHand::from_deck_entity(deck_entity));
+    cmd.insert_resource(CurrentPlayingEntity(e.entity));
+    println!("turn started on : {:?}", e.entity);
+}
+
+fn handle_turn_end(e: On<EntityTurnEnd>, mut cmd: Commands, mut combat_data: ResMut<CombatData>) {
+    combat_data.end_entity_turn(e.entity);
+
+    let next_playing_entity = combat_data.get_next_playing_entity();
+
+    // Add back if the end of a GLOBAL turn should do something
+    // if combat_data.turn_just_ended() {
+
+    // }
+
+    cmd.trigger(EntityTurnStart {
+        entity: next_playing_entity,
+    });
 }
 
 pub fn define_test_gamestatus(mut cmd: Commands) {
@@ -234,9 +243,6 @@ impl FromGrid for Transform {
     }
 }
 
-#[derive(Resource)]
-pub struct PendingAbilityCast(pub Entity, pub Entity, Timer);
-
 #[derive(Component)]
 pub struct AbilityTest(pub Entity);
 
@@ -249,7 +255,6 @@ pub fn spawn_combat_playing_entities(
     _players_q: Query<Entity, With<PlayingEntity>>,
     _cells_q: Query<(Entity, &GridNode)>,
     _grid: Single<&CartesianGrid<Cartesian3D>>,
-    ability_test: Single<&AbilityTest>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut meshes: ResMut<Assets<Mesh>>,
 ) {
@@ -264,7 +269,7 @@ pub fn spawn_combat_playing_entities(
         .next()
         .expect("expected to find at least one Deck entity");
 
-    let grid_nodes: Vec<&GridNode> = grid_nodes_q.iter().map(|(e, n)| n).collect();
+    let grid_nodes: Vec<&GridNode> = grid_nodes_q.iter().map(|(_, n)| n).collect();
 
     let grid_origin_pos = grid_tf.translation();
     let center_pos = UVec2::new(grid.size_x() / 2, grid.size_z() / 2);
@@ -277,20 +282,18 @@ pub fn spawn_combat_playing_entities(
     );
     println!("grid pos is : {:?}", grid_origin_pos);
 
-    let player_1 = cmd
-        .spawn((
-            Name::new("Player 1"),
-            PlayingEntity::new_ally(),
-            Mesh3d::from(player_test_mesh_handle.clone()),
-            MeshMaterial3d::from(player_test_mat_handle.clone()),
-            Creature::from_stats(6, 3, 1),
-            found_tf,
-            // TODO: Use actual target
-            // GridInvokerTarget::position(found_tf.1),
-            Invokes::new(),
-            CurrentDeckReference(test_deck),
-        ))
-        .id();
+    cmd.spawn((
+        Name::new("Player 1"),
+        PlayingEntity::new_ally(),
+        Mesh3d::from(player_test_mesh_handle.clone()),
+        MeshMaterial3d::from(player_test_mat_handle.clone()),
+        Creature::from_stats(6, 3, 1),
+        found_tf,
+        // TODO: Use actual target
+        // GridInvokerTarget::position(found_tf.1),
+        Invokes::new(),
+        CurrentDeckReference(test_deck),
+    ));
     cmd.spawn((
         PlayingEntity::new_ally(),
         Mesh3d::from(player_test_mesh_handle.clone()),
@@ -397,6 +400,7 @@ pub fn keyboard_update_turn_test(
         return;
     };
 
+    println!("ici man");
     cmd.trigger(EntityTurnEnd { entity: curr_ent.0 });
 }
 

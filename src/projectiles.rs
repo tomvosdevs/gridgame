@@ -21,8 +21,8 @@ use bevy_ghx_grid::ghx_grid::cartesian::{coordinates::Cartesian3D, grid::Cartesi
 
 use crate::{
     NODE_SIZE,
+    game_flow::turns::ToWorldPos,
     grid_abilities_backend::{GridTarget, HitReceived},
-    states::ToWorldPos,
 };
 
 pub enum ProjectilePath {}

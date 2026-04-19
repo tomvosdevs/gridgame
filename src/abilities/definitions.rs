@@ -1,8 +1,6 @@
-use std::collections::HashMap;
-
 use bevy::{
     app::{Plugin, Update},
-    ecs::{bundle::Bundle, component::Component, name::Name, resource::Resource, system::Commands},
+    ecs::{bundle::Bundle, component::Component, name::Name, system::Commands},
 };
 
 pub struct AbilitiesDefinitionsPlugin;

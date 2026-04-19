@@ -27,7 +27,7 @@ use bevy::{
     image::Image,
     input::{ButtonState, mouse::MouseButton},
     math::{
-        AspectRatio, Vec2, Vec3, VectorSpace,
+        AspectRatio, Vec2, Vec3,
         primitives::{InfinitePlane3d, Rectangle},
     },
     mesh::{Mesh, Mesh3d},
@@ -63,7 +63,7 @@ use bevy_tween::{
     prelude::{AnimationBuilderExt, EaseKind, TransformTargetStateExt},
     tween::IntoTarget,
 };
-use bevy_tweening::{EntityCommandsTweeningExtensions, TweeningPlugin};
+use bevy_tweening::TweeningPlugin;
 use bevy_ui_anchor::{AnchorPoint, AnchorUiConfig, AnchorUiPlugin, AnchoredUiNodes};
 use haalka::{
     HaalkaPlugin,
@@ -74,8 +74,8 @@ use haalka::{
 
 use crate::{
     ActiveCamera, CursorTarget, Health, MaxHealth, SkewMaterial,
-    actions::{CardAnimatedBy, CardReleased, HighlightedTarget},
-    deck_and_cards::CardDrawn,
+    deck::deck_and_cards::CardDrawn,
+    visuals::cards::animation::{CardAnimatedBy, CardReleased, HighlightedTarget},
 };
 
 const CUBE_POINTER_ID: PointerId = PointerId::Custom(Uuid::from_u128(90870987));
