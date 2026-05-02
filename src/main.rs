@@ -37,6 +37,7 @@ use rand::RngExt;
 
 use crate::abilities::abilities_templates::AbilitiesTemplatePlugin;
 use crate::actions::{Action, ActionEffect, ActionPlugin};
+use crate::creatures::generation::CreatureGenerationPlugin;
 use crate::debug::ui::DebugUiPlugin;
 use crate::deck::deck_and_cards::DeckAndCardsPlugin;
 use crate::effects::{Burning, EffectsPlugin};
@@ -48,11 +49,13 @@ use crate::visuals::cards::animation::DiegeticCardTweenPlugin;
 
 pub mod abilities;
 pub mod actions;
+pub mod creatures;
 pub mod debug;
 pub mod deck;
 pub mod effects;
 pub mod game_flow;
 pub mod grid_abilities_backend;
+pub mod melee;
 pub mod projectiles;
 pub mod tiles_templates;
 pub mod ui;
@@ -862,6 +865,7 @@ fn main() {
             TurnsPlugin,
             DeckAndCardsPlugin,
             DebugUiPlugin,
+            CreatureGenerationPlugin,
         ))
         .add_plugins(AbilitiesTemplatePlugin)
         .add_plugins(Grid3DBackend::plugin())

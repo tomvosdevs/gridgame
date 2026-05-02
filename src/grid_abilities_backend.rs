@@ -37,6 +37,7 @@ use rand::{Rng, RngExt, SeedableRng};
 use crate::{
     GridCell,
     game_flow::turns::{PlayingEntity, TeamHitFilter, ToWorldPos},
+    melee::MeleePlugin,
     projectiles::ProjectilePlugin,
 };
 
@@ -407,6 +408,7 @@ impl Plugin for Grid3dDieselPlugin {
         );
 
         app.add_plugins(ProjectilePlugin);
+        app.add_plugins(MeleePlugin);
 
         // #TODO: Will need to do something similar
         // // Collision types + system (unfiltered - entities with Collides marker)

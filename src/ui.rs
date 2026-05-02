@@ -254,7 +254,7 @@ pub struct CardDrawnInHandNotifier {
 }
 
 fn spawn_card_drawn_notifer(e: On<CardDrawn>, mut cmd: Commands) {
-    println!("spawning card notifier");
+    println!("spawning card notifier for card entity : {:?}", e.entity);
     cmd.spawn(CardDrawnInHandNotifier {
         card_entity: e.entity,
         card_hand_index: e.card_hand_index,
@@ -584,6 +584,7 @@ pub fn dragend_card_mesh(
                     mesh_ent_cmds.remove::<DragStartWorldPos>();
                     dragged_card.reset();
                 }
+                println!("released card");
                 cmd.trigger(CardReleased {
                     entity: card_entity,
                     selected_target: highlighted_target.target_entity,

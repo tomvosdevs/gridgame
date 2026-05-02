@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 bevy = { version = "0.18.0", features = ["bevy_gltf", "debug", "dynamic_linking"] }
+bevy_ecs = "0.18"
 bevy-trait-query = "0.18.0"
 bevy_diesel = { git = "https://github.com/DEMIURGE-studio/bevy_diesel.git", branch="main" }
 bevy_gauge = { git = "https://github.com/DEMIURGE-studio/bevy_gauge.git", branch="main" }

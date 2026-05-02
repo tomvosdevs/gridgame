@@ -38,7 +38,7 @@ use bevy_tween::{
 
 use crate::{
     ActiveCamera, GridCell, InterpolateSkew, SkewMaterial,
-    deck::deck_and_cards::{Card, TemplateCard},
+    deck::deck_and_cards::Card,
     game_flow::turns::{CurrentPlayingEntity, PlayingEntity},
     grid_abilities_backend::{GridInvokerTarget, GridStartInvoke, GridTarget},
     tiles_templates::Targetable,
@@ -358,7 +358,7 @@ pub fn handle_card_release(
     e: On<CardReleased>,
     mut cmd: Commands,
     ui_cards_q: Query<(&Transform, &CardAnimatedBy, &CardUiTargetMesh)>,
-    cards_q: Query<&Card, Without<TemplateCard>>,
+    cards_q: Query<&Card>,
     skew_materials: Res<Assets<ExtendedMaterial<StandardMaterial, SkewMaterial>>>,
     skew_material_q: Query<
         &MeshMaterial3d<ExtendedMaterial<StandardMaterial, SkewMaterial>>,
@@ -371,15 +371,16 @@ pub fn handle_card_release(
     playing_q: Query<&CartesianPosition, With<PlayingEntity>>,
     grid: Single<&mut CartesianGrid<Cartesian3D>>,
 ) {
+    println!("received release");
     let ui_card_entity = e.entity;
 
-    let Ok((card_tf, animated_by, ui_card_data)) = ui_cards_q.get(ui_card_entity) else {
-        return;
-    };
+    let (card_tf, animated_by, ui_card_data) = ui_cards_q
+        .get(ui_card_entity)
+        .expect("should have found ui entity comps");
 
-    let Ok(card) = cards_q.get(ui_card_data.source_card) else {
-        return;
-    };
+    let card = cards_q
+        .get(ui_card_data.source_card)
+        .expect("CardUI datat's source_card should be a valid Card");
 
     if let Some(target_entity) = e.selected_target {
         cmd.entity(card.ability_entity)

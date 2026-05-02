@@ -1,4 +1,7 @@
-use std::marker::PhantomData;
+use std::{
+    marker::PhantomData,
+    ops::{Deref, DerefMut},
+};
 
 use bevy::{
     app::{App, Plugin, Startup},
@@ -12,7 +15,7 @@ use bevy::{
         query::{QueryFilter, With},
         relationship::RelationshipTarget,
         schedule::IntoScheduleConfigs,
-        system::{Commands, Query, Res},
+        system::{Commands, Query, Res, Single},
     },
 };
 use bevy_gauge::{
@@ -20,10 +23,16 @@ use bevy_gauge::{
     prelude::{Attributes, AttributesMut, WriteBack},
     register_write_back,
 };
+use bevy_prng::WyRand;
+use bevy_rand::global::GlobalRng;
 
 use crate::{
     abilities::abilities_templates::{AbilityKind, AbilityTemplateRegistry, PROJECTILE_ABILITY},
-    deck::card_builders::{CardBuilder, StaticCardBuilder},
+    creatures::definitions::CreatureKind,
+    deck::card_builders::{
+        CardBuilder, PoolSupplier, RandomPoolCardBuilder, RarityCond, RarityPicker, RarityTier,
+        StaticCardBuilder, gen_and_spawn_default_deck,
+    },
     game_flow::turns::EntityTurnEnd,
     ui::{CardTextureCamera, CardUiTargetMesh},
 };
@@ -32,60 +41,12 @@ pub struct DeckAndCardsPlugin;
 
 impl Plugin for DeckAndCardsPlugin {
     fn build(&self, app: &mut App) {
-        app.add_observer(set_hand_cards)
+        use bevy_trait_query::RegisterExt;
+
+        app.register_component_as::<dyn PoolSupplier, CreatureKind>()
+            .add_observer(set_hand_cards)
             .add_observer(handle_entity_turn_end)
-            .add_systems(
-                Startup,
-                (
-                    spawn_test_template_cards,
-                    // print_template_cards,
-                    spawn_test_deck,
-                )
-                    .chain(),
-            );
-    }
-}
-
-pub fn spawn_test_template_cards(mut cmd: Commands, registry: Res<AbilityTemplateRegistry>) {
-    let cards_names = vec![
-        "Une carte",
-        "Une autre",
-        "toto",
-        "tata",
-        "tutu",
-        "jean",
-        "jeannot",
-        "poissoj",
-        "souris",
-    ];
-    for name in cards_names {
-        let bundle = StaticCardBuilder::new(AbilityKind::Projectile).build(&registry, &mut cmd);
-        cmd.spawn((bundle, Name::new(name)));
-    }
-}
-
-pub fn print_template_cards(q: Query<&Name, With<CardState<InCardTemplateRegistry>>>) {
-    for card_name in &q {
-        println!("found template card : {:?}", card_name);
-    }
-}
-
-pub fn spawn_test_deck(
-    mut cmd: Commands,
-    template_cards_q: Query<Entity, With<CardState<InCardTemplateRegistry>>>,
-) {
-    let test_deck_ent = cmd
-        .spawn((
-            Deck,
-            attributes! {"SoulLife.Current" => 0.0, "SoulLife.Max" => 0.0},
-            Attributes::new(),
-            SoulLife::default(),
-        ))
-        .id();
-
-    for template_card_ent in &template_cards_q {
-        println!("adding card to deck");
-        add_card_to_deck(&mut cmd, template_card_ent, test_deck_ent);
+            .add_observer(gen_and_spawn_default_deck);
     }
 }
 
@@ -120,6 +81,7 @@ pub fn set_hand_cards(
         let mut entity_cmds = cmd.entity(*card_entity);
         entity_cmds.remove::<CardState<InDrawPile>>();
         entity_cmds.insert(HandCard::new());
+        println!("drawn card entity : {:?}", card_entity);
         cmd.trigger(CardDrawn {
             entity: *card_entity,
             card_hand_index: idx as u16,
@@ -282,7 +244,7 @@ impl Default for CardPile {
 
 #[derive(Component)]
 #[relationship(relationship_target = CardPile)]
-pub struct InDeck(Entity);
+pub struct InDeck(pub Entity);
 
 #[derive(Component, Clone)]
 pub struct Card {
@@ -291,8 +253,6 @@ pub struct Card {
 
 pub trait CardStateMarker {}
 
-pub struct InCardTemplateRegistry;
-impl CardStateMarker for InCardTemplateRegistry {}
 pub struct InDrawPile;
 impl CardStateMarker for InDrawPile {}
 pub struct InDiscardPile;
@@ -308,7 +268,6 @@ pub struct CardState<S: CardStateMarker> {
     pub _state: PhantomData<S>,
 }
 
-pub type TemplateCard = CardState<InCardTemplateRegistry>;
 pub type DrawPileCard = CardState<InDrawPile>;
 pub type DiscardPileCard = CardState<InDiscardPile>;
 pub type HandCard = CardState<InHand>;
@@ -326,26 +285,4 @@ impl Card {
     pub fn new(ability_entity: Entity) -> Self {
         Self { ability_entity }
     }
-
-    pub fn new_template(ability_entity: Entity, name: &'static str) -> impl Bundle {
-        (
-            Card::new(ability_entity),
-            CardState::<InCardTemplateRegistry>::new(),
-            Name::new(name),
-        )
-    }
-}
-
-pub fn add_card_to_deck(cmd: &mut Commands, card_template: Entity, deck_entity: Entity) {
-    let new_card_instance = cmd
-        .spawn((InDeck(deck_entity), CardState::<UnassignedDeckState>::new()))
-        .id();
-
-    // clone template component into the instance
-    let _instance = cmd
-        .entity(card_template)
-        .clone_with_opt_out(new_card_instance, |builder| {
-            builder.deny::<CardState<InCardTemplateRegistry>>();
-        })
-        .id();
 }

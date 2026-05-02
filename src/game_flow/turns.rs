@@ -31,7 +31,7 @@ use bevy::{
     transform::components::{GlobalTransform, Transform},
 };
 use bevy_diesel::prelude::Invokes;
-use bevy_gauge::prelude::AttributesMut;
+use bevy_gauge::{AttributeComponent, prelude::AttributesMut};
 use bevy_ghx_grid::ghx_grid::cartesian::{
     coordinates::{Cartesian3D, CartesianPosition},
     grid::CartesianGrid,
@@ -39,11 +39,18 @@ use bevy_ghx_grid::ghx_grid::cartesian::{
 use bevy_ghx_proc_gen::{GridNode, bevy_egui::egui::Vec2, proc_gen::generator::Generator};
 
 use crate::{
-    GridCell, NODE_SIZE,
+    GRID_X, GRID_Z, GridCell, NODE_SIZE,
     abilities::abilities_templates::{Marker, Projectile, basic_projectile_ability},
-    deck::deck_and_cards::{
-        ActiveDeck, CardPile, CardState, Deck, DrawHand, InDrawPile, StatelessCard,
-        UnassignedDeckState, spawn_test_deck,
+    creatures::{
+        definitions::{Creature, CreatureKind},
+        generation::CreatureGenerationRequested,
+    },
+    deck::{
+        card_builders::DefaultDeckGenRequested,
+        deck_and_cards::{
+            ActiveDeck, CardPile, CardState, Deck, DrawHand, InDrawPile, StatelessCard,
+            UnassignedDeckState,
+        },
     },
     grid_abilities_backend::HitFilter,
 };
@@ -57,16 +64,13 @@ impl Plugin for TurnsPlugin {
                 let projectile_ability = basic_projectile_ability(&mut cmd, None);
                 cmd.spawn(AbilityTest(projectile_ability));
             })
+            .add_observer(handle_playing_gen_req)
             .add_observer(spawn_combat_playing_entities)
             .add_observer(handle_combat_start)
             .add_observer(handle_turn_start)
             .add_observer(handle_turn_end)
-            .add_systems(
-                Startup,
-                (spawn_dev_text, define_test_gamestatus)
-                    .chain()
-                    .after(spawn_test_deck),
-            )
+            .add_systems(Startup, request_test_playing_gen)
+            .add_systems(Startup, (spawn_dev_text, define_test_gamestatus).chain())
             .add_systems(
                 Update,
                 (
@@ -76,6 +80,56 @@ impl Plugin for TurnsPlugin {
                     attach_visuals,
                 ),
             );
+    }
+}
+
+#[derive(Event)]
+pub struct RequestPlayingGeneration {
+    kind: CreatureKind,
+    team: PlayingTeam,
+}
+
+impl RequestPlayingGeneration {
+    pub fn ally_from_kind(kind: CreatureKind) -> Self {
+        Self {
+            kind,
+            team: PlayingTeam::Ally,
+        }
+    }
+
+    pub fn enemy_from_kind(kind: CreatureKind) -> Self {
+        Self {
+            kind,
+            team: PlayingTeam::Enemy,
+        }
+    }
+}
+
+pub fn handle_playing_gen_req(e: On<RequestPlayingGeneration>, mut cmd: Commands) {
+    let entity = cmd
+        .spawn((
+            Name::new("Some player"),
+            PlayingEntity::new_ally(),
+            Invokes::new(),
+        ))
+        .id();
+
+    match e.team {
+        PlayingTeam::Ally => cmd.entity(entity).insert(PlayingEntity::new_ally()),
+        PlayingTeam::Enemy => cmd.entity(entity).insert(PlayingEntity::new_ennemy()),
+        PlayingTeam::Environment => cmd
+            .entity(entity)
+            .insert(PlayingEntity::new_environmental()),
+    };
+
+    cmd.trigger(CreatureGenerationRequested::new(entity, e.kind));
+}
+
+pub fn request_test_playing_gen(mut cmd: Commands) {
+    for _ in 0..5 {
+        cmd.trigger(RequestPlayingGeneration::ally_from_kind(
+            CreatureKind::TestRanged,
+        ));
     }
 }
 
@@ -101,8 +155,6 @@ fn handle_combat_start(
         attributes.set(deck_entity, "SoulLife.Current", cards_count as f32);
 
         for card_entity in deck_pile.iter() {
-            println!("found active deck pile");
-
             if !instance_cards_q.contains(card_entity) {
                 warn!(
                     "All card attached to entities with 'CurrentDeck' should have be in the 'StatelessCard' state when CombatStart is triggered"
@@ -113,13 +165,12 @@ fn handle_combat_start(
             let mut card_cmds = cmd.entity(card_entity);
             card_cmds.remove::<StatelessCard>();
             card_cmds.insert(CardState::<InDrawPile>::new());
-            println!("updated deck cards state");
         }
     }
 
     let entities_by_turn_order: Vec<Entity> = playing_q
         .iter()
-        .sort_by::<&Speed>(|val1, val2| val2.0.cmp(&val1.0))
+        .sort_by::<&Speed>(|val1, val2| val2.current.cmp(&val1.current))
         .map(|(ent, _)| ent)
         .collect();
 
@@ -234,10 +285,11 @@ impl FromGrid for Transform {
 
         let groud_pos_index = grid.index_from_coords(pos.x, ground, pos.y);
         let cell_grid_pos = grid.pos_from_index(groud_pos_index);
+        println!("result pos : {:?}", cell_grid_pos);
         let translation = Vec3::new(
-            (cell_grid_pos.x as f32 * node_size.x) - (node_size.x * 0.5),
+            (cell_grid_pos.x as f32 * node_size.x) + (player_mesh_size.x * 0.5),
             (cell_grid_pos.y as f32 * node_size.y) + player_mesh_size.y + node_size.y,
-            (cell_grid_pos.z as f32 * node_size.z) - (node_size.z * 0.5),
+            (cell_grid_pos.z as f32 * node_size.z) + (player_mesh_size.x * 0.5),
         ) + grid_origin_offset;
         (Transform::from_translation(translation), cell_grid_pos)
     }
@@ -252,76 +304,87 @@ pub fn spawn_combat_playing_entities(
     q: Query<Entity, With<Deck>>,
     grid_q: Query<(&CartesianGrid<Cartesian3D>, &GlobalTransform)>,
     grid_nodes_q: Query<(Entity, &GridNode), With<GridCell>>,
-    _players_q: Query<Entity, With<PlayingEntity>>,
-    _cells_q: Query<(Entity, &GridNode)>,
-    _grid: Single<&CartesianGrid<Cartesian3D>>,
+    players_q: Query<Entity, With<PlayingEntity>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut meshes: ResMut<Assets<Mesh>>,
 ) {
     let (grid, grid_tf) = grid_q.single().expect("Expected to find one single grid");
+    println!("grid rotation : {:?}", grid_tf.rotation());
     let player_size = Vec2::new(0.7, 1.2);
     let player_test_mesh_handle = meshes.add(Capsule3d::new(player_size.x, player_size.y));
     let player_test_mat_handle =
         materials.add(StandardMaterial::from_color(Srgba::new(0.8, 0.1, 0.5, 1.0)));
 
-    let test_deck = q
-        .iter()
-        .next()
-        .expect("expected to find at least one Deck entity");
-
     let grid_nodes: Vec<&GridNode> = grid_nodes_q.iter().map(|(_, n)| n).collect();
 
     let grid_origin_pos = grid_tf.translation();
     let center_pos = UVec2::new(grid.size_x() / 2, grid.size_z() / 2);
-    let found_tf = Transform::create_ground_grid_pos_bundle(
-        &grid,
-        grid_origin_pos,
-        player_size,
-        center_pos,
-        &grid_nodes,
-    );
-    println!("grid pos is : {:?}", grid_origin_pos);
 
-    cmd.spawn((
-        Name::new("Player 1"),
-        PlayingEntity::new_ally(),
-        Mesh3d::from(player_test_mesh_handle.clone()),
-        MeshMaterial3d::from(player_test_mat_handle.clone()),
-        Creature::from_stats(6, 3, 1),
-        found_tf,
-        // TODO: Use actual target
-        // GridInvokerTarget::position(found_tf.1),
-        Invokes::new(),
-        CurrentDeckReference(test_deck),
-    ));
-    cmd.spawn((
-        PlayingEntity::new_ally(),
-        Mesh3d::from(player_test_mesh_handle.clone()),
-        MeshMaterial3d::from(player_test_mat_handle.clone()),
-        Creature::from_stats(1, 3, 1),
-        Transform::create_ground_grid_pos_bundle(
-            &grid,
-            grid_origin_pos,
-            player_size,
-            UVec2::new(1, 2),
-            &grid_nodes,
-        ),
-        CurrentDeckReference(test_deck),
-    ));
-    cmd.spawn((
-        PlayingEntity::new_ennemy(),
-        Mesh3d::from(player_test_mesh_handle.clone()),
-        MeshMaterial3d::from(player_test_mat_handle.clone()),
-        Creature::from_stats(5, 4, 1),
-        Transform::create_ground_grid_pos_bundle(
-            &grid,
-            grid_origin_pos,
-            player_size,
-            UVec2::new(1, 3),
-            &grid_nodes,
-        ),
-        CurrentDeckReference(test_deck),
-    ));
+    let mut x = 0;
+    let mut z = 0;
+    for (i, entity) in players_q.iter().enumerate() {
+        let flat_pos = UVec2::new(x, z);
+        println!("flat pos : {:?}", flat_pos);
+        cmd.entity(entity).insert((
+            PlayingEntity::new_ally(),
+            Mesh3d::from(player_test_mesh_handle.clone()),
+            MeshMaterial3d::from(player_test_mat_handle.clone()),
+            Transform::create_ground_grid_pos_bundle(
+                &grid,
+                grid_origin_pos,
+                player_size,
+                flat_pos,
+                &grid_nodes,
+            ),
+        ));
+
+        if x == GRID_X - 1 {
+            z += 1;
+            x = 0;
+        } else {
+            x += 1;
+        }
+
+        if z == GRID_Z - 1 {
+            z = 0;
+        }
+    }
+
+    // cmd.spawn((
+    //     GenerateDefaultDeck(CreatureKind::TestMelee),
+    //     Mesh3d::from(player_test_mesh_handle.clone()),
+    //     MeshMaterial3d::from(player_test_mat_handle.clone()),
+    //     found_tf,
+    //     // TODO: Use actual target
+    //     // GridInvokerTarget::position(found_tf.1),
+    //     CurrentDeckReference(test_deck),
+    // ));
+    // cmd.spawn((
+    //     PlayingEntity::new_ally(),
+    //     Mesh3d::from(player_test_mesh_handle.clone()),
+    //     MeshMaterial3d::from(player_test_mat_handle.clone()),
+    //     Transform::create_ground_grid_pos_bundle(
+    //         &grid,
+    //         grid_origin_pos,
+    //         player_size,
+    //         UVec2::new(1, 2),
+    //         &grid_nodes,
+    //     ),
+    //     CurrentDeckReference(test_deck),
+    // ));
+    // cmd.spawn((
+    //     PlayingEntity::new_ennemy(),
+    //     Mesh3d::from(player_test_mesh_handle.clone()),
+    //     MeshMaterial3d::from(player_test_mat_handle.clone()),
+    //     Transform::create_ground_grid_pos_bundle(
+    //         &grid,
+    //         grid_origin_pos,
+    //         player_size,
+    //         UVec2::new(1, 3),
+    //         &grid_nodes,
+    //     ),
+    //     CurrentDeckReference(test_deck),
+    // ));
 
     cmd.trigger(CombatStart);
 }
@@ -507,13 +570,13 @@ pub enum CombatState {
 #[derive(Component)]
 pub struct MemberOf<const ID: i32>;
 pub type AllyTag = MemberOf<0>;
-pub type EnnemyTag = MemberOf<1>;
+pub type EnemyTag = MemberOf<1>;
 pub type EnvironmentTag = MemberOf<2>;
 
 #[derive(Component, PartialEq, Eq)]
 pub enum PlayingTeam {
     Ally,
-    Ennemy,
+    Enemy,
     Environment,
 }
 
@@ -546,7 +609,7 @@ impl PlayingEntity {
     }
 
     pub fn new_ennemy() -> impl Bundle {
-        (PlayingEntity, MemberOf::<1>, PlayingTeam::Ennemy)
+        (PlayingEntity, MemberOf::<1>, PlayingTeam::Enemy)
     }
 
     pub fn new_environmental() -> impl Bundle {
@@ -558,27 +621,73 @@ impl PlayingEntity {
     }
 }
 
-#[derive(Component, Default)]
-pub struct Speed(pub i32);
-#[derive(Component, Default)]
-pub struct Strength(pub i32);
-#[derive(Component, Default)]
-pub struct MeleeRange(pub i32);
+#[derive(Component, Default, AttributeComponent)]
+pub struct Speed {
+    #[read]
+    #[write]
+    pub current: i32,
+}
+
+impl Speed {
+    pub fn new(val: i32) -> Self {
+        Self { current: val }
+    }
+}
+
+#[derive(Component, Default, AttributeComponent)]
+pub struct Strength {
+    #[read]
+    #[write]
+    pub current: i32,
+}
+
+impl Strength {
+    pub fn new(val: i32) -> Self {
+        Self { current: val }
+    }
+}
+
+#[derive(Component, Default, AttributeComponent)]
+pub struct MeleeRange {
+    #[read]
+    #[write]
+    pub current: i32,
+}
+
+impl MeleeRange {
+    pub fn new(val: i32) -> Self {
+        Self { current: val }
+    }
+}
+
+#[derive(Component, Default, AttributeComponent)]
+pub struct RangedRange {
+    #[read]
+    #[write]
+    pub current: i32,
+}
+
+impl RangedRange {
+    pub fn new(val: i32) -> Self {
+        Self { current: val }
+    }
+}
 
 #[derive(Component, Default)]
 pub struct TurnOrder(pub i32);
 
-#[derive(Component)]
-#[require(Speed, Strength, MeleeRange)]
-pub struct Creature;
-
 impl Creature {
-    pub fn from_stats(speed: i32, strength: i32, melee_range: i32) -> impl Bundle {
+    pub fn from_stats(
+        kind: CreatureKind,
+        speed: i32,
+        strength: i32,
+        melee_range: i32,
+    ) -> impl Bundle {
         (
-            Creature,
-            Speed(speed),
-            Strength(strength),
-            MeleeRange(melee_range),
+            Creature::new(kind),
+            Speed::new(speed),
+            Strength::new(strength),
+            MeleeRange::new(melee_range),
         )
     }
 }

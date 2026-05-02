@@ -115,7 +115,6 @@ pub fn move_projectiles(
     mut cmd: Commands,
 ) {
     for (projectile_entity, projectile, mut tf) in &mut projectiles_q {
-        println!("moving a projectile");
         tf.translation += projectile.dir * projectile.speed * time.delta_secs();
         if tf.translation.distance(projectile.target_pos) < 0.1 {
             if let Some(entity) = projectile.target_entity {

@@ -20,11 +20,15 @@ use bevy_diesel::{
     spawn::TemplateRegistry,
 };
 use bevy_gearbox::{Active, GearboxMessage, InitStateMachine, SpawnTransition, StateComponent};
+use bevy_prng::WyRand;
+use rand::RngExt;
 
 use crate::{
+    deck::card_builders::{CardPool, CardPoolStatus},
     grid_abilities_backend::{
         AbilityHitEntity, GridGoOffConfig, GridSpawnConfig, GridStartInvoke, GridTargetGenerator,
     },
+    melee::MeleeEffect,
     projectiles::ProjectileEffect,
 };
 
@@ -261,6 +265,7 @@ pub const PROJECTILE_ABILITY: &str = "projectile_ability";
 #[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
 pub enum AbilityKind {
     Projectile,
+    Melee,
 }
 
 #[derive(Debug, PartialEq, Eq, Hash)]
@@ -301,6 +306,7 @@ impl Default for AbilityTemplateRegistry {
 
         // TODO : This NEEDS to have an entry for each enum entry, if it crashes this might be the reason
         instance.register_kind(AbilityKind::Projectile, basic_projectile_ability);
+        instance.register_kind(AbilityKind::Melee, basic_melee_ability);
 
         instance
     }
@@ -317,10 +323,11 @@ impl AbilityTemplateRegistry {
     pub fn build_ability(
         &self,
         cmd: &mut Commands,
-        kind: AbilityKind,
+        pools: &Vec<(CardPool, CardPoolStatus)>,
+        rng: &mut WyRand,
         modifiers: Vec<AbilityModifierKind>,
     ) -> Entity {
-        let ability_spawner_fn = self.templates.get(&kind).unwrap();
+        let ability_spawner_fn = self.get_valid_ability(pools, rng);
         let mut entity: Option<Entity> = None;
         for modifier in modifiers.iter() {
             entity = Some(modifier.apply(ability_spawner_fn, cmd));
@@ -328,11 +335,36 @@ impl AbilityTemplateRegistry {
 
         entity.unwrap_or_else(|| ability_spawner_fn(cmd, None))
     }
+
+    pub fn get_valid_ability(
+        &self,
+        pools: &Vec<(CardPool, CardPoolStatus)>,
+        rng: &mut WyRand,
+    ) -> &Box<dyn Fn(&mut Commands, Option<Entity>) -> Entity + Send + Sync> {
+        let can_melee = pools.contains(&(CardPool::Melee, CardPoolStatus::Required));
+        let can_shoot = pools.contains(&(CardPool::Ranged, CardPoolStatus::Required));
+        let kind = match (can_melee, can_shoot) {
+            (true, true) => {
+                if rng.random_bool(1.0 / 2.0) {
+                    AbilityKind::Melee
+                } else {
+                    AbilityKind::Projectile
+                }
+            }
+            (true, false) => AbilityKind::Melee,
+            (false, true) => AbilityKind::Projectile,
+            (false, false) => AbilityKind::Melee,
+        };
+
+        println!("getting ability for k : {:?}", kind);
+        self.templates.get(&kind).unwrap()
+    }
 }
 
 fn register_templates(mut registry: ResMut<TemplateRegistry>) {
     registry.register(PROJECTILE_ABILITY, basic_projectile_ability);
     registry.register("projectile", projectile_template);
+    registry.register("melee", melee_template);
 }
 
 pub fn projectile_template(commands: &mut Commands, entity: Option<Entity>) -> Entity {
@@ -391,6 +423,69 @@ pub fn basic_projectile_ability(commands: &mut Commands, entity: Option<Entity>)
                 Name::new("SpawnProjectile"),
                 PrintLn::new("Spawning GoOff:"),
                 GridSpawnConfig::invoker("projectile")
+                    .with_target_generator(GridTargetGenerator::at_invoker_target()),
+            ),
+        );
+
+        parent.spawn_transition::<GridStartInvoke>(ready, invoke);
+
+        let commands = parent.commands_mut();
+        commands
+            .entity(entity)
+            .insert(Ability)
+            .init_state_machine(ready);
+    });
+
+    entity
+}
+
+pub fn melee_template(commands: &mut Commands, entity: Option<Entity>) -> Entity {
+    let entity = entity.unwrap_or_else(|| commands.spawn_empty().id());
+
+    commands.entity(entity).with_children(|parent| {
+        let attacking = parent
+            .spawn_diesel_substate(entity, Name::new("Attacking"))
+            .id();
+
+        let done = parent
+            .spawn_diesel_substate(
+                entity,
+                (Name::new("Done"), StateComponent(DelayedDespawn::now())),
+            )
+            .id();
+
+        parent.spawn_transition::<AbilityHitEntity>(attacking, done);
+
+        let commands = parent.commands_mut();
+        commands
+            .entity(entity)
+            .insert((Name::new("MeleeAtk"), Visibility::Inherited, MeleeEffect))
+            .init_state_machine(attacking);
+    });
+
+    entity
+}
+
+pub fn basic_melee_ability(commands: &mut Commands, entity: Option<Entity>) -> Entity {
+    let entity = entity.unwrap_or_else(|| commands.spawn_empty().id());
+
+    commands.entity(entity).with_children(|parent| {
+        let ready = parent
+            .spawn_diesel_substate(entity, Name::new("Ready"))
+            .id();
+        let invoke = parent
+            .spawn_diesel_substate(
+                entity,
+                (Name::new("Invoke"), GridGoOffConfig::invoker_target()),
+            )
+            .id();
+
+        parent.spawn_subeffect(
+            invoke,
+            (
+                Name::new("SpawnMelee"),
+                PrintLn::new("Spawning Melee GoOff:"),
+                GridSpawnConfig::invoker("melee")
                     .with_target_generator(GridTargetGenerator::at_invoker_target()),
             ),
         );
