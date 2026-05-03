@@ -37,6 +37,9 @@ use bevy_ghx_grid::ghx_grid::cartesian::{
     grid::CartesianGrid,
 };
 use bevy_ghx_proc_gen::{GridNode, bevy_egui::egui::Vec2, proc_gen::generator::Generator};
+use bevy_prng::WyRand;
+use bevy_rand::global::GlobalRng;
+use rand::RngExt;
 
 use crate::{
     GRID_X, GRID_Z, GridCell, NODE_SIZE,
@@ -53,6 +56,7 @@ use crate::{
         },
     },
     grid_abilities_backend::HitFilter,
+    tiles_templates::Targetable,
 };
 
 pub struct TurnsPlugin;
@@ -298,6 +302,26 @@ impl FromGrid for Transform {
 #[derive(Component)]
 pub struct AbilityTest(pub Entity);
 
+fn get_rand_pos_in_grid(rng: &mut WyRand, side_padding: u32) -> UVec2 {
+    UVec2::new(
+        rng.random_range((0 + side_padding)..GRID_X - (1 + side_padding)),
+        rng.random_range((0 + side_padding)..GRID_Z - (1 + side_padding)),
+    )
+}
+
+pub fn get_random_available_pos(
+    taken_positions: &mut Vec<UVec2>,
+    rng: &mut WyRand,
+    side_padding: u32,
+) -> UVec2 {
+    let mut pos = get_rand_pos_in_grid(rng, side_padding);
+    while taken_positions.contains(&pos) {
+        pos = get_rand_pos_in_grid(rng, side_padding);
+    }
+    taken_positions.push(pos.clone());
+    pos
+}
+
 pub fn spawn_combat_playing_entities(
     _: On<CombatInit>,
     mut cmd: Commands,
@@ -307,6 +331,7 @@ pub fn spawn_combat_playing_entities(
     players_q: Query<Entity, With<PlayingEntity>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut meshes: ResMut<Assets<Mesh>>,
+    mut rng: Single<&mut WyRand, With<GlobalRng>>,
 ) {
     let (grid, grid_tf) = grid_q.single().expect("Expected to find one single grid");
     println!("grid rotation : {:?}", grid_tf.rotation());
@@ -318,13 +343,12 @@ pub fn spawn_combat_playing_entities(
     let grid_nodes: Vec<&GridNode> = grid_nodes_q.iter().map(|(_, n)| n).collect();
 
     let grid_origin_pos = grid_tf.translation();
-    let center_pos = UVec2::new(grid.size_x() / 2, grid.size_z() / 2);
 
-    let mut x = 0;
-    let mut z = 0;
-    for (i, entity) in players_q.iter().enumerate() {
-        let flat_pos = UVec2::new(x, z);
-        println!("flat pos : {:?}", flat_pos);
+    let mut taken_positions: Vec<UVec2> = Vec::new();
+    for (_, entity) in players_q.iter().enumerate() {
+        let side_pad = 4;
+        let flat_pos = get_random_available_pos(&mut taken_positions, &mut rng, side_pad);
+
         cmd.entity(entity).insert((
             PlayingEntity::new_ally(),
             Mesh3d::from(player_test_mesh_handle.clone()),
@@ -337,17 +361,6 @@ pub fn spawn_combat_playing_entities(
                 &grid_nodes,
             ),
         ));
-
-        if x == GRID_X - 1 {
-            z += 1;
-            x = 0;
-        } else {
-            x += 1;
-        }
-
-        if z == GRID_Z - 1 {
-            z = 0;
-        }
     }
 
     // cmd.spawn((
@@ -598,6 +611,7 @@ impl HitFilter for TeamHitFilter {
 }
 
 #[derive(Component, Default)]
+#[require(Targetable)]
 pub struct PlayingEntity;
 
 #[derive(Component)]

@@ -343,7 +343,7 @@ impl GridRulesGenerator {
 pub struct GridCell;
 
 #[derive(Resource, Default)]
-pub struct HoveredCell(pub Option<Entity>);
+pub struct HoveredTargetable(pub Option<Entity>);
 
 #[derive(Default, Clone)]
 pub struct GridCellSocketsComponents<A: Bundle + Clone + Default = ()> {
@@ -387,22 +387,18 @@ impl<A: Bundle + Clone + Default> BundleInserter for GridCellSocketsComponents<A
         scale: Vec3,
         rotation: ModelRotation,
     ) {
-        command
-            .insert((
-                Transform::from_translation(translation)
-                    .with_scale(scale)
-                    .with_rotation(Quat::from_rotation_y(rotation.rad())),
-                Mesh3d(self.mesh.clone()),
-                MeshMaterial3d(self.material.clone()),
-                GridCell,
-                Targetable,
-                Health(100),
-                MaxHealth(100),
-                self.components.clone(),
-            ))
-            // TODO : Switch observer setup to a Added<GridCell> system
-            .observe(tag_hovered_gridcell)
-            .observe(untag_hoverout_gridcell);
+        command.insert((
+            Transform::from_translation(translation)
+                .with_scale(scale)
+                .with_rotation(Quat::from_rotation_y(rotation.rad())),
+            Mesh3d(self.mesh.clone()),
+            MeshMaterial3d(self.material.clone()),
+            GridCell,
+            Targetable,
+            Health(100),
+            MaxHealth(100),
+            self.components.clone(),
+        ));
 
         let mut rng = rand::rng();
         let rand_is_burning = rng.random_bool(1.0 / 8.0);
@@ -738,12 +734,23 @@ pub fn log_actions(mut cmd: Commands, q: Query<Entity, With<Action>>) {
 #[derive(Component, Debug)]
 pub struct CursorTarget(Entity);
 
-pub fn tag_hovered_gridcell(mut hover: On<Pointer<Over>>, mut hovered: ResMut<HoveredCell>) {
+pub fn tag_hovered_targetable(
+    mut hover: On<Pointer<Over>>,
+    q: Query<&Targetable>,
+    mut hovered: ResMut<HoveredTargetable>,
+) {
+    if !q.contains(hover.entity) {
+        return;
+    }
+
     hovered.0 = Some(hover.entity);
     hover.propagate(false);
 }
 
-pub fn untag_hoverout_gridcell(mut hover: On<Pointer<Out>>, mut hovered: ResMut<HoveredCell>) {
+pub fn untag_hoveredout_targetable(
+    mut hover: On<Pointer<Out>>,
+    mut hovered: ResMut<HoveredTargetable>,
+) {
     // Only clear if this entity is still the current target
     if hovered.0 == Some(hover.entity) {
         hovered.0 = None;
@@ -753,7 +760,7 @@ pub fn untag_hoverout_gridcell(mut hover: On<Pointer<Out>>, mut hovered: ResMut<
 
 pub fn sync_cursor_target(
     mut cmd: Commands,
-    hovered: Res<HoveredCell>,
+    hovered: Res<HoveredTargetable>,
     current: Query<Entity, With<CursorTarget>>,
 ) {
     if !hovered.is_changed() {
@@ -870,11 +877,13 @@ fn main() {
         .add_plugins(AbilitiesTemplatePlugin)
         .add_plugins(Grid3DBackend::plugin())
         .insert_resource(DirectionalLightShadowMap { size: 4096 })
-        .insert_resource(HoveredCell(None))
+        .insert_resource(HoveredTargetable(None))
         .add_systems(Startup, startup_3d)
         .add_systems(Update, tick_tilemap_effects_timer)
         .add_systems(Update, spread_tiles_effects)
         .add_systems(Update, update_tiles_texture)
         .add_systems(Update, sync_cursor_target)
+        .add_observer(tag_hovered_targetable)
+        .add_observer(untag_hoveredout_targetable)
         .run();
 }

@@ -4,7 +4,7 @@ use std::{
 };
 
 use bevy::{
-    app::{App, Plugin, Startup},
+    app::{App, Plugin, Startup, Update},
     ecs::{
         bundle::Bundle,
         component::Component,
@@ -46,23 +46,36 @@ impl Plugin for DeckAndCardsPlugin {
         app.register_component_as::<dyn PoolSupplier, CreatureKind>()
             .add_observer(set_hand_cards)
             .add_observer(handle_entity_turn_end)
-            .add_observer(gen_and_spawn_default_deck);
+            .add_observer(gen_and_spawn_default_deck)
+            .add_systems(Update, log_deck_cards_count);
     }
 }
 
 // ===============
 // Observer systems
 // ===============
+//
+pub fn log_deck_cards_count(q: Query<&CardPile>) {
+    for pile in &q {
+        println!("cards in deck count : {:?}", pile.len());
+    }
+}
 
 pub fn set_hand_cards(
     e: On<DrawHand>,
     mut cmd: Commands,
     decks_q: Query<(&HandDrawData, &CardPile), With<Deck>>,
-    mut attributes: AttributesMut<(With<Deck>, With<CardPile>, With<HandDrawData>)>,
+    mut soul_life_q: Query<&mut SoulLife, (With<Deck>, With<CardPile>, With<HandDrawData>)>,
     drawable_cards_q: Query<Entity, (With<Card>, With<CardState<InDrawPile>>)>,
 ) {
     println!("drawing hand cards");
     let (hand_draw_data, card_pile) = decks_q.get(e.entity).expect("Target deck not found");
+    let mut soul_life = soul_life_q
+        .get_mut(e.entity)
+        .expect("should have found soul_life");
+
+    println!("deck cards count = {:?}", card_pile.len());
+
     let hand_size = hand_draw_data.cards_per_turn as usize;
 
     let new_hand_cards: Vec<Entity> = card_pile
@@ -73,9 +86,7 @@ pub fn set_hand_cards(
         .collect();
 
     let drawn_cards_count = new_hand_cards.iter().count() as f32;
-    let current_soullife = attributes.value(e.entity, "SoulLife.Current");
-    let new_soullife = (current_soullife - drawn_cards_count).max(0.0);
-    attributes.set(e.entity, "SoulLife.Current", new_soullife);
+    soul_life.current -= drawn_cards_count;
 
     for (idx, card_entity) in new_hand_cards.iter().enumerate() {
         let mut entity_cmds = cmd.entity(*card_entity);
@@ -201,29 +212,14 @@ pub struct CardPile {
     cards: Vec<Entity>,
 }
 
-impl WriteBack for CardPile {
-    fn should_write_back(&self, attrs: &Attributes) -> bool {
-        let current = attrs.value("SoulLife.Max");
-        self.cards.len() as f32 != current
-    }
-
-    fn write_back<F: QueryFilter>(
-        &self,
-        entity: Entity,
-        attributes: &mut AttributesMut<'_, '_, F>,
-    ) {
-        attributes.set(entity, "SoulLife.Max", self.cards.len() as f32);
-    }
-}
-
-register_write_back!(CardPile);
-
-#[derive(Component, AttributeComponent)]
+#[derive(Component, AttributeComponent, Clone, Copy)]
 pub struct SoulLife {
     #[read("SoulLife.Current")]
     #[init_from("SoulLife.Max")]
+    #[write]
     pub current: f32,
     #[read("SoulLife.Max")]
+    #[write]
     pub max: f32,
 }
 

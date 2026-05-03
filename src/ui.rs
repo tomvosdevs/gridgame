@@ -5,8 +5,8 @@ use bevy::{
     asset::{Assets, RenderAssetUsages, uuid::Uuid},
     camera::{Camera, Camera2d, Camera3d, ClearColorConfig, RenderTarget},
     color::{
-        Color, Srgba,
-        palettes::css::{GREY, RED, WHITE},
+        Alpha, Color, Srgba,
+        palettes::css::{GREEN, GREY, RED, WHITE},
     },
     ecs::{
         children,
@@ -27,7 +27,7 @@ use bevy::{
     image::Image,
     input::{ButtonState, mouse::MouseButton},
     math::{
-        AspectRatio, Vec2, Vec3,
+        AspectRatio, Rot2, Vec2, Vec3,
         primitives::{InfinitePlane3d, Rectangle},
     },
     mesh::{Mesh, Mesh3d},
@@ -48,15 +48,19 @@ use bevy::{
     },
     text::TextFont,
     time::{Time, Timer, TimerMode},
-    transform::components::{GlobalTransform, Transform},
+    transform::{
+        commands::BuildChildrenTransformExt,
+        components::{GlobalTransform, Transform},
+    },
     ui::{
-        AlignItems, BackgroundColor, BorderColor, BorderRadius, Display, IsDefaultUiCamera,
-        JustifyContent, Node, Outline, PositionType, UiRect, UiTargetCamera, Val, ZIndex, px,
-        widget::Text,
+        AlignItems, BackgroundColor, BorderColor, BorderRadius, Display, FlexDirection,
+        GlobalZIndex, IsDefaultUiCamera, JustifyContent, Node, Outline, PositionType, UiRect,
+        UiTargetCamera, UiTransform, Val, ZIndex, px, widget::Text,
     },
     utils::default,
     window::{CursorIcon, PrimaryWindow, Window, WindowEvent},
 };
+use bevy_ecs::lifecycle::Add;
 use bevy_tween::{
     DefaultTweenPlugins,
     bevy_time_runner::TimeRunner,
@@ -69,12 +73,13 @@ use haalka::{
     HaalkaPlugin,
     align::{Align, Alignable},
     jonmo::signal,
-    prelude::{BuilderPassThrough, Column, Cursorable, El, Element, SignalExt, Spawnable},
+    prelude::{BuilderPassThrough, Column, Cursorable, El, Element, Row, SignalExt, Spawnable},
 };
 
 use crate::{
     ActiveCamera, CursorTarget, Health, MaxHealth, SkewMaterial,
-    deck::deck_and_cards::CardDrawn,
+    deck::deck_and_cards::{CardDrawn, SoulLife},
+    game_flow::turns::CurrentDeckReference,
     visuals::cards::animation::{CardAnimatedBy, CardReleased, HighlightedTarget},
 };
 
@@ -106,6 +111,12 @@ impl Plugin for GameUiPlugin {
             .add_systems(
                 Update,
                 remove_cursor_target_health_ui.after(draw_cursor_target_health_ui),
+            )
+            .add_systems(
+                Update,
+                spawn_healthbar_ui
+                    .after(draw_cursor_target_health_ui)
+                    .before(remove_cursor_target_health_ui),
             )
             .add_systems(Update, handle_card_drawn_notifiers);
     }
@@ -652,18 +663,29 @@ pub fn tag_active_camera(mut cmd: Commands, q: Query<Entity, (Added<ActiveCamera
 #[derive(Component)]
 pub struct RemoveOnCursorTargetChange(Entity);
 
+#[derive(Component)]
+pub struct HealthUiRootJustSpawned(Entity);
+
+#[derive(Component)]
+pub struct HealthUiRoot(Entity);
+
 pub fn draw_cursor_target_health_ui(
     mut cmd: Commands,
     q: Query<
-        (Entity, &Health, &MaxHealth),
+        (Entity, &CurrentDeckReference),
         (
             Added<CursorTarget>,
             With<Transform>,
             Without<AnchoredUiNodes>,
         ),
     >,
+    soul_life_q: Query<Entity, With<SoulLife>>,
 ) {
-    for (ent, health, max_health) in &q {
+    for (ent, deck_ref) in &q {
+        println!("start draw health ui");
+        let soul_life_ent = soul_life_q
+            .get(deck_ref.0)
+            .expect("Deck should have soullife");
         cmd.entity(ent).insert(AnchoredUiNodes::spawn_one((
             RemoveOnCursorTargetChange(ent),
             // TODO: Check if this works ? is it overriden ? Needed ?
@@ -674,41 +696,94 @@ pub fn draw_cursor_target_health_ui(
                 ..Default::default()
             },
             Node {
-                border: UiRect::all(px(2)),
-                border_radius: BorderRadius::all(px(10)),
                 ..Default::default()
             },
-            BorderColor::all(WHITE),
-            Outline::default(),
-            children![
-                (
-                    Pickable::IGNORE,
-                    // text
-                    Node {
-                        width: px(health.0),
-                        height: px(10),
-                        border_radius: BorderRadius::all(px(10)),
-                        position_type: PositionType::Absolute,
-                        ..Default::default()
-                    },
-                    BackgroundColor(Color::Srgba(RED)),
-                    ZIndex(1),
-                ),
-                (
-                    Pickable::IGNORE,
-                    // text
-                    Node {
-                        width: px(max_health.0),
-                        height: px(10),
-                        border_radius: BorderRadius::all(px(10)),
-                        position_type: PositionType::Relative,
-                        ..Default::default()
-                    },
-                    BackgroundColor(Color::Srgba(GREY)),
-                )
-            ],
+            HealthUiRoot(soul_life_ent),
+            HealthUiRootJustSpawned(soul_life_ent),
+            // Outline::default(),
         )));
     }
+}
+
+pub fn spawn_healthbar_ui(world: &mut World) {
+    let entities: Vec<(Entity, Entity)> = world
+        .query::<(Entity, &HealthUiRootJustSpawned)>()
+        .iter(world)
+        .map(|(entity, root_data)| (entity, root_data.0))
+        .collect();
+
+    for (entity, health_source) in entities {
+        println!("herezzz");
+        let ui_ent = healthbar_ui(health_source).spawn(world);
+        world.commands().entity(ui_ent).set_parent_in_place(entity);
+        world.entity_mut(entity).remove::<HealthUiRootJustSpawned>();
+    }
+}
+
+pub fn healthbar_ui(health_source: Entity) -> impl Element {
+    El::<Node>::new().child_signal(
+        signal::from_component_changed::<SoulLife>(health_source).map_in_ref(|soul_life| {
+            let curr_val = soul_life.current.clone();
+            let max_val = soul_life.max.clone();
+            El::<Node>::new()
+                .with_node(move |mut node| {
+                    node.height = Val::Px(10.0);
+                    node.position_type = PositionType::Relative;
+                })
+                .child(
+                    Column::<Node>::new()
+                        .with_node(move |mut node| {
+                            node.height = Val::Percent(100.0);
+                            node.position_type = PositionType::Relative;
+                            node.display = Display::Flex;
+                            node.flex_direction = FlexDirection::Row;
+                        })
+                        .insert(ZIndex(1))
+                        .items(
+                            (0..(max_val as usize))
+                                .map(|i| {
+                                    let el = El::<Node>::new()
+                                        .with_node(move |mut node| {
+                                            node.height = Val::Px(10.0);
+                                            node.width = Val::Px(10.0);
+                                            node.border_radius = BorderRadius::all(Val::Px(2.0));
+                                            node.right = Val::Px((i as f32) * 3.0)
+                                        })
+                                        .insert(UiTransform::from_rotation(Rot2::degrees(45.0)))
+                                        .insert(ZIndex(100))
+                                        .insert(GlobalZIndex(100))
+                                        .insert(Outline::new(
+                                            Val::Px(2.0),
+                                            Val::ZERO,
+                                            WHITE.with_alpha(0.2).into(),
+                                        ))
+                                        .child(
+                                            El::<Node>::new()
+                                                .with_node(|mut node| {
+                                                    node.width = Val::Percent(100.0);
+                                                    node.height = Val::Percent(100.0);
+                                                    node.border_radius =
+                                                        BorderRadius::all(Val::Px(2.0));
+                                                })
+                                                .insert(Outline::new(
+                                                    Val::Px(2.0),
+                                                    Val::ZERO,
+                                                    WHITE.into(),
+                                                ))
+                                                .insert(GlobalZIndex(10)),
+                                        );
+
+                                    if i < (curr_val as usize) {
+                                        el.insert(BackgroundColor(Color::Srgba(RED)))
+                                    } else {
+                                        el.insert(BackgroundColor(Color::Srgba(GREY)))
+                                    }
+                                })
+                                .collect::<Vec<El<Node>>>(),
+                        ),
+                )
+        }),
+    )
 }
 
 /// Because bevy has no way to know how to map a mouse input to the UI texture, we need to write a

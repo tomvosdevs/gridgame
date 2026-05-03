@@ -193,7 +193,7 @@ pub fn gen_and_spawn_default_deck(
     rng: Single<&mut WyRand, With<GlobalRng>>,
     mut cmd: Commands,
 ) {
-    println!("gen def deck");
+    println!("gen def deck for e : {:?}", e.entity);
 
     let pools: Vec<(CardPool, CardPoolStatus)> = q
         .get(e.entity)
@@ -221,12 +221,11 @@ pub fn gen_and_spawn_default_deck(
     }
 
     cmd.entity(deck_entity).insert((
-        attributes! {"SoulLife.Current" => default_deck_size as f32, "SoulLife.Max" => default_deck_size as f32},
-        Attributes::new(),
         SoulLife {
             current: default_deck_size as f32,
             max: default_deck_size as f32,
         },
+        Attributes::new(),
     ));
 
     cmd.entity(e.entity)
