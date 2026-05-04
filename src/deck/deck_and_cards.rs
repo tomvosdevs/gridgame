@@ -20,7 +20,7 @@ use bevy::{
 };
 use bevy_gauge::{
     AttributeComponent, attributes,
-    prelude::{Attributes, AttributesMut, WriteBack},
+    prelude::{Attributes, AttributesMut},
     register_write_back,
 };
 use bevy_prng::WyRand;
@@ -46,8 +46,7 @@ impl Plugin for DeckAndCardsPlugin {
         app.register_component_as::<dyn PoolSupplier, CreatureKind>()
             .add_observer(set_hand_cards)
             .add_observer(handle_entity_turn_end)
-            .add_observer(gen_and_spawn_default_deck)
-            .add_systems(Update, log_deck_cards_count);
+            .add_observer(gen_and_spawn_default_deck);
     }
 }
 
@@ -55,24 +54,15 @@ impl Plugin for DeckAndCardsPlugin {
 // Observer systems
 // ===============
 //
-pub fn log_deck_cards_count(q: Query<&CardPile>) {
-    for pile in &q {
-        println!("cards in deck count : {:?}", pile.len());
-    }
-}
 
 pub fn set_hand_cards(
     e: On<DrawHand>,
     mut cmd: Commands,
     decks_q: Query<(&HandDrawData, &CardPile), With<Deck>>,
-    mut soul_life_q: Query<&mut SoulLife, (With<Deck>, With<CardPile>, With<HandDrawData>)>,
     drawable_cards_q: Query<Entity, (With<Card>, With<CardState<InDrawPile>>)>,
 ) {
     println!("drawing hand cards");
     let (hand_draw_data, card_pile) = decks_q.get(e.entity).expect("Target deck not found");
-    let mut soul_life = soul_life_q
-        .get_mut(e.entity)
-        .expect("should have found soul_life");
 
     println!("deck cards count = {:?}", card_pile.len());
 
@@ -84,9 +74,6 @@ pub fn set_hand_cards(
         // This ensure the Vec never grows larger than the hand size.
         .take(hand_size)
         .collect();
-
-    let drawn_cards_count = new_hand_cards.iter().count() as f32;
-    soul_life.current -= drawn_cards_count;
 
     for (idx, card_entity) in new_hand_cards.iter().enumerate() {
         let mut entity_cmds = cmd.entity(*card_entity);
@@ -130,7 +117,7 @@ pub fn handle_entity_turn_end(
 // Structs etc
 
 #[derive(Component, Clone, Debug)]
-#[require(CardPile, HandDrawData, SoulLife)]
+#[require(CardPile, HandDrawData, Attributes)]
 pub struct Deck;
 
 pub struct DeckBuilder;
@@ -145,7 +132,6 @@ pub struct DeckBuilder;
 //                 Deck,
 //                 CardPile::default(),
 //                 HandDrawData::default(),
-//                 SoulLife::default(),
 //             ))
 //             .id();
 //     }
@@ -214,22 +200,13 @@ pub struct CardPile {
 
 #[derive(Component, AttributeComponent, Clone, Copy)]
 pub struct SoulLife {
-    #[read("SoulLife.Current")]
-    #[init_from("SoulLife.Max")]
-    #[write]
-    pub current: f32,
-    #[read("SoulLife.Max")]
-    #[write]
+    #[read("MaxSoulLife")]
+    #[write("MaxSoulLife")]
     pub max: f32,
-}
-
-impl Default for SoulLife {
-    fn default() -> Self {
-        Self {
-            current: 0.,
-            max: 0.,
-        }
-    }
+    #[read("SoulLife.current")]
+    #[write]
+    #[init_from("MaxSoulLife")]
+    pub current: f32,
 }
 
 impl Default for CardPile {

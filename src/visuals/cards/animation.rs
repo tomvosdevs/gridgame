@@ -364,7 +364,6 @@ pub fn handle_card_release(
         &MeshMaterial3d<ExtendedMaterial<StandardMaterial, SkewMaterial>>,
         With<CardUiTargetMesh>,
     >,
-    abilities: Res<TemplateRegistry>,
     currently_playing: Res<CurrentPlayingEntity>,
     mut writer: MessageWriter<GridStartInvoke>,
     cells_q: Query<&GridNode, With<GridCell>>,

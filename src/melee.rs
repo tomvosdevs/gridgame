@@ -35,9 +35,7 @@ pub fn init_melee(
     q_melee: Query<(&GridTarget, &Transform, &MeleeEffect)>,
     grid_tf: Single<&GlobalTransform, With<CartesianGrid<Cartesian3D>>>,
     mut hit_writer: MessageWriter<HitReceived>,
-    mut commands: Commands,
 ) {
-    println!("in init melee");
     let entity = add.entity;
     let Ok((target, transform, effect)) = q_melee.get(entity) else {
         return;

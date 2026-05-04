@@ -16,11 +16,13 @@ use bevy::{
     transform::components::{GlobalTransform, Transform},
 };
 
+use bevy_ecs::name::Name;
 use bevy_gearbox::GearboxSet;
 use bevy_ghx_grid::ghx_grid::cartesian::{coordinates::Cartesian3D, grid::CartesianGrid};
 
 use crate::{
     NODE_SIZE,
+    abilities::abilities_templates::{Marker, Projectile},
     game_flow::turns::ToWorldPos,
     grid_abilities_backend::{GridTarget, HitReceived},
 };
@@ -78,15 +80,20 @@ impl Plugin for ProjectilePlugin {
 
 fn init_projectile(
     add: On<Add, GridTarget>,
-    q_projectile: Query<(&GridTarget, &Transform, &ProjectileEffect)>,
+    q_projectile: Query<(&GridTarget, &Transform, &ProjectileEffect), With<Marker<Projectile>>>,
     grid_tf: Single<&GlobalTransform, With<CartesianGrid<Cartesian3D>>>,
+    names_q: Query<&Name>,
     mut commands: Commands,
 ) {
-    println!("--> init projectile");
     let entity = add.entity;
     let Ok((target, transform, effect)) = q_projectile.get(entity) else {
         return;
     };
+    println!(
+        "projectile entity: {:?}",
+        names_q.get(entity).unwrap_or(&Name::new("some entity"))
+    );
+    println!("--> init projectile");
 
     let target_world_pos = target.position.clone().as_world_pos(grid_tf.translation())
         - Vec3::new(0., NODE_SIZE.y, 0.);
@@ -118,8 +125,6 @@ pub fn move_projectiles(
         tf.translation += projectile.dir * projectile.speed * time.delta_secs();
         if tf.translation.distance(projectile.target_pos) < 0.1 {
             if let Some(entity) = projectile.target_entity {
-                println!("component on target :");
-                cmd.entity(entity).log_components();
                 hit_writer.write(HitReceived {
                     entity: entity,
                     hit_by: projectile_entity,

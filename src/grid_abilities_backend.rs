@@ -36,6 +36,7 @@ use rand::{Rng, RngExt, SeedableRng};
 
 use crate::{
     GridCell,
+    abilities::effects::damage_effect_system,
     game_flow::turns::{PlayingEntity, TeamHitFilter, ToWorldPos},
     melee::MeleePlugin,
     projectiles::ProjectilePlugin,
@@ -184,10 +185,10 @@ pub fn handle_unfiltered_hit_system(
                 GridTarget::entity(hit.entity, pos),
                 HitTargetKind::Cell,
             ));
-            println!("received a hit I guess");
+            println!("received a (cell) hit I guess");
         } else {
             if let Ok(playing_pos) = grid_playing_q.get(hit.entity) {
-                println!("received a hit I guess");
+                println!("received a (playing) hit I guess");
                 entity_writer.write(AbilityHitEntity::new(
                     hit.hit_by,
                     GridTarget::entity(hit.entity, *playing_pos),
@@ -395,6 +396,7 @@ impl Plugin for Grid3dDieselPlugin {
             (
                 bevy_diesel::spawn::spawn_system::<Grid3DBackend>,
                 bevy_diesel::print::print_effect::<CartesianPosition>,
+                damage_effect_system,
             )
                 .in_set(bevy_diesel::DieselSet::Effects),
         );

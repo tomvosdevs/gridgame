@@ -19,14 +19,17 @@ use bevy_diesel::{
     print::PrintLn,
     spawn::TemplateRegistry,
 };
+use bevy_gauge::instant;
 use bevy_gearbox::{Active, GearboxMessage, InitStateMachine, SpawnTransition, StateComponent};
 use bevy_prng::WyRand;
 use rand::RngExt;
 
 use crate::{
+    abilities::effects::DamageEffect,
     deck::card_builders::{CardPool, CardPoolStatus},
     grid_abilities_backend::{
         AbilityHitEntity, GridGoOffConfig, GridSpawnConfig, GridStartInvoke, GridTargetGenerator,
+        GridTargetMutator,
     },
     melee::MeleeEffect,
     projectiles::ProjectileEffect,
@@ -37,186 +40,7 @@ pub struct AbilitiesTemplatePlugin;
 impl Plugin for AbilitiesTemplatePlugin {
     fn build(&self, app: &mut bevy::app::App) {
         app.insert_resource(AbilityTemplateRegistry::default())
-            .add_systems(Startup, register_templates)
-            .add_systems(Update, |q: Query<&Name, With<Active>>| {
-                for n in &q {
-                    if n.contains("Done") {
-                        println!("IM DONEEEEEEEEE : {:?}", n);
-                    }
-                }
-            });
-    }
-}
-
-// UTIL => Either retrieves the entity if this isn't the first template or creates one
-pub trait AbilitiesCommands {
-    fn get_or_spawn_new(self: &mut Self, entity: Option<Entity>) -> Entity;
-
-    fn existing_or_new_cmds(self: &mut Self, entity: Option<Entity>) -> EntityCommands<'_>;
-}
-
-impl<'w, 's> AbilitiesCommands for Commands<'w, 's> {
-    fn get_or_spawn_new(self: &mut Self, entity: Option<Entity>) -> Entity {
-        entity.unwrap_or_else(|| self.spawn_empty().id())
-    }
-
-    fn existing_or_new_cmds(self: &mut Self, entity: Option<Entity>) -> EntityCommands<'_> {
-        let entity = entity.unwrap_or_else(|| self.spawn_empty().id());
-        self.entity(entity)
-    }
-}
-
-pub trait AbilityBuilderState {}
-
-pub struct CommandsMissing;
-impl AbilityBuilderState for CommandsMissing {}
-
-pub struct CommandsPassed;
-impl AbilityBuilderState for CommandsPassed {}
-
-pub struct AbilityTemplateBuilder<'w, 's, 'c, T: AbilityBuilderState> {
-    commands: Option<&'c mut Commands<'w, 's>>,
-    root_name: &'static str,
-    root_entity: Entity,
-    entities_hierarchy: HashMap<&'static str, Entity>,
-    _marker: PhantomData<T>,
-}
-
-impl<'w, 's, 'c> AbilityTemplateBuilder<'w, 's, 'c, CommandsMissing> {
-    pub fn new(
-        commands: &'c mut Commands<'w, 's>,
-        root_name: &'static str,
-        root_entity: Option<Entity>,
-    ) -> AbilityTemplateBuilder<'w, 's, 'c, CommandsPassed> {
-        let mut hierarchy = HashMap::new();
-        let root = root_entity.unwrap_or_else(|| commands.spawn_empty().id());
-        hierarchy.insert(root_name, root);
-        AbilityTemplateBuilder {
-            commands: Some(commands),
-            root_name,
-            root_entity: root,
-            entities_hierarchy: hierarchy,
-            _marker: PhantomData,
-        }
-    }
-}
-
-impl<'w, 's, 'c> AbilityTemplateBuilder<'w, 's, 'c, CommandsPassed> {
-    pub fn with_substate(mut self: Self, path: &'static str, bundle: impl Bundle) -> Self {
-        let parts: Vec<&str> = path.split("/").take(2).collect();
-        let (parent, name) = match parts.as_slice() {
-            [name] => (self.root_name, *name),
-            [parent, name] => (*parent, *name),
-            _ => unreachable!(),
-        };
-
-        println!(
-            "name : {:?} - parent : {:?} - curr: {:?}",
-            name, parent, self.entities_hierarchy
-        );
-
-        let entry_entity = *self.entities_hierarchy.get(parent).unwrap();
-
-        let mut new_state_entity = Entity::PLACEHOLDER;
-
-        self.commands
-            .as_mut()
-            .unwrap()
-            .entity(self.root_entity)
-            .with_children(|children| {
-                new_state_entity = children
-                    .spawn_diesel_substate(entry_entity, (Name::new(name), bundle))
-                    .id();
-            });
-
-        self.entities_hierarchy.insert(name, new_state_entity);
-
-        self
-    }
-
-    pub fn with_subeffect(mut self: Self, path: &'static str, bundle: impl Bundle) -> Self {
-        let parts: Vec<&str> = path.split("/").take(2).collect();
-        let (parent, name) = match parts.as_slice() {
-            [name] => (self.root_name, *name),
-            [parent, name] => (*parent, *name),
-            _ => unreachable!(),
-        };
-
-        let entry_entity = *self.entities_hierarchy.get(parent).unwrap();
-
-        let mut new_effect_entity = Entity::PLACEHOLDER;
-        self.commands
-            .as_mut()
-            .unwrap()
-            .entity(self.root_entity)
-            .with_children(|children| {
-                new_effect_entity = children
-                    .spawn_subeffect(entry_entity, (Name::new(name), bundle))
-                    .id();
-            });
-
-        self.entities_hierarchy.insert(name, new_effect_entity);
-
-        self
-    }
-
-    pub fn with_state_transition<M: GearboxMessage>(
-        mut self: Self,
-        from: &'static str,
-        to: &'static str,
-    ) -> Self {
-        let from_entity = *self.entities_hierarchy.get(from).unwrap();
-        let to_entity = *self.entities_hierarchy.get(to).unwrap();
-
-        self.commands
-            .as_mut()
-            .unwrap()
-            .entity(self.root_entity)
-            .with_children(|children| {
-                children.spawn_transition::<M>(from_entity, to_entity);
-            });
-
-        self
-    }
-
-    pub fn with_state_transition_always(
-        mut self: Self,
-        from: &'static str,
-        to: &'static str,
-    ) -> Self {
-        let from_entity = *self.entities_hierarchy.get(from).unwrap();
-        let to_entity = *self.entities_hierarchy.get(to).unwrap();
-
-        self.commands
-            .as_mut()
-            .unwrap()
-            .entity(self.root_entity)
-            .with_children(|children| {
-                children.spawn_transition_always(from_entity, to_entity);
-            });
-
-        self
-    }
-
-    pub fn with_initial_root(
-        mut self: Self,
-        bundle: impl Bundle,
-        state_name: &'static str,
-    ) -> Self {
-        let state_entity = *self.entities_hierarchy.get(state_name).unwrap();
-
-        self.commands
-            .as_mut()
-            .unwrap()
-            .entity(self.root_entity)
-            .insert(bundle)
-            .init_state_machine(state_entity);
-
-        self
-    }
-
-    pub fn get_root_entity(self: Self) -> Entity {
-        self.root_entity
+            .add_systems(Startup, register_templates);
     }
 }
 
@@ -362,7 +186,6 @@ impl AbilityTemplateRegistry {
 }
 
 fn register_templates(mut registry: ResMut<TemplateRegistry>) {
-    registry.register(PROJECTILE_ABILITY, basic_projectile_ability);
     registry.register("projectile", projectile_template);
     registry.register("melee", melee_template);
 }
@@ -375,14 +198,16 @@ pub fn projectile_template(commands: &mut Commands, entity: Option<Entity>) -> E
             .spawn_diesel_substate(entity, Name::new("Flying"))
             .id();
 
-        let done = parent
+        let hit_and_done = parent
             .spawn_diesel_substate(
                 entity,
-                (Name::new("Done"), StateComponent(DelayedDespawn::now())),
+                (Name::new("Hit"), StateComponent(DelayedDespawn::now())),
             )
             .id();
 
-        parent.spawn_transition::<AbilityHitEntity>(flying, done);
+        parent.spawn_subeffect(hit_and_done, DamageEffect(-3.0));
+
+        parent.spawn_transition::<AbilityHitEntity>(flying, hit_and_done);
 
         let commands = parent.commands_mut();
         commands
@@ -407,14 +232,7 @@ pub fn basic_projectile_ability(commands: &mut Commands, entity: Option<Entity>)
             .spawn_diesel_substate(entity, Name::new("Ready"))
             .id();
         let invoke = parent
-            .spawn_diesel_substate(
-                entity,
-                (
-                    Name::new("Invoke"),
-                    GridGoOffConfig::invoker_target(),
-                    PrintLn::new("Invoke GoOff:"),
-                ),
-            )
+            .spawn_diesel_substate(entity, (Name::new("Invoke"), PrintLn::new("Invoke GoOff:")))
             .id();
 
         parent.spawn_subeffect(
@@ -474,10 +292,7 @@ pub fn basic_melee_ability(commands: &mut Commands, entity: Option<Entity>) -> E
             .spawn_diesel_substate(entity, Name::new("Ready"))
             .id();
         let invoke = parent
-            .spawn_diesel_substate(
-                entity,
-                (Name::new("Invoke"), GridGoOffConfig::invoker_target()),
-            )
+            .spawn_diesel_substate(entity, (Name::new("Invoke")))
             .id();
 
         parent.spawn_subeffect(

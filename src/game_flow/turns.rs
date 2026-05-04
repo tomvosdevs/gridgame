@@ -31,7 +31,10 @@ use bevy::{
     transform::components::{GlobalTransform, Transform},
 };
 use bevy_diesel::prelude::Invokes;
-use bevy_gauge::{AttributeComponent, prelude::AttributesMut};
+use bevy_gauge::{
+    AttributeComponent,
+    prelude::{Attributes, AttributesMut},
+};
 use bevy_ghx_grid::ghx_grid::cartesian::{
     coordinates::{Cartesian3D, CartesianPosition},
     grid::CartesianGrid,
@@ -43,7 +46,7 @@ use rand::RngExt;
 
 use crate::{
     GRID_X, GRID_Z, GridCell, NODE_SIZE,
-    abilities::abilities_templates::{Marker, Projectile, basic_projectile_ability},
+    abilities::abilities_templates::{Marker, Projectile},
     creatures::{
         definitions::{Creature, CreatureKind},
         generation::CreatureGenerationRequested,
@@ -64,10 +67,6 @@ pub struct TurnsPlugin;
 impl Plugin for TurnsPlugin {
     fn build(&self, app: &mut App) {
         app.insert_state(CombatState::DeterminePlayOrder)
-            .add_systems(Startup, |mut cmd: Commands| {
-                let projectile_ability = basic_projectile_ability(&mut cmd, None);
-                cmd.spawn(AbilityTest(projectile_ability));
-            })
             .add_observer(handle_playing_gen_req)
             .add_observer(spawn_combat_playing_entities)
             .add_observer(handle_combat_start)
@@ -155,8 +154,6 @@ fn handle_combat_start(
     {
         let cards_count = deck_pile.iter().count();
         cmd.entity(deck_entity).insert(ActiveDeck);
-        attributes.set(deck_entity, "SoulLife.Max", cards_count as f32);
-        attributes.set(deck_entity, "SoulLife.Current", cards_count as f32);
 
         for card_entity in deck_pile.iter() {
             if !instance_cards_q.contains(card_entity) {

@@ -220,13 +220,10 @@ pub fn gen_and_spawn_default_deck(
         cmd.spawn((card_bundle, StatelessCard::new(), InDeck(deck_entity)));
     }
 
-    cmd.entity(deck_entity).insert((
-        SoulLife {
-            current: default_deck_size as f32,
-            max: default_deck_size as f32,
-        },
-        Attributes::new(),
-    ));
+    cmd.entity(deck_entity).insert((SoulLife {
+        current: default_deck_size as f32,
+        max: default_deck_size as f32,
+    },));
 
     cmd.entity(e.entity)
         .insert(CurrentDeckReference(deck_entity));
