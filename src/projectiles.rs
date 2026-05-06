@@ -10,7 +10,7 @@ use bevy::{
         schedule::IntoScheduleConfigs,
         system::{Commands, Query, Res, Single},
     },
-    math::Vec3,
+    math::{Vec3, VectorSpace},
     reflect::Reflect,
     time::Time,
     transform::components::{GlobalTransform, Transform},
@@ -23,7 +23,7 @@ use bevy_ghx_grid::ghx_grid::cartesian::{coordinates::Cartesian3D, grid::Cartesi
 use crate::{
     NODE_SIZE,
     abilities::abilities_templates::{Marker, Projectile},
-    game_flow::turns::ToWorldPos,
+    game_flow::turns::{PlayingEntity, ToWorldPos},
     grid_abilities_backend::{GridTarget, HitReceived},
 };
 
@@ -83,6 +83,7 @@ fn init_projectile(
     q_projectile: Query<(&GridTarget, &Transform, &ProjectileEffect), With<Marker<Projectile>>>,
     grid_tf: Single<&GlobalTransform, With<CartesianGrid<Cartesian3D>>>,
     names_q: Query<&Name>,
+    playing_q: Query<&PlayingEntity>,
     mut commands: Commands,
 ) {
     let entity = add.entity;
@@ -95,8 +96,17 @@ fn init_projectile(
     );
     println!("--> init projectile");
 
+    let offset = match target.entity {
+        Some(e) => match playing_q.get(e) {
+            Ok(_) => Vec3::ZERO.with_y(1.3),
+            Err(_) => Vec3::ZERO,
+        },
+        None => Vec3::ZERO,
+    };
+
     let target_world_pos = target.position.clone().as_world_pos(grid_tf.translation())
-        - Vec3::new(0., NODE_SIZE.y, 0.);
+        - Vec3::new(0., NODE_SIZE.y, 0.)
+        + offset;
     println!(
         "pos of target was and is : {:?} -> {:?}",
         target.position, target_world_pos

@@ -8,6 +8,7 @@ use bevy::ecs::{
     query::With,
     system::{Commands, Query, Res, Single},
 };
+use bevy_diesel::{gearbox::templates, spawn::TemplateRegistry};
 use bevy_ecs::{entity::Entity, event::EntityEvent};
 use bevy_gauge::{attributes, prelude::Attributes};
 use bevy_prng::WyRand;
@@ -16,10 +17,16 @@ use bevy_trait_query::queryable;
 use rand::RngExt;
 
 use crate::{
-    abilities::abilities_templates::{AbilityKind, AbilityModifierKind, AbilityTemplateRegistry},
+    abilities::{
+        abilities_templates::{AbilityKind, AbilityModifierKind},
+        definitions::TemplateAbility,
+    },
     creatures::definitions::CreatureKind,
-    deck::deck_and_cards::{
-        Card, CardState, Deck, InDeck, SoulLife, StatelessCard, UnassignedDeckState,
+    deck::{
+        card_blueprints::CardBlueprint,
+        deck_and_cards::{
+            Card, CardState, Deck, InDeck, SoulLife, StatelessCard, UnassignedDeckState,
+        },
     },
     game_flow::turns::CurrentDeckReference,
 };
@@ -36,6 +43,12 @@ pub enum CardPool {
     Ice,
     Melee,
     Ranged,
+    Flying,
+    Clawed,
+    Punch,
+    Heavy,
+    Light,
+    Swift,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,7 +59,7 @@ pub enum CardPoolStatus {
 }
 
 #[repr(u32)]
-#[derive(PartialOrd, Ord, PartialEq, Eq, Component, Clone, Copy)]
+#[derive(PartialOrd, Ord, PartialEq, Eq, Component, Clone, Copy, Debug)]
 pub enum RarityTier {
     Common = 0,
     Uncommon = 1,
@@ -67,6 +80,7 @@ impl RarityTier {
     }
 }
 
+#[derive(Debug)]
 pub enum RarityCond {
     EqOrHigher(RarityTier),
     EqOrBelow(RarityTier),
@@ -120,10 +134,11 @@ impl RarityPicker {}
 pub trait CardBuilder {
     fn build(
         self: &Self,
-        registry: &Res<AbilityTemplateRegistry>,
         rng: &mut WyRand,
         cmd: &mut Commands,
         rarity: RarityPicker,
+        templates: &Res<TemplateRegistry>,
+        blueprints: &Vec<&CardBlueprint>,
     ) -> (Card, impl Bundle);
 }
 
@@ -131,22 +146,6 @@ pub struct StaticCardBuilder {
     ability_kind: AbilityKind,
     // ability_modifiers: Vec<AbilityModifierKind>,
 }
-
-// impl CardBuilder for StaticCardBuilder {
-//     fn build(
-//         self: &Self,
-//         registry: &Res<AbilityTemplateRegistry>,
-//         rng: &mut WyRand,
-//         cmd: &mut Commands,
-//         rarity: RarityPicker,
-//     ) -> (Card, impl Bundle) {
-//         let ability_entity = registry.build_ability(cmd, self.ability_kind, None, vec![]);
-//         (
-//             Card::new(ability_entity),
-//             (rarity.pick(rng), TemplateCard::new()),
-//         )
-//     }
-// }
 
 impl StaticCardBuilder {
     pub fn new(ability_kind: AbilityKind) -> Self {
@@ -171,12 +170,29 @@ impl RandomPoolCardBuilder {
 impl CardBuilder for RandomPoolCardBuilder {
     fn build(
         self: &Self,
-        registry: &Res<AbilityTemplateRegistry>,
         rng: &mut WyRand,
         cmd: &mut Commands,
         rarity: RarityPicker,
+        templates: &Res<TemplateRegistry>,
+        blueprints: &Vec<&CardBlueprint>,
     ) -> (Card, impl Bundle) {
-        let ability_entity = registry.build_ability(cmd, &self.pools, rng, vec![]);
+        let matching_blueprints: Vec<&CardBlueprint> = blueprints
+            .iter()
+            .filter(|b| b.does_match(&self.pools))
+            .map(|b| *b)
+            .collect();
+
+        let selected_blueprint = matching_blueprints
+            .get(rng.random_range(0..matching_blueprints.len()))
+            .expect(
+                format!(
+                    "could no select a blueprint in matching, matching list : {:?}",
+                    matching_blueprints,
+                )
+                .as_str(),
+            );
+
+        let ability_entity = selected_blueprint.build_ability_entity(cmd, templates);
         (Card::new(ability_entity), (rarity.pick(rng)))
     }
 }
@@ -189,11 +205,13 @@ pub struct DefaultDeckGenRequested {
 pub fn gen_and_spawn_default_deck(
     e: On<DefaultDeckGenRequested>,
     q: Query<&dyn PoolSupplier>,
-    registry: Res<AbilityTemplateRegistry>,
+    templates: Res<TemplateRegistry>,
     rng: Single<&mut WyRand, With<GlobalRng>>,
+    blueprint_q: Query<&CardBlueprint>,
     mut cmd: Commands,
 ) {
     println!("gen def deck for e : {:?}", e.entity);
+    let blueprints: Vec<&CardBlueprint> = blueprint_q.iter().map(|b| b).collect();
 
     let pools: Vec<(CardPool, CardPoolStatus)> = q
         .get(e.entity)
@@ -211,10 +229,11 @@ pub fn gen_and_spawn_default_deck(
 
     for _ in 0..default_deck_size {
         let card_bundle = card_builder.build(
-            &registry,
             &mut rng,
             &mut cmd,
             RarityPicker::Random(RarityCond::EqOrBelow(RarityTier::Rare)),
+            &templates,
+            &blueprints,
         );
 
         cmd.spawn((card_bundle, StatelessCard::new(), InDeck(deck_entity)));

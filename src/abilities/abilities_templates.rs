@@ -15,21 +15,34 @@ use bevy::{
 };
 use bevy_diesel::{
     invoke::Ability,
-    prelude::{DelayedDespawn, SpawnDieselSubstate, SpawnSubEffect, template_repeater},
+    prelude::{DelayedDespawn, InvokedBy, SpawnDieselSubstate, SpawnSubEffect, template_repeater},
     print::PrintLn,
     spawn::TemplateRegistry,
 };
+use bevy_ecs::{
+    event::EntityEvent,
+    message::MessageWriter,
+    observer::On,
+    system::{Res, Single},
+};
 use bevy_gauge::instant;
 use bevy_gearbox::{Active, GearboxMessage, InitStateMachine, SpawnTransition, StateComponent};
+use bevy_ghx_grid::ghx_grid::cartesian::{
+    coordinates::{Cartesian3D, CartesianPosition},
+    grid::CartesianGrid,
+};
+use bevy_ghx_proc_gen::GridNode;
 use bevy_prng::WyRand;
 use rand::RngExt;
 
 use crate::{
+    GridCell,
     abilities::effects::DamageEffect,
     deck::card_builders::{CardPool, CardPoolStatus},
+    game_flow::turns::{CurrentPlayingEntity, PlayingEntity},
     grid_abilities_backend::{
-        AbilityHitEntity, GridGoOffConfig, GridSpawnConfig, GridStartInvoke, GridTargetGenerator,
-        GridTargetMutator,
+        AbilityHitEntity, GridGoOffConfig, GridInvokerTarget, GridSpawnConfig, GridStartInvoke,
+        GridTarget, GridTargetGenerator, GridTargetMutator,
     },
     melee::MeleeEffect,
     projectiles::ProjectileEffect,
@@ -39,9 +52,74 @@ pub struct AbilitiesTemplatePlugin;
 
 impl Plugin for AbilitiesTemplatePlugin {
     fn build(&self, app: &mut bevy::app::App) {
-        app.insert_resource(AbilityTemplateRegistry::default())
-            .add_systems(Startup, register_templates);
+        app.add_systems(Startup, register_templates)
+            .add_observer(handle_cast);
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum CastInvokedBy {
+    CurrentlyPlaying,
+    Specific(Entity),
+}
+
+#[derive(EntityEvent)]
+pub struct CastAbility {
+    #[event_target]
+    ability: Entity,
+    target: Entity,
+    invoked_by: CastInvokedBy,
+}
+
+impl CastAbility {
+    pub fn new(ability: Entity, target: Entity, invoked_by: CastInvokedBy) -> Self {
+        Self {
+            ability,
+            target,
+            invoked_by,
+        }
+    }
+
+    pub fn on_active_player(ability: Entity, target: Entity) -> Self {
+        Self {
+            ability,
+            target,
+            invoked_by: CastInvokedBy::CurrentlyPlaying,
+        }
+    }
+}
+
+fn handle_cast(
+    e: On<CastAbility>,
+    mut cmd: Commands,
+    mut writer: MessageWriter<GridStartInvoke>,
+    currently_playing: Res<CurrentPlayingEntity>,
+    cells_q: Query<&GridNode, With<GridCell>>,
+    playing_q: Query<&CartesianPosition, With<PlayingEntity>>,
+    grid: Single<&mut CartesianGrid<Cartesian3D>>,
+) {
+    let invoker = match e.invoked_by {
+        CastInvokedBy::CurrentlyPlaying => currently_playing.0,
+        CastInvokedBy::Specific(entity) => entity,
+    };
+    let ability = e.ability;
+    let target = e.target;
+
+    let target_position = cells_q.get(target).map_or_else(
+        |_| {
+            *playing_q
+                .get(target)
+                .expect("Target should be a GridCell or PlayingEntity")
+        },
+        |node| grid.pos_from_index(node.0),
+    );
+
+    cmd.entity(ability).insert(InvokedBy(invoker));
+    cmd.entity(invoker)
+        .insert(GridInvokerTarget::entity(target, target_position));
+
+    let grid_target = GridTarget::entity(target, target_position);
+    writer.write(GridStartInvoke::new(ability, grid_target));
 }
 
 pub trait ComponentMarker {
@@ -116,78 +194,11 @@ impl AbilityModifierKind {
     }
 }
 
-#[derive(Resource)]
-pub struct AbilityTemplateRegistry {
-    templates:
-        HashMap<AbilityKind, Box<dyn Fn(&mut Commands, Option<Entity>) -> Entity + Send + Sync>>,
-}
-
-impl Default for AbilityTemplateRegistry {
-    fn default() -> Self {
-        let mut instance = Self {
-            templates: Default::default(),
-        };
-
-        // TODO : This NEEDS to have an entry for each enum entry, if it crashes this might be the reason
-        instance.register_kind(AbilityKind::Projectile, basic_projectile_ability);
-        instance.register_kind(AbilityKind::Melee, basic_melee_ability);
-
-        instance
-    }
-}
-
-impl AbilityTemplateRegistry {
-    pub fn register_kind<F>(&mut self, kind: AbilityKind, template: F)
-    where
-        F: Fn(&mut Commands, Option<Entity>) -> Entity + Send + Sync + 'static,
-    {
-        self.templates.insert(kind, Box::new(template));
-    }
-
-    pub fn build_ability(
-        &self,
-        cmd: &mut Commands,
-        pools: &Vec<(CardPool, CardPoolStatus)>,
-        rng: &mut WyRand,
-        modifiers: Vec<AbilityModifierKind>,
-    ) -> Entity {
-        let ability_spawner_fn = self.get_valid_ability(pools, rng);
-        let mut entity: Option<Entity> = None;
-        for modifier in modifiers.iter() {
-            entity = Some(modifier.apply(ability_spawner_fn, cmd));
-        }
-
-        entity.unwrap_or_else(|| ability_spawner_fn(cmd, None))
-    }
-
-    pub fn get_valid_ability(
-        &self,
-        pools: &Vec<(CardPool, CardPoolStatus)>,
-        rng: &mut WyRand,
-    ) -> &Box<dyn Fn(&mut Commands, Option<Entity>) -> Entity + Send + Sync> {
-        let can_melee = pools.contains(&(CardPool::Melee, CardPoolStatus::Required));
-        let can_shoot = pools.contains(&(CardPool::Ranged, CardPoolStatus::Required));
-        let kind = match (can_melee, can_shoot) {
-            (true, true) => {
-                if rng.random_bool(1.0 / 2.0) {
-                    AbilityKind::Melee
-                } else {
-                    AbilityKind::Projectile
-                }
-            }
-            (true, false) => AbilityKind::Melee,
-            (false, true) => AbilityKind::Projectile,
-            (false, false) => AbilityKind::Melee,
-        };
-
-        println!("getting ability for k : {:?}", kind);
-        self.templates.get(&kind).unwrap()
-    }
-}
-
 fn register_templates(mut registry: ResMut<TemplateRegistry>) {
     registry.register("projectile", projectile_template);
     registry.register("melee", melee_template);
+    registry.register("base_projectile", basic_projectile_ability);
+    registry.register("base_melee", basic_melee_ability);
 }
 
 pub fn projectile_template(commands: &mut Commands, entity: Option<Entity>) -> Entity {

@@ -13,9 +13,9 @@ use bevy::pbr::{ExtendedMaterial, MaterialExtension};
 use bevy::prelude::*;
 use bevy::render::render_resource::AsBindGroup;
 use bevy::shader::ShaderRef;
+use bevy::state::app::StatesPlugin;
 use bevy_diesel::prelude::SpatialBackend;
 use bevy_ecs_tilemap::prelude::*;
-use bevy_gauge::prelude::{Attributes, AttributesMut};
 use bevy_ghx_grid::debug_plugin::view::DebugGridView;
 use bevy_ghx_grid::debug_plugin::{DebugGridView3dBundle, GridDebugPlugin};
 use bevy_ghx_grid::ghx_grid::cartesian::coordinates::{Cartesian3D, GridDelta};
@@ -32,18 +32,24 @@ use bevy_ghx_proc_gen::proc_gen::generator::rules::RulesBuilder;
 use bevy_ghx_proc_gen::proc_gen::generator::socket::{SocketCollection, SocketsCartesian3D};
 use bevy_ghx_proc_gen::simple_plugin::ProcGenSimplePlugins;
 use bevy_ghx_proc_gen::spawner_plugin::NodesSpawner;
+use bevy_northstar::MovementCost;
+use bevy_northstar::nav::Nav;
+use bevy_northstar::plugin::NorthstarPlugin;
 use bevy_tween::BevyTweenRegisterSystems;
 use bevy_tween::prelude::Interpolator;
+use pyri_state::setup::StatePlugin;
 use rand::RngExt;
 
 use crate::abilities::abilities_templates::AbilitiesTemplatePlugin;
 use crate::actions::{Action, ActionEffect, ActionPlugin};
 use crate::creatures::generation::CreatureGenerationPlugin;
 use crate::debug::ui::DebugUiPlugin;
+use crate::deck::card_blueprints::CardBlueprintPlugin;
 use crate::deck::deck_and_cards::{DeckAndCardsPlugin, SoulLife};
 use crate::effects::{Burning, EffectsPlugin};
 use crate::game_flow::turns::TurnsPlugin;
 use crate::grid_abilities_backend::Grid3DBackend;
+use crate::movement::GridMovementPlugin;
 use crate::tiles_templates::Targetable;
 use crate::ui::GameUiPlugin;
 use crate::visuals::cards::animation::DiegeticCardTweenPlugin;
@@ -57,9 +63,11 @@ pub mod effects;
 pub mod game_flow;
 pub mod grid_abilities_backend;
 pub mod melee;
+pub mod movement;
 pub mod projectiles;
 pub mod tiles_templates;
 pub mod ui;
+pub mod utils;
 pub mod visuals;
 
 #[derive(Resource)]
@@ -339,9 +347,15 @@ impl GridRulesGenerator {
     fn add_socket_to_cell(_direction: Direction, _cell_name: &'static str) {}
 }
 
-#[derive(Component, Clone, Debug, Default)]
+#[derive(Component, Clone, Debug)]
 #[require(Targetable)]
-pub struct GridCell;
+pub struct GridCell(Nav);
+
+impl Default for GridCell {
+    fn default() -> Self {
+        Self(Nav::Impassable)
+    }
+}
 
 #[derive(Resource, Default)]
 pub struct HoveredTargetable(pub Option<Entity>);
@@ -394,7 +408,7 @@ impl<A: Bundle + Clone + Default> BundleInserter for GridCellSocketsComponents<A
                 .with_rotation(Quat::from_rotation_y(rotation.rad())),
             Mesh3d(self.mesh.clone()),
             MeshMaterial3d(self.material.clone()),
-            GridCell,
+            GridCell::default(),
             Targetable,
             Health(100),
             MaxHealth(100),
@@ -858,7 +872,9 @@ fn main() {
                     filter: "info,wgpu_core=error,wgpu_hal=error,ghx_proc_gen=debug".into(),
                     level: bevy::log::Level::DEBUG,
                     ..default()
-                }),
+                })
+                .disable::<StatesPlugin>(),
+            StatePlugin,
             ProcGenSimplePlugins::<Cartesian3D, GridCellSocketsComponents>::default(),
             GridDebugPlugin::<Cartesian3D>::new(),
         ))
@@ -874,7 +890,9 @@ fn main() {
             DeckAndCardsPlugin,
             DebugUiPlugin,
             CreatureGenerationPlugin,
+            CardBlueprintPlugin,
         ))
+        .add_plugins(GridMovementPlugin)
         .add_plugins(AbilitiesTemplatePlugin)
         .add_plugins(Grid3DBackend::plugin())
         .insert_resource(DirectionalLightShadowMap { size: 4096 })

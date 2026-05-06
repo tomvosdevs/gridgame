@@ -24,12 +24,12 @@ pub fn damage_effect_system(
         let Some(target_entity) = go_off.target.entity else {
             continue;
         };
-        let target_deck_entity = curr_deck_refs_q
-            .get(target_entity)
-            .expect("Should have a deck ref")
-            .0;
 
-        println!("yaboy");
-        attributes_list.add_modifier(target_deck_entity, "SoulLife.current", damage.0);
+        match curr_deck_refs_q.get(target_entity) {
+            Ok(target_deck_ref) => {
+                attributes_list.add_modifier(target_deck_ref.0, "SoulLife.current", damage.0)
+            }
+            Err(_) => {}
+        }
     }
 }

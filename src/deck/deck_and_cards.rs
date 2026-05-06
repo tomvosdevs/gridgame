@@ -19,19 +19,19 @@ use bevy::{
     },
 };
 use bevy_gauge::{
-    AttributeComponent, attributes,
+    attributes,
     prelude::{Attributes, AttributesMut},
-    register_write_back,
+    register_write_back, AttributeComponent,
 };
 use bevy_prng::WyRand;
 use bevy_rand::global::GlobalRng;
 
 use crate::{
-    abilities::abilities_templates::{AbilityKind, AbilityTemplateRegistry, PROJECTILE_ABILITY},
+    abilities::abilities_templates::{AbilityKind, PROJECTILE_ABILITY},
     creatures::definitions::CreatureKind,
     deck::card_builders::{
-        CardBuilder, PoolSupplier, RandomPoolCardBuilder, RarityCond, RarityPicker, RarityTier,
-        StaticCardBuilder, gen_and_spawn_default_deck,
+        gen_and_spawn_default_deck, CardBuilder, PoolSupplier, RandomPoolCardBuilder, RarityCond,
+        RarityPicker, RarityTier, StaticCardBuilder,
     },
     game_flow::turns::EntityTurnEnd,
     ui::{CardTextureCamera, CardUiTargetMesh},

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, default};
 
 use bevy::{
     app::{App, Plugin, Startup, Update},
@@ -27,7 +27,7 @@ use bevy::{
     mesh::{Mesh, Mesh3d},
     pbr::{MeshMaterial3d, StandardMaterial},
     sprite::Text2d,
-    state::{app::AppExtStates, state::States},
+    state::{condition::in_state, state::States},
     transform::components::{GlobalTransform, Transform},
 };
 use bevy_diesel::prelude::Invokes;
@@ -40,8 +40,18 @@ use bevy_ghx_grid::ghx_grid::cartesian::{
     grid::CartesianGrid,
 };
 use bevy_ghx_proc_gen::{GridNode, bevy_egui::egui::Vec2, proc_gen::generator::Generator};
+use bevy_northstar::{
+    CardinalIsoGrid,
+    prelude::{AgentOfGrid, AgentPos, Blocking},
+};
 use bevy_prng::WyRand;
 use bevy_rand::global::GlobalRng;
+use pyri_state::{
+    access::{CurrentRef, NextMut},
+    pattern::StatePattern,
+    prelude::{State, StateFlush},
+    setup::AppExtState,
+};
 use rand::RngExt;
 
 use crate::{
@@ -52,6 +62,7 @@ use crate::{
         generation::CreatureGenerationRequested,
     },
     deck::{
+        card_blueprints::register_blueprints,
         card_builders::DefaultDeckGenRequested,
         deck_and_cards::{
             ActiveDeck, CardPile, CardState, Deck, DrawHand, InDrawPile, StatelessCard,
@@ -59,29 +70,35 @@ use crate::{
         },
     },
     grid_abilities_backend::HitFilter,
+    movement::MoveRequest,
     tiles_templates::Targetable,
+    utils::{AsFlippedUVec3, AsUVec3},
 };
 
 pub struct TurnsPlugin;
 
 impl Plugin for TurnsPlugin {
     fn build(&self, app: &mut App) {
-        app.insert_state(CombatState::DeterminePlayOrder)
+        app.init_state::<GameState>()
+            .init_state::<CombatState>()
             .add_observer(handle_playing_gen_req)
             .add_observer(spawn_combat_playing_entities)
             .add_observer(handle_combat_start)
             .add_observer(handle_turn_start)
             .add_observer(handle_turn_end)
-            .add_systems(Startup, request_test_playing_gen)
-            .add_systems(Startup, (spawn_dev_text, define_test_gamestatus).chain())
+            .add_systems(
+                StateFlush,
+                GameState::InCombat.on_enter(request_test_playing_gen),
+            )
+            .add_systems(Startup, spawn_dev_text)
+            .add_systems(Update, (draw_dev_text, check_grid_gen_status))
             .add_systems(
                 Update,
-                (
-                    draw_dev_text,
+                GameState::InCombat.on_update((
                     keyboard_update_turn_test,
                     start_combat_test,
                     attach_visuals,
-                ),
+                )),
             );
     }
 }
@@ -197,7 +214,6 @@ fn handle_turn_start(
 
     cmd.trigger(DrawHand::from_deck_entity(deck_entity));
     cmd.insert_resource(CurrentPlayingEntity(e.entity));
-    println!("turn started on : {:?}", e.entity);
 }
 
 fn handle_turn_end(e: On<EntityTurnEnd>, mut cmd: Commands, mut combat_data: ResMut<CombatData>) {
@@ -213,10 +229,6 @@ fn handle_turn_end(e: On<EntityTurnEnd>, mut cmd: Commands, mut combat_data: Res
     cmd.trigger(EntityTurnStart {
         entity: next_playing_entity,
     });
-}
-
-pub fn define_test_gamestatus(mut cmd: Commands) {
-    cmd.insert_resource(GameStatus { in_combat: false });
 }
 
 pub trait ToWorldPos {
@@ -238,11 +250,12 @@ pub trait FromGrid {
 
     fn create_ground_grid_pos_bundle(
         grid: &CartesianGrid<Cartesian3D>,
+        nav_grid: Entity,
         grid_origin_offset: Vec3,
         player_mesh_size: Vec2,
         pos: UVec2,
         grid_nodes: &Vec<&GridNode>,
-    ) -> (Transform, CartesianPosition);
+    ) -> (Transform, impl Bundle);
 }
 
 impl FromGrid for Transform {
@@ -260,11 +273,12 @@ impl FromGrid for Transform {
 
     fn create_ground_grid_pos_bundle(
         grid: &CartesianGrid<Cartesian3D>,
+        nav_grid: Entity,
         grid_origin_offset: Vec3,
         player_mesh_size: Vec2,
         pos: UVec2,
         grid_nodes: &Vec<&GridNode>,
-    ) -> (Transform, CartesianPosition) {
+    ) -> (Transform, impl Bundle) {
         let node_size = NODE_SIZE;
 
         println!("grid nodes : {:?}", grid_nodes.iter().count());
@@ -292,7 +306,15 @@ impl FromGrid for Transform {
             (cell_grid_pos.y as f32 * node_size.y) + player_mesh_size.y + node_size.y,
             (cell_grid_pos.z as f32 * node_size.z) + (player_mesh_size.x * 0.5),
         ) + grid_origin_offset;
-        (Transform::from_translation(translation), cell_grid_pos)
+        (
+            Transform::from_translation(translation),
+            (
+                cell_grid_pos,
+                AgentPos(cell_grid_pos.as_flipped_uvec3()),
+                Blocking,
+                AgentOfGrid(nav_grid),
+            ),
+        )
     }
 }
 
@@ -324,6 +346,7 @@ pub fn spawn_combat_playing_entities(
     mut cmd: Commands,
     q: Query<Entity, With<Deck>>,
     grid_q: Query<(&CartesianGrid<Cartesian3D>, &GlobalTransform)>,
+    nav_grid_q: Query<Entity, With<CardinalIsoGrid>>,
     grid_nodes_q: Query<(Entity, &GridNode), With<GridCell>>,
     players_q: Query<Entity, With<PlayingEntity>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
@@ -331,6 +354,7 @@ pub fn spawn_combat_playing_entities(
     mut rng: Single<&mut WyRand, With<GlobalRng>>,
 ) {
     let (grid, grid_tf) = grid_q.single().expect("Expected to find one single grid");
+    let nav_grid = nav_grid_q.single().expect("Expected one nav grid");
     println!("grid rotation : {:?}", grid_tf.rotation());
     let player_size = Vec2::new(0.7, 1.2);
     let player_test_mesh_handle = meshes.add(Capsule3d::new(player_size.x, player_size.y));
@@ -347,11 +371,11 @@ pub fn spawn_combat_playing_entities(
         let flat_pos = get_random_available_pos(&mut taken_positions, &mut rng, side_pad);
 
         cmd.entity(entity).insert((
-            PlayingEntity::new_ally(),
             Mesh3d::from(player_test_mesh_handle.clone()),
             MeshMaterial3d::from(player_test_mat_handle.clone()),
             Transform::create_ground_grid_pos_bundle(
                 &grid,
+                nav_grid,
                 grid_origin_pos,
                 player_size,
                 flat_pos,
@@ -360,65 +384,24 @@ pub fn spawn_combat_playing_entities(
         ));
     }
 
-    // cmd.spawn((
-    //     GenerateDefaultDeck(CreatureKind::TestMelee),
-    //     Mesh3d::from(player_test_mesh_handle.clone()),
-    //     MeshMaterial3d::from(player_test_mat_handle.clone()),
-    //     found_tf,
-    //     // TODO: Use actual target
-    //     // GridInvokerTarget::position(found_tf.1),
-    //     CurrentDeckReference(test_deck),
-    // ));
-    // cmd.spawn((
-    //     PlayingEntity::new_ally(),
-    //     Mesh3d::from(player_test_mesh_handle.clone()),
-    //     MeshMaterial3d::from(player_test_mat_handle.clone()),
-    //     Transform::create_ground_grid_pos_bundle(
-    //         &grid,
-    //         grid_origin_pos,
-    //         player_size,
-    //         UVec2::new(1, 2),
-    //         &grid_nodes,
-    //     ),
-    //     CurrentDeckReference(test_deck),
-    // ));
-    // cmd.spawn((
-    //     PlayingEntity::new_ennemy(),
-    //     Mesh3d::from(player_test_mesh_handle.clone()),
-    //     MeshMaterial3d::from(player_test_mat_handle.clone()),
-    //     Transform::create_ground_grid_pos_bundle(
-    //         &grid,
-    //         grid_origin_pos,
-    //         player_size,
-    //         UVec2::new(1, 3),
-    //         &grid_nodes,
-    //     ),
-    //     CurrentDeckReference(test_deck),
-    // ));
-
     cmd.trigger(CombatStart);
 }
 
-#[derive(Resource)]
-pub struct GameStatus {
-    pub in_combat: bool,
-}
-
-pub fn start_combat_test(
-    mut cmd: Commands,
-    keyboard_input: Res<ButtonInput<KeyCode>>,
+fn check_grid_gen_status(
     wfc_generator: Single<&Generator<Cartesian3D, CartesianGrid<Cartesian3D>>>,
-    mut game_status: ResMut<GameStatus>,
+    mut next_game_state: NextMut<GameState>,
 ) {
-    if !keyboard_input.just_pressed(KeyCode::KeyC) || game_status.in_combat {
-        return;
-    }
-
     if wfc_generator.nodes_left() > 0 {
         return;
     }
 
-    game_status.in_combat = true;
+    next_game_state.enter(GameState::InCombat);
+}
+
+pub fn start_combat_test(mut cmd: Commands, keyboard_input: Res<ButtonInput<KeyCode>>) {
+    if !keyboard_input.just_pressed(KeyCode::KeyC) {
+        return;
+    }
 
     cmd.trigger(CombatInit);
 }
@@ -464,9 +447,8 @@ pub fn keyboard_update_turn_test(
     keys: Res<ButtonInput<KeyCode>>,
     mut cmd: Commands,
     curr_ent: Option<Res<CurrentPlayingEntity>>,
-    game_status: Res<GameStatus>,
 ) {
-    if !keys.just_pressed(KeyCode::ArrowRight) || !game_status.in_combat {
+    if !keys.just_pressed(KeyCode::ArrowRight) {
         return;
     }
     let Some(curr_ent) = curr_ent else {
@@ -569,8 +551,16 @@ pub struct DrawCard {
     entity: Entity,
 }
 
-#[derive(States, Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(State, Debug, Clone, PartialEq, Eq, Hash, Default)]
+pub enum GameState {
+    #[default]
+    LoadingGrid,
+    InCombat,
+}
+
+#[derive(State, Debug, Clone, PartialEq, Eq, Hash, Default)]
 pub enum CombatState {
+    #[default]
     DeterminePlayOrder,
     PlayerTurn(i32),
     EnemyTurn(i32),
