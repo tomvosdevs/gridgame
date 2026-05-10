@@ -430,6 +430,9 @@ fn spawn_card_diegetic_ui(
 pub struct TweenAnimator;
 
 #[derive(Component)]
+pub struct TweenedBy(Entity);
+
+#[derive(Component)]
 pub struct CardDragData {
     pub timer: Timer,
     pub last_event_time: Duration,
@@ -576,7 +579,6 @@ pub fn dragend_card_mesh(
     mut highlighted_target: ResMut<HighlightedTarget>,
     mut dragged_card: ResMut<DraggedCard>,
     mut card_animated_by_q: Query<&mut CardAnimatedBy, With<CardUiTargetMesh>>,
-    _time_runners_q: Query<&mut TimeRunner>,
 ) {
     let Ok((mesh_ent, mesh_tf, mesh_drag_start_tf)) = q.get_mut(e.entity) else {
         return;
