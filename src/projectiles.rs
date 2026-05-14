@@ -74,7 +74,7 @@ pub struct ProjectilePlugin;
 impl Plugin for ProjectilePlugin {
     fn build(&self, app: &mut App) {
         app.add_observer(init_projectile)
-            .add_systems(Update, move_projectiles.before(GearboxSet));
+            .add_systems(Update, handle_projectiles.before(GearboxSet));
     }
 }
 
@@ -125,7 +125,7 @@ fn init_projectile(
     ));
 }
 
-pub fn move_projectiles(
+pub fn handle_projectiles(
     mut projectiles_q: Query<(Entity, &MovingProjectile, &mut Transform)>,
     time: Res<Time>,
     mut hit_writer: MessageWriter<HitReceived>,

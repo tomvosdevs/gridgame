@@ -1,4 +1,4 @@
-use std::{f32::consts::TAU, fmt::Debug, i32, marker::PhantomData, ops::Deref};
+use std::{f32::consts::TAU, fmt::Debug, i32, marker::PhantomData, ops::Deref, u32};
 
 use bevy::{
     app::{App, Plugin, Update},
@@ -23,6 +23,7 @@ use bevy_diesel::{
     target::{InvokerTarget, TargetMutator},
 };
 use bevy_diesel::{pipeline::propagate_system, prelude::SpatialBackend, target::Target};
+use bevy_ecs::{hierarchy::Children, system::Commands};
 use bevy_gauge::AttributeResolvable;
 use bevy_gearbox::{AcceptAll, GearboxMessage, GearboxSet, RegistrationAppExt};
 use bevy_ghx_grid::ghx_grid::cartesian::{
@@ -36,7 +37,10 @@ use rand::{Rng, RngExt, SeedableRng};
 
 use crate::{
     GridCell,
-    abilities::effects::damage_effect_system,
+    abilities::{
+        abilities_templates::{AbilityHandler, CasterEntity, FromCaster},
+        effects::{handle_just_casted_effect, handle_spawn_effect, propag_caster_hit},
+    },
     game_flow::turns::{PlayingEntity, TeamHitFilter, ToWorldPos},
     melee::MeleePlugin,
     projectiles::ProjectilePlugin,
@@ -86,6 +90,51 @@ impl AbilityHitEntity {
             target,
             target_kind,
         }
+    }
+}
+
+/// Child entity hit target
+#[derive(Message, Clone, Debug, Reflect, EntityEvent)]
+pub struct CasterAbilityHit {
+    pub entity: Entity,
+    pub target: GridTarget,
+}
+
+impl CasterAbilityHit {
+    pub fn new(entity: Entity, target: GridTarget) -> Self {
+        Self { entity, target }
+    }
+}
+
+impl HasDieselTarget<CartesianPosition> for CasterAbilityHit {
+    fn diesel_target(&self) -> Target<CartesianPosition> {
+        self.target
+    }
+}
+
+impl GearboxMessage for CasterAbilityHit {
+    type Validator = AcceptAll;
+    fn target(&self) -> Entity {
+        self.entity
+    }
+}
+
+/// Parent caster was invoked
+#[derive(Message, Clone, Debug, Reflect)]
+pub struct StartCast {
+    pub entity: Entity,
+}
+
+impl StartCast {
+    pub fn new(entity: Entity) -> Self {
+        Self { entity }
+    }
+}
+
+impl GearboxMessage for StartCast {
+    type Validator = AcceptAll;
+    fn target(&self) -> Entity {
+        self.entity
     }
 }
 
@@ -168,34 +217,61 @@ pub struct HitReceived {
 
 pub fn handle_unfiltered_hit_system(
     mut hit_events: MessageReader<HitReceived>,
-    _invoker_q: Query<&InvokedBy>,
+    mut cmd: Commands,
+    from_caster_q: Query<&FromCaster>,
+    invoked_by_q: Query<&InvokedBy>,
     grid: Single<&CartesianGrid<Cartesian3D>>,
     grid_cells_q: Query<&GridNode, With<GridCell>>,
     grid_playing_q: Query<&CartesianPosition, With<PlayingEntity>>,
+    parent_q: Query<&ChildOf>,
+    children_q: Query<&Children>,
+    caster_q: Query<Entity, With<CasterEntity>>,
     mut entity_writer: MessageWriter<AbilityHitEntity>,
+    mut caster_writer: MessageWriter<CasterAbilityHit>,
     _position_writer: MessageWriter<AbilityHitPosition>,
 ) {
     let grid = grid.deref();
 
     for hit in hit_events.read() {
+        let mut maybe_target: Option<GridTarget> = None;
         if let Ok(cell) = grid_cells_q.get(hit.entity) {
             let pos = grid.pos_from_index(cell.0);
+            let target = GridTarget::entity(hit.entity, pos);
+            maybe_target = Some(target);
             entity_writer.write(AbilityHitEntity::new(
                 hit.hit_by,
-                GridTarget::entity(hit.entity, pos),
+                target,
                 HitTargetKind::Cell,
             ));
             println!("received a (cell) hit I guess");
-        } else {
-            if let Ok(playing_pos) = grid_playing_q.get(hit.entity) {
-                println!("received a (playing) hit I guess");
-                entity_writer.write(AbilityHitEntity::new(
-                    hit.hit_by,
-                    GridTarget::entity(hit.entity, *playing_pos),
-                    HitTargetKind::Playing,
-                ));
-            }
-        }
+        } else if let Ok(playing_pos) = grid_playing_q.get(hit.entity) {
+            println!("received a (playing) hit I guess");
+            let target = GridTarget::entity(hit.entity, *playing_pos);
+            maybe_target = Some(target);
+            entity_writer.write(AbilityHitEntity::new(
+                hit.hit_by,
+                target,
+                HitTargetKind::Playing,
+            ));
+        };
+
+        let Some(target) = maybe_target else {
+            continue;
+        };
+
+        println!("jpp");
+        cmd.entity(hit.hit_by).log_components();
+
+        let invoker = invoked_by_q.get(hit.hit_by).expect("Invoker boss").0;
+
+        let caster = from_caster_q
+            .get(invoker)
+            .expect("FromCaster should be added to any casted ability")
+            .entity;
+        cmd.entity(caster).log_components();
+
+        println!("propag hit");
+        caster_writer.write(CasterAbilityHit::new(caster, target));
     }
 }
 
@@ -243,130 +319,6 @@ pub fn handle_hit_system<F: HitFilter>(
     }
 }
 
-pub fn propag_log(mut reader: MessageReader<GoOffOrigin<CartesianPosition>>) {
-    for _m in reader.read() {
-        println!("found go off origin msg");
-    }
-}
-
-pub fn propag_log_b<B: SpatialBackend>(mut reader: MessageReader<GoOffOrigin<B::Pos>>) {
-    for _m in reader.read() {
-        println!("found go off origin msg GENERIC");
-    }
-}
-
-pub fn debug_propagate_system(
-    mut reader: MessageReader<GoOffOrigin<CartesianPosition>>,
-    mut ctx: Grid3DContext<'_, '_>,
-    q_sub_effects: Query<&SubEffects>,
-    q_target_mutator: Query<Option<&TargetMutator<Grid3DBackend>>>,
-    q_invoker: Query<&InvokedBy>,
-    q_child_of: Query<&ChildOf>,
-    q_invoker_target: Query<&InvokerTarget<CartesianPosition>>,
-    _writer: MessageWriter<GoOff<CartesianPosition>>,
-) {
-    for origin in reader.read() {
-        let root_entity = origin.entity;
-        let passed_target = origin.target;
-
-        let invoker = resolve_invoker(&q_invoker, root_entity);
-        let root = resolve_root(&q_child_of, root_entity);
-        let invoker_target: Target<CartesianPosition> = q_invoker_target
-            .get(invoker)
-            .copied()
-            .map(Target::from)
-            .unwrap_or_default();
-
-        println!("got here == 1");
-
-        // Resolve the root's own target list — apply its TargetMutator if
-        // present, otherwise use the passed target verbatim. This matches
-        // the behavior applied to children below.
-        let root_targets: Vec<Target<CartesianPosition>> =
-            if let Ok(Some(mutator)) = q_target_mutator.get(root_entity) {
-                println!("got here == 2");
-                let mut targets = generate_targets::<Grid3DBackend>(
-                    &mutator.generator,
-                    &mut ctx,
-                    invoker,
-                    invoker_target,
-                    root,
-                    CartesianPosition::default(),
-                    passed_target,
-                );
-                targets = Grid3DBackend::apply_filter(
-                    &mut ctx,
-                    targets,
-                    &mutator.generator.filter,
-                    invoker,
-                    passed_target.position,
-                );
-                targets
-            } else {
-                vec![passed_target]
-            };
-
-        // Fire GoOff on the root entity itself (one per resolved target).
-        for &target in &root_targets {
-            println!(
-                "SENDING GO_OFF => target entity, position: {:?}, {:?}",
-                target.entity, target.position
-            );
-            // writer.write(GoOff::new(root_entity, target));
-        }
-
-        // Walk the tree: (entity, targets_for_this_entity)
-        let mut stack: Vec<(Entity, Vec<Target<CartesianPosition>>)> =
-            vec![(root_entity, root_targets)];
-
-        while let Some((parent, in_targets)) = stack.pop() {
-            println!("got here == 3");
-            let Ok(subs) = q_sub_effects.get(parent) else {
-                continue;
-            };
-
-            for &child in subs.into_iter() {
-                println!("got here == 4");
-                let out_targets = if let Ok(Some(mutator)) = q_target_mutator.get(child) {
-                    println!("got here == 5");
-                    let mut aggregated = Vec::new();
-                    for passed in in_targets.iter() {
-                        println!("got here == 6");
-                        let mut targets = generate_targets::<Grid3DBackend>(
-                            &mutator.generator,
-                            &mut ctx,
-                            invoker,
-                            invoker_target,
-                            root,
-                            CartesianPosition::default(),
-                            *passed,
-                        );
-                        let origin_pos = passed.position;
-                        targets = Grid3DBackend::apply_filter(
-                            &mut ctx,
-                            targets,
-                            &mutator.generator.filter,
-                            invoker,
-                            origin_pos,
-                        );
-                        aggregated.append(&mut targets);
-                    }
-                    aggregated
-                } else {
-                    in_targets.clone()
-                };
-
-                // Write one GoOff per target (batch messages instead of Vec)
-                for &target in &out_targets {
-                    println!("GO_OFF bis => {:?}", target.position);
-                    // writer.write(GoOff::new(child, target));
-                }
-                stack.push((child, out_targets));
-            }
-        }
-    }
-}
-
 pub struct Grid3dDieselPlugin;
 
 impl Plugin for Grid3dDieselPlugin {
@@ -396,7 +348,8 @@ impl Plugin for Grid3dDieselPlugin {
             (
                 bevy_diesel::spawn::spawn_system::<Grid3DBackend>,
                 bevy_diesel::print::print_effect::<CartesianPosition>,
-                damage_effect_system,
+                handle_spawn_effect,
+                handle_just_casted_effect,
             )
                 .in_set(bevy_diesel::DieselSet::Effects),
         );
@@ -416,6 +369,8 @@ impl Plugin for Grid3dDieselPlugin {
         // // Collision types + system (unfiltered - entities with Collides marker)
         app.register_transition::<AbilityHitEntity>();
         app.register_transition::<AbilityHitPosition>();
+        app.register_transition::<CasterAbilityHit>();
+        app.register_transition::<StartCast>();
         app.register_transition::<GridStartInvoke>();
 
         app.add_systems(
@@ -424,6 +379,8 @@ impl Plugin for Grid3dDieselPlugin {
                 bevy_diesel::events::go_off_side_effect::<AbilityHitEntity, CartesianPosition>
                     .in_set(bevy_diesel::bevy_gearbox::GearboxPhase::SideEffectPhase),
                 bevy_diesel::events::go_off_side_effect::<AbilityHitPosition, CartesianPosition>
+                    .in_set(bevy_diesel::bevy_gearbox::GearboxPhase::SideEffectPhase),
+                bevy_diesel::events::go_off_side_effect::<CasterAbilityHit, CartesianPosition>
                     .in_set(bevy_diesel::bevy_gearbox::GearboxPhase::SideEffectPhase),
             ),
         );
@@ -522,6 +479,15 @@ pub struct Grid3DFilter {
     /// Require line-of-sight (TODO).
     #[skip]
     pub line_of_sight: bool,
+}
+
+impl Grid3DFilter {
+    pub fn new(count: NumberType) -> Self {
+        Self {
+            count,
+            line_of_sight: false,
+        }
+    }
 }
 
 impl Default for Grid3DFilter {

@@ -1,38 +1,23 @@
-use std::{
-    marker::PhantomData,
-    ops::{Deref, DerefMut},
-};
+use std::marker::PhantomData;
 
 use bevy::{
-    app::{App, Plugin, Startup, Update},
+    app::{App, Plugin},
     ecs::{
-        bundle::Bundle,
         component::Component,
         entity::Entity,
         event::{EntityEvent, Event},
-        name::Name,
         observer::On,
-        query::{QueryFilter, With},
+        query::With,
         relationship::RelationshipTarget,
-        schedule::IntoScheduleConfigs,
-        system::{Commands, Query, Res, Single},
+        system::{Commands, Query},
     },
 };
-use bevy_gauge::{
-    attributes,
-    prelude::{Attributes, AttributesMut},
-    register_write_back, AttributeComponent,
-};
-use bevy_prng::WyRand;
-use bevy_rand::global::GlobalRng;
+use bevy_gauge::{AttributeComponent, prelude::Attributes};
 
 use crate::{
-    abilities::abilities_templates::{AbilityKind, PROJECTILE_ABILITY},
+    abilities::abilities_templates::AbilityHandler,
     creatures::definitions::CreatureKind,
-    deck::card_builders::{
-        gen_and_spawn_default_deck, CardBuilder, PoolSupplier, RandomPoolCardBuilder, RarityCond,
-        RarityPicker, RarityTier, StaticCardBuilder,
-    },
+    deck::card_builders::{PoolSupplier, gen_and_spawn_default_deck},
     game_flow::turns::EntityTurnEnd,
     ui::{CardTextureCamera, CardUiTargetMesh},
 };
@@ -221,7 +206,13 @@ pub struct InDeck(pub Entity);
 
 #[derive(Component, Clone)]
 pub struct Card {
-    pub ability_entity: Entity,
+    pub ability_handler: AbilityHandler,
+}
+
+impl Card {
+    pub fn new(ability_handler: AbilityHandler) -> Self {
+        Self { ability_handler }
+    }
 }
 
 pub trait CardStateMarker {}
@@ -251,11 +242,5 @@ impl<S: CardStateMarker> CardState<S> {
         Self {
             _state: PhantomData,
         }
-    }
-}
-
-impl Card {
-    pub fn new(ability_entity: Entity) -> Self {
-        Self { ability_entity }
     }
 }

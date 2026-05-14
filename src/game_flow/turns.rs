@@ -1,4 +1,4 @@
-use std::{collections::HashMap, default};
+use std::collections::HashMap;
 
 use bevy::{
     app::{App, Plugin, Startup, Update},
@@ -15,7 +15,6 @@ use bevy::{
         query::{Added, With},
         relationship::RelationshipTarget,
         resource::Resource,
-        schedule::IntoScheduleConfigs,
         system::{Commands, Query, Res, ResMut, Single},
     },
     input::{ButtonInput, keyboard::KeyCode},
@@ -27,14 +26,10 @@ use bevy::{
     mesh::{Mesh, Mesh3d},
     pbr::{MeshMaterial3d, StandardMaterial},
     sprite::Text2d,
-    state::{condition::in_state, state::States},
     transform::components::{GlobalTransform, Transform},
 };
 use bevy_diesel::prelude::Invokes;
-use bevy_gauge::{
-    AttributeComponent,
-    prelude::{Attributes, AttributesMut},
-};
+use bevy_gauge::prelude::AttributesMut;
 use bevy_ghx_grid::ghx_grid::cartesian::{
     coordinates::{Cartesian3D, CartesianPosition},
     grid::CartesianGrid,
@@ -47,7 +42,7 @@ use bevy_northstar::{
 use bevy_prng::WyRand;
 use bevy_rand::global::GlobalRng;
 use pyri_state::{
-    access::{CurrentRef, NextMut},
+    access::NextMut,
     pattern::StatePattern,
     prelude::{State, StateFlush},
     setup::AppExtState,
@@ -61,18 +56,14 @@ use crate::{
         definitions::{Creature, CreatureKind},
         generation::CreatureGenerationRequested,
     },
-    deck::{
-        card_blueprints::register_blueprints,
-        card_builders::DefaultDeckGenRequested,
-        deck_and_cards::{
-            ActiveDeck, CardPile, CardState, Deck, DrawHand, InDrawPile, StatelessCard,
-            UnassignedDeckState,
-        },
+    deck::deck_and_cards::{
+        ActiveDeck, CardPile, CardState, Deck, DrawHand, InDrawPile, StatelessCard,
+        UnassignedDeckState,
     },
     grid_abilities_backend::HitFilter,
-    movement::MoveRequest,
+    stats::players::{MeleeRange, Speed, Strength},
     tiles_templates::Targetable,
-    utils::{AsFlippedUVec3, AsUVec3},
+    utils::AsFlippedUVec3,
 };
 
 pub struct TurnsPlugin;
@@ -619,58 +610,6 @@ impl PlayingEntity {
 
     pub fn new_teamless() -> impl Bundle {
         PlayingEntity
-    }
-}
-
-#[derive(Component, Default, AttributeComponent)]
-pub struct Speed {
-    #[read]
-    #[write]
-    pub current: i32,
-}
-
-impl Speed {
-    pub fn new(val: i32) -> Self {
-        Self { current: val }
-    }
-}
-
-#[derive(Component, Default, AttributeComponent)]
-pub struct Strength {
-    #[read]
-    #[write]
-    pub current: i32,
-}
-
-impl Strength {
-    pub fn new(val: i32) -> Self {
-        Self { current: val }
-    }
-}
-
-#[derive(Component, Default, AttributeComponent)]
-pub struct MeleeRange {
-    #[read]
-    #[write]
-    pub current: i32,
-}
-
-impl MeleeRange {
-    pub fn new(val: i32) -> Self {
-        Self { current: val }
-    }
-}
-
-#[derive(Component, Default, AttributeComponent)]
-pub struct RangedRange {
-    #[read]
-    #[write]
-    pub current: i32,
-}
-
-impl RangedRange {
-    pub fn new(val: i32) -> Self {
-        Self { current: val }
     }
 }
 

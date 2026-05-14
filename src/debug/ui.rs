@@ -4,7 +4,7 @@ use bevy::{
         entity::Entity,
         observer::On,
         resource::Resource,
-        system::{Commands, Query, Res, ResMut},
+        system::{Commands, Query, Res},
     },
     text::TextFont,
     ui::{Node, Val, widget::Text},

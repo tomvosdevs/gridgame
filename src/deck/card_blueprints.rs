@@ -5,12 +5,21 @@ use bevy_ecs::{
     component::Component,
     entity::Entity,
     schedule::IntoScheduleConfigs,
-    system::{Commands, Res, ResMut},
+    system::{Commands, Res},
 };
+use bevy_prng::WyRand;
+use rand::RngExt;
 
 use crate::{
-    abilities::definitions::register_abilities,
-    deck::card_builders::{CardPool, CardPoolStatus, RarityCond},
+    abilities::{
+        abilities_templates::{AbilityHandler, AbilityHandlerBuilder, BaseAbility},
+        definitions::register_abilities,
+        effects::{AbilityEffectKind, AbilityEffects, DamageEffect, EffectTrigger},
+    },
+    deck::{
+        card_builders::{CardPool, CardPoolStatus, RarityCond, RarityPicker},
+        deck_and_cards::Card,
+    },
 };
 
 pub struct CardBlueprintPlugin;
@@ -23,9 +32,29 @@ impl Plugin for CardBlueprintPlugin {
 
 // pub enum PoolMatch
 
+#[derive(Debug)]
+pub enum NamePicker {
+    Fixed(&'static str),
+    OneOf(Vec<&'static str>),
+}
+
+impl NamePicker {
+    pub fn pick(&mut self, rng: &mut WyRand) -> &'static str {
+        match self {
+            NamePicker::Fixed(val) => val,
+            NamePicker::OneOf(items) => {
+                let rand_idx = rng.random_range(0..items.len());
+                items.get(rand_idx).unwrap()
+            }
+        }
+    }
+}
+
 #[derive(Component, Debug)]
 pub struct CardBlueprint {
     templates: Vec<&'static str>,
+    base_entity: Option<Entity>,
+    name_picker: NamePicker,
     matches_pools: Vec<(CardPool, CardPoolStatus)>,
     matches_rarity: Option<RarityCond>,
 }
@@ -34,9 +63,30 @@ impl CardBlueprint {
     pub fn new(base_template: &'static str) -> Self {
         Self {
             templates: vec![base_template],
+            base_entity: None,
+            name_picker: NamePicker::Fixed("Missing name picker"),
             matches_pools: vec![],
             matches_rarity: None,
         }
+    }
+
+    fn get_base_entity_instance(&self, cmd: &mut Commands) -> Option<Entity> {
+        let Some(base) = self.base_entity else {
+            return None;
+        };
+        let instance = cmd.spawn_empty().id();
+        cmd.entity(base).clone_with_opt_out(instance, |_| {});
+        Some(instance)
+    }
+
+    pub fn set_name_picker(&mut self, picker: NamePicker) {
+        self.name_picker = picker
+    }
+
+    pub fn create_base_entity(mut self, cmd: &mut Commands, effects: impl Bundle) -> Self {
+        let entity = cmd.spawn(effects).id();
+        self.base_entity = Some(entity);
+        self
     }
 
     pub fn chain_template(mut self, template: &'static str) -> Self {
@@ -80,32 +130,53 @@ impl CardBlueprint {
         })
     }
 
-    pub fn build_ability_entity(
+    pub fn generate(
         &self,
         cmd: &mut Commands,
         templates: &Res<TemplateRegistry>,
-    ) -> Entity {
-        let mut entity: Option<Entity> = None;
+        rng: &mut WyRand,
+        rarity: RarityPicker,
+    ) -> impl Bundle {
+        let mut ability_entity: Option<Entity> = None;
         for id in self.templates.iter() {
             let t_func = templates
                 .get(id)
                 .expect("should have found template for id");
 
-            entity = Some(t_func(cmd, entity));
+            ability_entity = Some(t_func(cmd, ability_entity));
         }
-        entity.expect("Entity should have been spawned by now")
+
+        let handler = AbilityHandlerBuilder::from_ability_entity(ability_entity.unwrap())
+            .add_modifiers(vec![])
+            .pass_base_entity(self.get_base_entity_instance(cmd))
+            .build(cmd);
+
+        (Card::new(handler), rarity.pick(rng))
     }
 }
 
+type AE<T> = AbilityEffects<T>;
+type E = AbilityEffectKind;
+
 pub fn register_blueprints(mut cmd: Commands) {
-    let projectile_tid = "base_projectile";
-    let melee_tid = "base_melee";
+    let projectile_tid = BaseAbility::Projectile.as_str();
+    let melee_tid = BaseAbility::Melee.as_str();
 
-    let basic_projectile_blueprint = cmd
-        .spawn(CardBlueprint::new(projectile_tid).add_required_pool(CardPool::Ranged))
-        .id();
+    let basic_projectile_blueprint = CardBlueprint::new(projectile_tid)
+        .create_base_entity(&mut cmd, AE::hit(E::flat_damage(2.0)))
+        .add_required_pool(CardPool::Ranged);
+    cmd.spawn(basic_projectile_blueprint);
 
-    let basic_melee_blueprint = cmd
-        .spawn(CardBlueprint::new(melee_tid).add_required_pool(CardPool::Melee))
-        .id();
+    let bomb_blueprint = CardBlueprint::new(projectile_tid)
+        .create_base_entity(&mut cmd, AE::hit(E::flat_damage(4.0)))
+        .add_required_pool(CardPool::Ranged);
+    cmd.spawn(bomb_blueprint);
+
+    // let _basic_melee_blueprint = cmd
+    //     .spawn(
+    //         CardBlueprint::new(melee_tid)
+    //             .add_required_pool(CardPool::Melee)
+    //             .add_required_pool(CardPool::Clawed),
+    //     )
+    //     .id();
 }

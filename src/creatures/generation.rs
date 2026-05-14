@@ -1,13 +1,11 @@
 use bevy::{
     app::{App, Plugin},
     ecs::{
-        component::Component,
         entity::Entity,
-        event::{EntityEvent, Event},
-        lifecycle::Add,
+        event::EntityEvent,
         observer::On,
         query::With,
-        system::{Commands, Query, Single},
+        system::{Commands, Single},
     },
 };
 use bevy_prng::WyRand;

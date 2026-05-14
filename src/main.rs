@@ -32,9 +32,7 @@ use bevy_ghx_proc_gen::proc_gen::generator::rules::RulesBuilder;
 use bevy_ghx_proc_gen::proc_gen::generator::socket::{SocketCollection, SocketsCartesian3D};
 use bevy_ghx_proc_gen::simple_plugin::ProcGenSimplePlugins;
 use bevy_ghx_proc_gen::spawner_plugin::NodesSpawner;
-use bevy_northstar::MovementCost;
 use bevy_northstar::nav::Nav;
-use bevy_northstar::plugin::NorthstarPlugin;
 use bevy_tween::BevyTweenRegisterSystems;
 use bevy_tween::prelude::Interpolator;
 use pyri_state::setup::StatePlugin;
@@ -45,8 +43,9 @@ use crate::actions::{Action, ActionEffect, ActionPlugin};
 use crate::creatures::generation::CreatureGenerationPlugin;
 use crate::debug::ui::DebugUiPlugin;
 use crate::deck::card_blueprints::CardBlueprintPlugin;
-use crate::deck::deck_and_cards::{DeckAndCardsPlugin, SoulLife};
+use crate::deck::deck_and_cards::DeckAndCardsPlugin;
 use crate::effects::{Burning, EffectsPlugin};
+use crate::game_flow::event_reactions::{EventReactionsPlugin, Reactions, SpikyCell};
 use crate::game_flow::turns::TurnsPlugin;
 use crate::grid_abilities_backend::Grid3DBackend;
 use crate::movement::GridMovementPlugin;
@@ -65,6 +64,7 @@ pub mod grid_abilities_backend;
 pub mod melee;
 pub mod movement;
 pub mod projectiles;
+pub mod stats;
 pub mod tiles_templates;
 pub mod ui;
 pub mod utils;
@@ -410,6 +410,7 @@ impl<A: Bundle + Clone + Default> BundleInserter for GridCellSocketsComponents<A
             MeshMaterial3d(self.material.clone()),
             GridCell::default(),
             Targetable,
+            SpikyCell,
             Health(100),
             MaxHealth(100),
             self.components.clone(),
@@ -891,6 +892,7 @@ fn main() {
             DebugUiPlugin,
             CreatureGenerationPlugin,
             CardBlueprintPlugin,
+            EventReactionsPlugin,
         ))
         .add_plugins(GridMovementPlugin)
         .add_plugins(AbilitiesTemplatePlugin)

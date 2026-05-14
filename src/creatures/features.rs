@@ -1,11 +1,5 @@
-use std::collections::HashMap;
-
-use bevy::ecs::{
-    component::Component, entity::Entity, resource::Resource, system::Query, world::World,
-};
+use bevy::ecs::{component::Component, entity::Entity, world::World};
 use bevy_ghx_grid::ghx_grid::cartesian::coordinates::CartesianPosition;
-
-use crate::{creatures::definitions::CreatureKind, deck::card_builders::CardPool};
 
 pub struct MoveCtx {
     pub moving_entity: Entity,

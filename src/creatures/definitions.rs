@@ -1,15 +1,15 @@
-use std::range::Range;
-
-use bevy::{app::Plugin, ecs::component::Component};
+use bevy::ecs::component::Component;
+use bevy_gauge::prelude::Attributes;
 use bevy_prng::WyRand;
 use rand::RngExt;
 
 use crate::{
     deck::card_builders::{CardPool, CardPoolStatus, PoolSupplier},
-    game_flow::turns::{MeleeRange, RangedRange, Speed, Strength},
+    stats::players::{MeleeRange, RangedRange, Speed, Strength},
 };
 
 #[derive(Clone, Copy, PartialEq, Eq, Component)]
+#[require(Attributes)]
 pub enum CreatureKind {
     TestMelee,
     TestRanged,
@@ -44,13 +44,13 @@ impl CreatureKind {
         match self {
             CreatureKind::TestMelee => (
                 Speed::new(rng.random_range(1..2)),
-                Strength::new(rng.random_range(2..4)),
+                Strength::new(rng.random_range(3..5)),
                 MeleeRange::new(1),
                 RangedRange::new(2),
             ),
             CreatureKind::TestRanged => (
                 Speed::new(rng.random_range(3..5)),
-                Strength::new(rng.random_range(1..2)),
+                Strength::new(rng.random_range(2..3)),
                 MeleeRange::new(1),
                 RangedRange::new(4),
             ),

@@ -64,7 +64,8 @@ use pyri_state::{pattern::StatePattern, prelude::StateFlush};
 
 use crate::{
     GridCell, NODE_SIZE,
-    game_flow::turns::{CurrentPlayingEntity, FromGrid, GameState, PlayingEntity, Speed},
+    game_flow::turns::{CurrentPlayingEntity, FromGrid, GameState, PlayingEntity},
+    stats::players::Speed,
     ui::TweenAnimator,
     utils::{AsFlippedCPos, AsFlippedUVec3, AsUVec3, CombatGridQ},
 };
@@ -75,12 +76,13 @@ impl Plugin for GridMovementPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(NorthstarPlugin::<CardinalIsoNeighborhood>::default())
             .add_observer(setup_grid_settings)
-            .add_observer(handle_move_request)
+            .add_observer(handle_move_requested)
             .add_observer(handle_cell_hover)
             .add_observer(handle_cell_click)
             .add_observer(handle_failed_pathfinding)
             .add_observer(preview_move)
-            .add_observer(create_next_world_pos)
+            .add_observer(create_move_target)
+            .add_observer(handle_path_comp_added)
             .add_systems(Startup, register_preview_entities)
             .add_systems(
                 StateFlush,
@@ -124,13 +126,23 @@ fn handle_cell_click(
 
     println!("Ptr down on cell");
 
-    cmd.trigger(MoveRequest::new(playing_entity.0, node_entity));
+    cmd.trigger(RequestMove::new(playing_entity.0, node_entity));
 }
 
 #[derive(EntityEvent)]
-pub struct MoveRequest {
+pub struct RequestMove {
     pub entity: Entity,
     pub destination_cell: Entity,
+}
+
+#[derive(EntityEvent)]
+pub struct MoveRequestAccepted {
+    pub entity: Entity,
+}
+
+#[derive(EntityEvent)]
+pub struct MovePathfindFailed {
+    pub entity: Entity,
 }
 
 #[derive(EntityEvent)]
@@ -148,7 +160,7 @@ impl PreviewPathRequest {
     }
 }
 
-impl MoveRequest {
+impl RequestMove {
     pub fn new(entity: Entity, destination_cell: Entity) -> Self {
         Self {
             entity,
@@ -160,6 +172,12 @@ impl MoveRequest {
 #[derive(EntityEvent)]
 pub struct MovementCompleted {
     pub entity: Entity,
+}
+
+#[derive(EntityEvent)]
+pub struct StepOnTile {
+    pub entity: Entity,
+    pub moving_entity: Entity,
 }
 
 fn setup_grid_settings(
@@ -237,17 +255,29 @@ fn draw_debug_nav_cells(
 }
 
 #[derive(Component)]
-struct NextWorldPos(Vec3);
+struct NextMoveTarget {
+    world_pos: Vec3,
+    cell_entity: Entity,
+}
 
-fn handle_move_request(
-    e: On<MoveRequest>,
+impl NextMoveTarget {
+    fn new(world_pos: Vec3, cell_entity: Entity) -> Self {
+        Self {
+            world_pos,
+            cell_entity,
+        }
+    }
+}
+
+fn handle_move_requested(
+    e: On<RequestMove>,
     mut cmd: Commands,
-    agents_q: Query<(Entity, &AgentPos), With<PlayingEntity>>,
+    agents_q: Query<(Entity, &AgentPos, &Speed), With<PlayingEntity>>,
     cells_q: Query<(&GridNode, &GlobalTransform), With<GridCell>>,
     grid: CombatGridQ,
     preview_tiles_q: Query<Entity, With<PathTilePreview>>,
 ) {
-    let Ok((agent_entity, agent_pos)) = agents_q.get(e.entity) else {
+    let Ok((agent_entity, agent_pos, speed)) = agents_q.get(e.entity) else {
         return;
     };
 
@@ -271,7 +301,10 @@ fn handle_move_request(
     e_cmds.insert(Pathfind {
         goal: target_position,
         mode: Some(PathfindMode::AStar),
-        limits: SearchLimits::default(),
+        limits: SearchLimits {
+            distance: Some(speed.current as u32),
+            ..Default::default()
+        },
     });
 }
 
@@ -279,7 +312,16 @@ fn handle_failed_pathfinding(e: On<Add, PathfindingFailed>, mut cmd: Commands) {
     let mut e_cmds = cmd.entity(e.entity);
     e_cmds.remove::<PathfindingFailed>();
     e_cmds.remove::<Pathfind>();
+    cmd.trigger(MovePathfindFailed { entity: e.entity });
 }
+
+fn handle_path_comp_added(e: On<Add, Path>, mut cmd: Commands) {
+    cmd.trigger(MoveRequestAccepted { entity: e.entity });
+}
+
+// fn handle_failed_move_pathfinding(e: On<MovePathfindFailed>) {}
+
+// fn handle_accepted_move_request(e: On<MoveRequestAccepted>) {}
 
 #[derive(Resource)]
 struct PreviewEntities {
@@ -408,7 +450,7 @@ pub enum ActiveAgentAnimation {
 #[derive(Component)]
 struct JumpAnimStep(i32);
 
-fn create_next_world_pos(
+fn create_move_target(
     e: On<Add, NextPos>,
     mut q: Query<
         (
@@ -420,39 +462,46 @@ fn create_next_world_pos(
         ),
         (With<PlayingEntity>, Without<ActiveAgentAnimation>),
     >,
-    grid_tf: Single<&GlobalTransform, With<CartesianGrid<Cartesian3D>>>,
+    cells_q: Query<(Entity, &GridNode), With<GridCell>>,
+    grid: Single<(&GlobalTransform, &CartesianGrid<Cartesian3D>)>,
     mut cmd: Commands,
 ) {
     let (entity, tf, gtf, agent_pos, next_pos) = q.get(e.entity).expect("should have found");
     let flipped_pos = UVec3::new(next_pos.0.x, next_pos.0.z, next_pos.0.y);
-    let world_pos = grid_tf.into_inner().translation() + flipped_pos.as_vec3();
+    let (grid_tf, grid) = grid.into_inner();
+    let world_pos = grid_tf.translation() + flipped_pos.as_vec3();
     let world_pos = world_pos + (NODE_SIZE / 2.0).with_y(2.0);
+    let (target_cell_entity, _) = cells_q
+        .iter()
+        .find(|(_, n)| grid.pos_from_index(n.0) == next_pos.0.as_flipped_cartesian_pos())
+        .expect("Target should be a valid grid cell");
     println!("generated next world pos : {:?}", world_pos);
-    cmd.entity(entity).insert(NextWorldPos(world_pos));
+    cmd.entity(entity)
+        .insert(NextMoveTarget::new(world_pos, target_cell_entity));
 }
 
 fn handle_agent_pathing(
     q: Query<
-        (Entity, &Transform, &NextWorldPos, &Path, &Speed),
+        (Entity, &Transform, &NextMoveTarget, &Path, &Speed),
         (
             With<PlayingEntity>,
             Without<ActiveAgentAnimation>,
             With<NextPos>,
         ),
     >,
-    next_world_pos_q: Query<&NextWorldPos>,
+    move_target_q: Query<&NextMoveTarget>,
     grid_tf: Single<&GlobalTransform, With<CartesianGrid<Cartesian3D>>>,
     time: Res<Time>,
     mut cmd: Commands,
 ) {
     // Maybe split this into different queries so we only access agent_pos at the last call or idk
-    for (entity, tf, next_world_pos, path, speed) in &q {
-        let target_pos = next_world_pos.0;
+    for (entity, tf, move_target, path, speed) in &q {
+        let target_pos = move_target.world_pos;
         let direction = (target_pos - tf.translation).normalize();
 
         let y_diff = (target_pos.y - tf.translation.y).round();
         println!("found diff of : {:?}", y_diff);
-        println!("req anim to : {:?}", next_world_pos.0);
+        println!("req anim to : {:?}", move_target.world_pos);
         if y_diff != 0.0 {
             cmd.entity(entity).insert((
                 ActiveAgentAnimation::Jump {
@@ -480,6 +529,7 @@ fn animate_agent_movement(
             &GlobalTransform,
             &mut AgentPos,
             &NextPos,
+            &NextMoveTarget,
             &Path,
             &ActiveAgentAnimation,
             &Speed,
@@ -491,7 +541,18 @@ fn animate_agent_movement(
     time_runner_q: Query<&TimeRunner>,
     mut cmd: Commands,
 ) {
-    for (entity, mut tf, global_tf, mut agent_pos, next_pos, path, agent_anim, speed) in &mut q {
+    for (
+        entity,
+        mut tf,
+        global_tf,
+        mut agent_pos,
+        next_pos,
+        move_target,
+        path,
+        agent_anim,
+        speed,
+    ) in &mut q
+    {
         match agent_anim {
             ActiveAgentAnimation::Straight {
                 direction,
@@ -573,6 +634,12 @@ fn animate_agent_movement(
         };
 
         agent_pos.0 = next_pos.0;
+
+        cmd.trigger(StepOnTile {
+            entity: move_target.cell_entity,
+            moving_entity: entity,
+        });
+
         let mut e_cmds = cmd.entity(entity);
         e_cmds.remove::<JumpAnimStep>();
         e_cmds.remove::<ActiveAgentAnimation>();
@@ -581,7 +648,7 @@ fn animate_agent_movement(
         e_cmds.remove::<TimeSpan>();
         e_cmds.remove::<TweenInterpolationValue>();
         e_cmds.remove::<NextPos>();
-        e_cmds.remove::<NextWorldPos>();
+        e_cmds.remove::<NextMoveTarget>();
 
         if path.path().last() != Some(&next_pos.0) {
             continue;

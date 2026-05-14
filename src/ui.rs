@@ -503,7 +503,7 @@ pub fn drag_card_mesh(
 ) {
     println!("in drag before checks");
     let (main_cam, main_cam_tf) = main_cam_q.single().expect("found more than one cam3d");
-    // cmd.entity(e.entity).log_components();
+
     let Ok((mesh_tf, mut drag_data)) = q.get_mut(e.entity) else {
         println!("nope");
         // the drag event might fire before DragStart ?

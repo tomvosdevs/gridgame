@@ -902,7 +902,7 @@ dependencies = [
 [[package]]
 name = "bevy_gearbox"
 version = "0.6.0"
-source = "git+https://github.com/DEMIURGE-studio/bevy_gearbox.git?branch=Fix-core#872b06288bf673f9fbb70ade7ac38198bb085d4e"
+source = "git+https://github.com/DEMIURGE-studio/bevy_gearbox.git?branch=master#872b06288bf673f9fbb70ade7ac38198bb085d4e"
 dependencies = [
  "bevy",
  "bevy_gearbox_core",
@@ -916,7 +916,7 @@ dependencies = [
 [[package]]
 name = "bevy_gearbox_core"
 version = "0.6.0"
-source = "git+https://github.com/DEMIURGE-studio/bevy_gearbox.git?branch=Fix-core#872b06288bf673f9fbb70ade7ac38198bb085d4e"
+source = "git+https://github.com/DEMIURGE-studio/bevy_gearbox.git?branch=master#872b06288bf673f9fbb70ade7ac38198bb085d4e"
 dependencies = [
  "bevy",
  "bevy_gauge",
@@ -926,7 +926,7 @@ dependencies = [
 [[package]]
 name = "bevy_gearbox_macros"
 version = "0.6.0"
-source = "git+https://github.com/DEMIURGE-studio/bevy_gearbox.git?branch=Fix-core#872b06288bf673f9fbb70ade7ac38198bb085d4e"
+source = "git+https://github.com/DEMIURGE-studio/bevy_gearbox.git?branch=master#872b06288bf673f9fbb70ade7ac38198bb085d4e"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -936,7 +936,7 @@ dependencies = [
 [[package]]
 name = "bevy_gearbox_protocol"
 version = "0.6.0"
-source = "git+https://github.com/DEMIURGE-studio/bevy_gearbox.git?branch=Fix-core#872b06288bf673f9fbb70ade7ac38198bb085d4e"
+source = "git+https://github.com/DEMIURGE-studio/bevy_gearbox.git?branch=master#872b06288bf673f9fbb70ade7ac38198bb085d4e"
 dependencies = [
  "bevy",
  "bevy_gearbox_core",

@@ -3,30 +3,27 @@ use std::range::Range;
 use bevy::ecs::{
     bundle::Bundle,
     component::Component,
-    lifecycle::Add,
     observer::On,
     query::With,
     system::{Commands, Query, Res, Single},
 };
-use bevy_diesel::{gearbox::templates, spawn::TemplateRegistry};
+use bevy_diesel::spawn::TemplateRegistry;
 use bevy_ecs::{entity::Entity, event::EntityEvent};
-use bevy_gauge::{attributes, prelude::Attributes};
+
+use bevy_gauge::{
+    AttributeComponent, AttributeResolvable,
+    prelude::{AttributesMut, WriteBack},
+};
 use bevy_prng::WyRand;
 use bevy_rand::global::GlobalRng;
-use bevy_trait_query::queryable;
+
 use rand::RngExt;
 
 use crate::{
-    abilities::{
-        abilities_templates::{AbilityKind, AbilityModifierKind},
-        definitions::TemplateAbility,
-    },
-    creatures::definitions::CreatureKind,
+    abilities::abilities_templates::AbilityKind,
     deck::{
         card_blueprints::CardBlueprint,
-        deck_and_cards::{
-            Card, CardState, Deck, InDeck, SoulLife, StatelessCard, UnassignedDeckState,
-        },
+        deck_and_cards::{Card, Deck, InDeck, SoulLife, StatelessCard},
     },
     game_flow::turns::CurrentDeckReference,
 };
@@ -59,13 +56,37 @@ pub enum CardPoolStatus {
 }
 
 #[repr(u32)]
-#[derive(PartialOrd, Ord, PartialEq, Eq, Component, Clone, Copy, Debug)]
+#[derive(PartialOrd, Ord, PartialEq, Eq, Clone, Copy, Debug)]
 pub enum RarityTier {
-    Common = 0,
-    Uncommon = 1,
-    Rare = 2,
-    Legendary = 3,
-    Secret = 4,
+    Common = 1,
+    Uncommon = 2,
+    Rare = 3,
+    Legendary = 4,
+    Secret = 5,
+}
+
+impl RarityTier {
+    fn as_f32(&self) -> f32 {
+        self.clone() as u32 as f32
+    }
+
+    fn from_f32(&self, val: f32) -> Self {
+        match val {
+            1.0 => RarityTier::Common,
+            2.0 => RarityTier::Uncommon,
+            3.0 => RarityTier::Rare,
+            4.0 => RarityTier::Legendary,
+            5.0 => RarityTier::Secret,
+            _ => RarityTier::Common,
+        }
+    }
+}
+
+#[derive(Component, AttributeComponent)]
+pub struct CardRarity {
+    #[write("Rarity")]
+    #[read("Rarity")]
+    tier: f32,
 }
 
 impl RarityTier {
@@ -94,9 +115,9 @@ pub enum RarityPicker {
 }
 
 impl RarityPicker {
-    pub(crate) fn pick(self: &Self, rng: &mut WyRand) -> RarityTier {
+    pub(crate) fn pick(self: &Self, rng: &mut WyRand) -> CardRarity {
         let rarities = RarityTier::rarities_vec();
-        match self {
+        let found = match self {
             RarityPicker::Random(rarity_cond) => match rarity_cond {
                 RarityCond::EqOrHigher(rarity_tier) => {
                     let valid_rarites: Vec<&RarityTier> =
@@ -125,6 +146,9 @@ impl RarityPicker {
                 RarityCond::EqTo(rarity_tier) => *rarity_tier,
             },
             RarityPicker::Static(rarity_tier) => *rarity_tier,
+        };
+        CardRarity {
+            tier: found.as_f32(),
         }
     }
 }
@@ -139,7 +163,7 @@ pub trait CardBuilder {
         rarity: RarityPicker,
         templates: &Res<TemplateRegistry>,
         blueprints: &Vec<&CardBlueprint>,
-    ) -> (Card, impl Bundle);
+    ) -> impl Bundle;
 }
 
 pub struct StaticCardBuilder {
@@ -175,7 +199,7 @@ impl CardBuilder for RandomPoolCardBuilder {
         rarity: RarityPicker,
         templates: &Res<TemplateRegistry>,
         blueprints: &Vec<&CardBlueprint>,
-    ) -> (Card, impl Bundle) {
+    ) -> impl Bundle {
         let matching_blueprints: Vec<&CardBlueprint> = blueprints
             .iter()
             .filter(|b| b.does_match(&self.pools))
@@ -192,8 +216,7 @@ impl CardBuilder for RandomPoolCardBuilder {
                 .as_str(),
             );
 
-        let ability_entity = selected_blueprint.build_ability_entity(cmd, templates);
-        (Card::new(ability_entity), (rarity.pick(rng)))
+        selected_blueprint.generate(cmd, templates, rng, rarity)
     }
 }
 
@@ -208,13 +231,16 @@ pub fn gen_and_spawn_default_deck(
     templates: Res<TemplateRegistry>,
     rng: Single<&mut WyRand, With<GlobalRng>>,
     blueprint_q: Query<&CardBlueprint>,
+    mut attributes: AttributesMut,
     mut cmd: Commands,
 ) {
     println!("gen def deck for e : {:?}", e.entity);
     let blueprints: Vec<&CardBlueprint> = blueprint_q.iter().map(|b| b).collect();
 
+    let creature_entity = e.entity;
+
     let pools: Vec<(CardPool, CardPoolStatus)> = q
-        .get(e.entity)
+        .get(creature_entity)
         .expect("Entity should have the gen component")
         .iter()
         .flat_map(|ps| ps.get_pools())
@@ -236,7 +262,10 @@ pub fn gen_and_spawn_default_deck(
             &blueprints,
         );
 
-        cmd.spawn((card_bundle, StatelessCard::new(), InDeck(deck_entity)));
+        let card_entity = cmd
+            .spawn((card_bundle, StatelessCard::new(), InDeck(deck_entity)))
+            .id();
+        attributes.register_source(card_entity, "Invoker", creature_entity);
     }
 
     cmd.entity(deck_entity).insert((SoulLife {
@@ -244,6 +273,8 @@ pub fn gen_and_spawn_default_deck(
         max: default_deck_size as f32,
     },));
 
-    cmd.entity(e.entity)
+    attributes.register_source(deck_entity, "Invoker", creature_entity);
+
+    cmd.entity(creature_entity)
         .insert(CurrentDeckReference(deck_entity));
 }

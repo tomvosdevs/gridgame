@@ -38,7 +38,7 @@ use bevy_tween::{
 
 use crate::{
     ActiveCamera, GridCell, InterpolateSkew, SkewMaterial,
-    abilities::abilities_templates::CastAbility,
+    abilities::abilities_templates::{AbilityCastRequested, CastInvokedBy},
     deck::deck_and_cards::Card,
     game_flow::turns::{CurrentPlayingEntity, PlayingEntity},
     grid_abilities_backend::{GridInvokerTarget, GridStartInvoke, GridTarget},
@@ -359,16 +359,12 @@ pub fn handle_card_release(
     e: On<CardReleased>,
     mut cmd: Commands,
     ui_cards_q: Query<(&Transform, &CardAnimatedBy, &CardUiTargetMesh)>,
-    cards_q: Query<&Card>,
+    cards_q: Query<(Entity, &Card)>,
     skew_materials: Res<Assets<ExtendedMaterial<StandardMaterial, SkewMaterial>>>,
     skew_material_q: Query<
         &MeshMaterial3d<ExtendedMaterial<StandardMaterial, SkewMaterial>>,
         With<CardUiTargetMesh>,
     >,
-    currently_playing: Res<CurrentPlayingEntity>,
-    cells_q: Query<&GridNode, With<GridCell>>,
-    playing_q: Query<&CartesianPosition, With<PlayingEntity>>,
-    grid: Single<&mut CartesianGrid<Cartesian3D>>,
 ) {
     println!("received release");
     let ui_card_entity = e.entity;
@@ -377,32 +373,16 @@ pub fn handle_card_release(
         .get(ui_card_entity)
         .expect("should have found ui entity comps");
 
-    let card = cards_q
+    let (card_e, card) = cards_q
         .get(ui_card_data.source_card)
         .expect("CardUI datat's source_card should be a valid Card");
 
     if let Some(target_entity) = e.selected_target {
-        cmd.trigger(CastAbility::on_active_player(
-            card.ability_entity,
+        cmd.trigger(AbilityCastRequested::new(
+            card_e,
+            CastInvokedBy::CurrentlyPlaying,
             target_entity,
         ));
-        // let position = cells_q.get(target_entity).map_or_else(
-        //     |_| {
-        //         *playing_q
-        //             .get(target_entity)
-        //             .expect("Target should be a GridCell or PlayingEntity")
-        //     },
-        //     |node| grid.pos_from_index(node.0),
-        // );
-
-        // cmd.entity(card.ability_entity)
-        //     .insert(InvokedBy(currently_playing.0));
-
-        // let target = GridTarget::entity(target_entity, position);
-        // cmd.entity(currently_playing.0)
-        //     .insert(GridInvokerTarget::entity(target_entity, position));
-
-        // writer.write(GridStartInvoke::new(card.ability_entity, target));
 
         cmd.entity(animated_by.rotation_animator_entity).despawn();
         cmd.entity(ui_card_entity).despawn();
