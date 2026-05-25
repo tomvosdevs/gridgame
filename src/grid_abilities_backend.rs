@@ -39,9 +39,7 @@ use crate::{
     GridCell,
     abilities::{
         abilities_templates::{AbilityHandler, ActionCastData, CasterEntity, FromCaster},
-        effects::{
-            AbilityOfCaster, handle_just_casted_effect, handle_spawn_effect, propag_caster_hit,
-        },
+        effects::{AbilityOfCaster, handle_just_casted_effect, handle_spawn_effect},
     },
     deck::card_blueprints::NotifyActionHit,
     game_flow::turns::{PlayingEntity, TeamHitFilter, ToWorldPos},
@@ -113,29 +111,29 @@ impl AbilityHitEntity {
     }
 }
 
-/// Child entity hit target
+/// Parent caster was ended
 #[derive(Message, Clone, Debug, Reflect, EntityEvent)]
-pub struct CasterAbilityHit {
+pub struct CastEnd {
     pub entity: Entity,
     pub target: GridTarget,
 }
 
-impl CasterAbilityHit {
+impl CastEnd {
     pub fn new(entity: Entity, target: GridTarget) -> Self {
         Self { entity, target }
     }
 }
 
-impl HasDieselTarget<CartesianPosition> for CasterAbilityHit {
-    fn diesel_target(&self) -> Target<CartesianPosition> {
-        self.target
-    }
-}
-
-impl GearboxMessage for CasterAbilityHit {
+impl GearboxMessage for CastEnd {
     type Validator = AcceptAll;
     fn target(&self) -> Entity {
         self.entity
+    }
+}
+
+impl HasDieselTarget<CartesianPosition> for CastEnd {
+    fn diesel_target(&self) -> Target<CartesianPosition> {
+        self.target
     }
 }
 
@@ -254,6 +252,7 @@ pub fn handle_unfiltered_hit_system(
     grid_cells_q: Query<&GridNode, With<GridCell>>,
     grid_playing_q: Query<&CartesianPosition, With<PlayingEntity>>,
     mut entity_writer: MessageWriter<AbilityHitEntity>,
+    mut cast_end_writer: MessageWriter<CastEnd>,
     _position_writer: MessageWriter<AbilityHitPosition>,
 ) {
     let grid = grid.deref();
@@ -279,6 +278,14 @@ pub fn handle_unfiltered_hit_system(
                 target,
                 target_kind,
             });
+            cast_end_writer.write(CastEnd {
+                entity: hit.cast_data.source_caster_entity,
+                target,
+            });
+            cmd.trigger(CastEnd {
+                entity: hit.cast_data.source_caster_entity,
+                target,
+            });
         } else if let Ok(playing_pos) = grid_playing_q.get(hit.hit_player) {
             let target = GridTarget::entity(hit.hit_player, *playing_pos);
             let target_kind = HitTargetKind::Playing;
@@ -299,6 +306,14 @@ pub fn handle_unfiltered_hit_system(
                 cast_data: hit.cast_data.clone(),
                 target,
                 target_kind,
+            });
+            cast_end_writer.write(CastEnd {
+                entity: hit.cast_data.source_caster_entity,
+                target,
+            });
+            cmd.trigger(CastEnd {
+                entity: hit.cast_data.source_caster_entity,
+                target,
             });
         };
     }
@@ -405,8 +420,8 @@ impl Plugin for Grid3dDieselPlugin {
         // // Collision types + system (unfiltered - entities with Collides marker)
         app.register_transition::<AbilityHitEntity>();
         app.register_transition::<AbilityHitPosition>();
-        app.register_transition::<CasterAbilityHit>();
         app.register_transition::<StartCast>();
+        app.register_transition::<CastEnd>();
         app.register_transition::<GridStartInvoke>();
 
         app.add_systems(
@@ -416,7 +431,7 @@ impl Plugin for Grid3dDieselPlugin {
                     .in_set(bevy_diesel::bevy_gearbox::GearboxPhase::SideEffectPhase),
                 bevy_diesel::events::go_off_side_effect::<AbilityHitPosition, CartesianPosition>
                     .in_set(bevy_diesel::bevy_gearbox::GearboxPhase::SideEffectPhase),
-                bevy_diesel::events::go_off_side_effect::<CasterAbilityHit, CartesianPosition>
+                bevy_diesel::events::go_off_side_effect::<CastEnd, CartesianPosition>
                     .in_set(bevy_diesel::bevy_gearbox::GearboxPhase::SideEffectPhase),
             ),
         );

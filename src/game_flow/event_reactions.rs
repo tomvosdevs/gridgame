@@ -117,7 +117,7 @@ fn apply_reaction_damage(
 ) {
     println!("on reaction trig");
     let e = e.entity;
-    cmd.entity(e).log_components();
+
     let Ok((dmg, deck_ref)) = q.get_mut(e) else {
         return;
     };

@@ -206,6 +206,8 @@ impl CardBuilder for RandomPoolCardBuilder {
             .map(|b| *b)
             .collect();
 
+        println!("found {:?} matching blueprints", matching_blueprints.len());
+
         let selected_blueprint = matching_blueprints
             .get(rng.random_range(0..matching_blueprints.len()))
             .expect(

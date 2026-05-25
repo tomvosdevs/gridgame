@@ -25,9 +25,7 @@ use crate::{
     abilities::abilities_templates::{CasterAbilityCasted, CasterHitReceived},
     deck::card_blueprints::SubAbilityOf,
     game_flow::turns::{CurrentDeckReference, PlayingEntity},
-    grid_abilities_backend::{
-        AbilityHitEntity, CasterAbilityHit, GridGoOff, GridInvokerTarget, GridStartInvoke,
-    },
+    grid_abilities_backend::{AbilityHitEntity, GridGoOff, GridInvokerTarget, GridStartInvoke},
     utils::IntoVec,
 };
 
@@ -64,14 +62,6 @@ pub fn handle_just_casted_effect(
         };
 
         cmd.trigger(CasterAbilityCasted(effect.caster));
-    }
-}
-
-pub fn propag_caster_hit(mut reader: MessageReader<CasterAbilityHit>, mut cmd: Commands) {
-    for e in reader.read() {
-        println!("trig sent BOSS");
-
-        cmd.trigger(CasterHitReceived(e.entity));
     }
 }
 
@@ -154,7 +144,6 @@ pub enum AbilityEffectKind {
 impl AbilityEffectKind {
     pub fn flat_damage(damage: f32) -> Self {
         let damage: &'static str = Box::leak(format!("{}", damage).into_boxed_str());
-        println!("will apply dmg : {:?}", damage);
         Self::Instant(instant! {"SoulLife.current" -= damage})
     }
 }
@@ -180,12 +169,6 @@ pub struct StatusEffectOf(Entity);
 #[derive(Component, Debug, Clone)]
 #[relationship_target(relationship = EvReactorOf, linked_spawn)]
 pub struct EvReactors(Vec<Entity>);
-
-impl EvReactors {
-    pub fn get_all(&self) -> &Vec<Entity> {
-        &self.0
-    }
-}
 
 #[derive(Component, Debug, Clone)]
 #[relationship(relationship_target = EvReactors)]
@@ -236,68 +219,3 @@ impl<C: EntityEvent + Clone> TriggerOn<C> {
         Self { _data: PhantomData }
     }
 }
-
-pub fn observe_effects(
-    e: On<AbilityHitEntity>,
-    status_effects_q: Query<&StatusEffects>,
-    effect_reactors_q: Query<Entity, With<TriggerOn<CasterHitReceived>>>,
-    // invoked_by_q: Query<&InvokedBy>,
-    // player_target_q: Query<&GridInvokerTarget, With<PlayingEntity>>,
-    // mut attributes: AttributesMut,
-    // curr_deck_refs_q: Query<&CurrentDeckReference>,
-    mut cmd: Commands,
-) {
-    println!("c'est la chefton");
-    // let ability_entity = e.entity;
-    // let Ok(status_effects) = status_effects_q.get(ability_entity) else {
-    //     return;
-    // };
-
-    // // println!("received caster hit");
-
-    // // let attacker = invoked_by_q
-    // //     .get(caster)
-    // //     .expect("should have found invoked by")
-    // //     .0;
-
-    // // let target_entity = player_target_q
-    // //     .get(attacker)
-    // //     .expect("InvokerTarget should be set")
-    // //     .entity
-    // //     .unwrap();
-
-    // // let targeted_deck_entity = curr_deck_refs_q
-    // //     .get(target_entity)
-    // //     .expect("Attacks should target an entity with a deck")
-    // //     .0;
-
-    // for effect_target in effect_reactors_q.iter_many(&status_effects.0) {
-    //     cmd.trigger(TriggerEffect {
-    //         entity: effect_target,
-    //         cause: e.event().clone(),
-    //     });
-    // }
-
-    // // let roles = [("Attacker", attacker)];
-    // // for effect in hit_effects_q.iter_many(status_effects.0) {
-    // //     match effect {
-    // //         // TODO :
-    // //         cmd
-    // //         AbilityEffectKind::Mod(modifier_set) => {
-    // //             modifier_set
-    // //                 .try_apply(targeted_deck_entity, &mut attributes)
-    // //                 .expect("Failed to apply modifier set");
-    // //         }
-    // //         AbilityEffectKind::Instant(instant_modifier_set) => {
-    // //             let evaluated_instant = attributes.evaluate_instant(
-    // //                 &instant_modifier_set,
-    // //                 &roles,
-    // //                 targeted_deck_entity,
-    // //             );
-    // //             attributes.apply_evaluated_instant(&evaluated_instant, targeted_deck_entity);
-    // //         }
-    // //     }
-    // // }
-}
-
-// pub fn handle_event_trigger(e: On<TriggerEffect>) {}

@@ -48,12 +48,11 @@ use crate::{
     GridCell,
     abilities::effects::{
         AbilityEffectKind, AbilityOfCaster, CasterHitEffect, JustCastedEffect, SpawnEffect,
-        observe_effects, propag_caster_hit,
     },
     deck::deck_and_cards::Card,
     game_flow::turns::{CurrentDeckReference, CurrentPlayingEntity, PlayingEntity},
     grid_abilities_backend::{
-        AbilityHitEntity, CasterAbilityHit, EntityGatheringFilter, Grid3DFilter, Grid3DGatherer,
+        AbilityHitEntity, CastEnd, EntityGatheringFilter, Grid3DFilter, Grid3DGatherer,
         GridCheckShape, GridGoOff, GridGoOffConfig, GridInvokerTarget, GridSpawnConfig,
         GridStartInvoke, GridTarget, GridTargetGenerator, NumberType,
     },
@@ -67,7 +66,6 @@ pub struct AbilitiesTemplatePlugin;
 impl Plugin for AbilitiesTemplatePlugin {
     fn build(&self, app: &mut bevy::app::App) {
         app.add_systems(Startup, register_templates)
-            .add_systems(Update, propag_caster_hit.before(GearboxSet))
             .add_observer(handle_cast);
     }
 }
@@ -376,11 +374,8 @@ impl AbilityHandlerBuilder<ABSReady> {
 
     pub fn build(self, cmd: &mut Commands) -> AbilityHandler {
         let entity = self.base_entity.unwrap_or_else(|| cmd.spawn_empty().id());
-        println!("this the base entity : ");
-        cmd.entity(entity).log_components();
         cmd.entity(self.ability_entity);
         let mut e_cmds = cmd.entity(entity);
-        e_cmds.observe(observe_effects);
 
         e_cmds.with_children(|parent| {
             let s__ready = parent
@@ -402,12 +397,12 @@ impl AbilityHandlerBuilder<ABSReady> {
             );
 
             parent.spawn_transition::<GridStartInvoke>(s__ready, s__cast);
-            parent.spawn_transition::<CasterAbilityHit>(s__cast, s__hit);
+            parent.spawn_transition::<CastEnd>(s__cast, s__hit);
             parent.spawn_transition_always(s__hit, s__ready);
 
             let _cmd = parent.commands_mut();
             _cmd.entity(entity)
-                .insert((Name::new("ABE"), Ability, CasterEntity))
+                .insert((Name::new("Abilities caster"), Ability, CasterEntity))
                 .init_state_machine(s__ready);
         });
 

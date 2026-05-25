@@ -151,7 +151,7 @@ pub fn handle_projectiles(
 ) {
     for (projectile_entity, projectile, mut tf) in &mut projectiles_q {
         tf.translation += projectile.dir * projectile.speed * time.delta_secs();
-        if tf.translation.distance(projectile.target_pos) < 0.1 {
+        if tf.translation.distance(projectile.target_pos) < 0.2 {
             if let Some(hit_player) = projectile.target_entity {
                 let invoker = invoked_by_q
                     .get(projectile_entity)
@@ -164,7 +164,7 @@ pub fn handle_projectiles(
                 // TODO : see how to remove attacking player her or how to get it properly, maybe by adding a AbilityOfPlayer() component on the invoker/caster ?
 
                 println!("here we have :");
-                cmd.entity(projectile_entity).log_components();
+                cmd.entity(projectile_entity).remove::<MovingProjectile>();
 
                 hit_writer.write(HitReceived {
                     hit_player,
