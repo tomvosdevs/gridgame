@@ -95,7 +95,6 @@ impl<T: EntityEvent> ReactOn<T> {
 pub struct SpikyCell;
 
 fn on_spiky_add(e: On<Add, SpikyCell>, mut cmd: Commands) {
-    println!("spiky cell added");
     cmd.spawn(ReactionFor::get_bundle::<StepOnTile>(
         e.entity,
         ApplyDamage(2),

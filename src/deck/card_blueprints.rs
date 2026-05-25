@@ -1,34 +1,56 @@
 use bevy::app::{App, Plugin, Startup};
-use bevy_diesel::spawn::TemplateRegistry;
+use bevy_diesel::{prelude::InvokedBy, spawn::TemplateRegistry};
 use bevy_ecs::{
     bundle::Bundle,
     component::Component,
     entity::Entity,
+    event::EntityEvent,
+    observer::{self, Observer, On},
+    query::With,
+    related,
+    relationship::RelationshipTarget,
     schedule::IntoScheduleConfigs,
-    system::{Commands, Res},
+    system::{Commands, Query, Res},
 };
+use bevy_gauge::prelude::{AttributesMut, InstantExt};
 use bevy_prng::WyRand;
 use rand::RngExt;
 
 use crate::{
     abilities::{
-        abilities_templates::{AbilityHandler, AbilityHandlerBuilder, BaseAbility},
+        abilities_templates::{AbilityHandler, AbilityHandlerBuilder, ActionCastData, BaseAbility},
         definitions::register_abilities,
-        effects::{AbilityEffectKind, AbilityEffects, DamageEffect, EffectTrigger},
+        effects::{
+            AbilityEffectKind, EvReactorOf, EvReactors, StatusEffectOf, StatusEffects,
+            TriggerEffect, TriggerOn,
+        },
     },
     deck::{
         card_builders::{CardPool, CardPoolStatus, RarityCond, RarityPicker},
         deck_and_cards::Card,
     },
+    game_flow::turns::CurrentDeckReference,
+    grid_abilities_backend::{AbilityHitEntity, GridTarget, HitReceived, HitTargetKind},
 };
 
 pub struct CardBlueprintPlugin;
 
 impl Plugin for CardBlueprintPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, register_blueprints.after(register_abilities));
+        app.add_systems(Startup, register_blueprints.after(register_abilities))
+            .add_observer(handle_matching_reactors::<NotifyActionHit>);
     }
 }
+
+#[derive(Component, Debug, Clone)]
+#[relationship_target(relationship = SubAbilityOf)]
+pub struct SubAbilities(Vec<Entity>);
+
+#[derive(Component, Debug, Clone)]
+#[relationship(relationship_target = SubAbilities)]
+pub struct SubAbilityOf(pub Entity);
+
+pub fn read_notified_hit(e: On<NotifyActionHit>) {}
 
 // pub enum PoolMatch
 
@@ -75,7 +97,9 @@ impl CardBlueprint {
             return None;
         };
         let instance = cmd.spawn_empty().id();
-        cmd.entity(base).clone_with_opt_out(instance, |_| {});
+        cmd.entity(base).clone_with_opt_out(instance, |builder| {
+            builder.linked_cloning(true);
+        });
         Some(instance)
     }
 
@@ -83,8 +107,10 @@ impl CardBlueprint {
         self.name_picker = picker
     }
 
-    pub fn create_base_entity(mut self, cmd: &mut Commands, effects: impl Bundle) -> Self {
-        let entity = cmd.spawn(effects).id();
+    pub fn create_base_entity(mut self, cmd: &mut Commands, bundle: impl Bundle) -> Self {
+        let entity = cmd.spawn(bundle).id();
+        println!("base entity has :");
+        cmd.entity(entity).log_components();
         self.base_entity = Some(entity);
         self
     }
@@ -155,22 +181,110 @@ impl CardBlueprint {
     }
 }
 
-type AE<T> = AbilityEffects<T>;
 type E = AbilityEffectKind;
+
+#[derive(EntityEvent)]
+pub struct GotHit {
+    pub entity: Entity,
+    pub attacking_player: Entity,
+    pub effect: E,
+}
+
+impl GotHit {
+    pub fn new(entity: Entity, attacking_player: Entity, effect: E) -> Self {
+        Self {
+            entity,
+            attacking_player,
+            effect,
+        }
+    }
+}
+
+fn on_hit_effect(effect: E) -> impl Bundle {
+    (
+        Observer::new(
+            move |e: On<TriggerEffect<NotifyActionHit>>,
+                  q: Query<&CurrentDeckReference>,
+                  mut attributes: AttributesMut| {
+                println!("CCCC = 1 inside on hit eggect");
+                let target = e.cause.target.entity.unwrap();
+                let attacker = e.cause.cast_data.source_playing_entity;
+
+                if !e.cause.target_kind.is_player() {
+                    return;
+                }
+
+                let roles = [("Attacker", attacker)];
+                let target_deck = q.get(target).expect("Target player should have deck").0;
+
+                match effect.clone() {
+                    AbilityEffectKind::Mod(modifier_set) => {
+                        modifier_set
+                            .try_apply(target_deck, &mut attributes)
+                            .expect("Failed to apply modifier set");
+                    }
+                    AbilityEffectKind::Instant(instant_modifier_set) => {
+                        let evaluated_instant =
+                            attributes.evaluate_instant(&instant_modifier_set, &roles, target_deck);
+                        attributes.apply_evaluated_instant(&evaluated_instant, target_deck);
+                    }
+                }
+            },
+        ),
+        TriggerOn::<NotifyActionHit>::new(),
+    )
+}
+
+#[derive(EntityEvent, Clone)]
+#[entity_event(propagate = &'static SubAbilityOf, auto_propagate)]
+pub struct NotifyActionHit {
+    #[event_target]
+    pub sub_ability_entity: Entity,
+    pub cast_data: ActionCastData,
+    pub target: GridTarget,
+    pub target_kind: HitTargetKind,
+}
+
+fn handle_matching_reactors<T: EntityEvent + Clone>(
+    e: On<T>,
+    reactors_q: Query<&EvReactors>,
+    effects_q: Query<Entity, With<TriggerOn<T>>>,
+    mut cmd: Commands,
+) {
+    // Instead react to an event like HitReceived with all the data and entities and collect the reactors?
+    let evt_receiver = e.event_target();
+    let Ok(reactors) = reactors_q.get(evt_receiver) else {
+        return;
+    };
+
+    for effect in effects_q.iter_many(reactors.get_all()) {
+        println!("CCCC - u the goat");
+        cmd.trigger(TriggerEffect {
+            entity: effect,
+            cause: e.event().clone(),
+        });
+    }
+}
 
 pub fn register_blueprints(mut cmd: Commands) {
     let projectile_tid = BaseAbility::Projectile.as_str();
     let melee_tid = BaseAbility::Melee.as_str();
 
     let basic_projectile_blueprint = CardBlueprint::new(projectile_tid)
-        .create_base_entity(&mut cmd, AE::hit(E::flat_damage(2.0)))
+        .create_base_entity(
+            &mut cmd,
+            (related!(EvReactors[on_hit_effect(E::flat_damage(3.0))]),),
+        )
         .add_required_pool(CardPool::Ranged);
-    cmd.spawn(basic_projectile_blueprint);
+    let new_e = cmd.spawn(basic_projectile_blueprint).id();
 
-    let bomb_blueprint = CardBlueprint::new(projectile_tid)
-        .create_base_entity(&mut cmd, AE::hit(E::flat_damage(4.0)))
-        .add_required_pool(CardPool::Ranged);
-    cmd.spawn(bomb_blueprint);
+    println!("this is on the base entity : ");
+    cmd.entity(new_e).log_components();
+
+    // let bomb_blueprint = CardBlueprint::new(projectile_tid)
+    //     .create_base_entity(&mut cmd, ())
+    //     .add_required_pool(CardPool::Ranged);
+    // cmd.spawn(bomb_blueprint);
 
     // let _basic_melee_blueprint = cmd
     //     .spawn(

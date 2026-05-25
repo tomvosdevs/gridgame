@@ -11,6 +11,7 @@ use bevy::{
         query::With,
         system::{Commands, Query, ResMut},
     },
+    transform::components::{GlobalTransform, Transform},
 };
 use bevy_diesel::{
     invoke::Ability,
@@ -46,8 +47,8 @@ use rand::RngExt;
 use crate::{
     GridCell,
     abilities::effects::{
-        AbilityEffectKind, AbilityEffects, CasterHitEffect, DamageEffect, HitTrigger,
-        JustCastedEffect, SpawnEffect, observe_effects, propag_caster_hit,
+        AbilityEffectKind, AbilityOfCaster, CasterHitEffect, JustCastedEffect, SpawnEffect,
+        observe_effects, propag_caster_hit,
     },
     deck::deck_and_cards::Card,
     game_flow::turns::{CurrentDeckReference, CurrentPlayingEntity, PlayingEntity},
@@ -77,6 +78,21 @@ pub enum CastInvokedBy {
     Specific(Entity),
 }
 
+#[derive(Component, Debug, Clone)]
+pub struct ActionCastData {
+    pub source_playing_entity: Entity,
+    pub source_caster_entity: Entity,
+}
+
+impl ActionCastData {
+    pub fn new(source_playing_entity: Entity, source_caster_entity: Entity) -> Self {
+        Self {
+            source_playing_entity,
+            source_caster_entity,
+        }
+    }
+}
+
 fn handle_cast(
     e: On<AbilityCastRequested>,
     mut cmd: Commands,
@@ -84,17 +100,22 @@ fn handle_cast(
     card_q: Query<&Card>,
     currently_playing: Res<CurrentPlayingEntity>,
     cells_q: Query<&GridNode, With<GridCell>>,
-    playing_q: Query<&CartesianPosition, With<PlayingEntity>>,
+    playing_q: Query<(&CartesianPosition), With<PlayingEntity>>,
+    player_pos_q: Query<&GlobalTransform, With<PlayingEntity>>,
     grid: Single<&mut CartesianGrid<Cartesian3D>>,
 ) {
     let card = card_q
         .get(e.card_entity)
         .expect("Card should exist in the card entity from cast event");
-    let invoker = match e.invoked_by {
+    let attacking_player = match e.invoked_by {
         CastInvokedBy::CurrentlyPlaying => currently_playing.0,
         CastInvokedBy::Specific(entity) => entity,
     };
     let target = e.target;
+
+    let attacking_pos = playing_q
+        .get(attacking_player)
+        .expect("this man should have a cartesian pos");
 
     let target_position = cells_q.get(target).map_or_else(
         |_| {
@@ -105,12 +126,28 @@ fn handle_cast(
         |node| grid.pos_from_index(node.0),
     );
 
-    cmd.entity(invoker)
+    println!("on the player : ");
+    cmd.entity(attacking_player).log_components();
+
+    let invoker = cmd
+        .spawn((
+            attacking_pos.clone(),
+            Name::new("Da invokery"),
+            GridInvokerTarget::entity(target, target_position),
+            ActionCastData {
+                source_playing_entity: attacking_player,
+                source_caster_entity: card.ability_handler.caster_entity,
+            },
+        ))
+        .id();
+
+    cmd.entity(attacking_player)
         .insert(FromCaster::new(card.ability_handler.caster_entity));
-    cmd.entity(card.ability_handler.caster_entity)
-        .insert(InvokedBy(invoker));
-    cmd.entity(invoker)
-        .insert(GridInvokerTarget::entity(target, target_position));
+    cmd.entity(card.ability_handler.caster_entity).insert((
+        InvokedBy(invoker),
+        attacking_pos.clone(),
+        GridInvokerTarget::entity(target, target_position),
+    ));
 
     let grid_target = GridTarget::entity(target, target_position);
     writer.write(GridStartInvoke::new(
@@ -314,10 +351,10 @@ impl AbilityHandlerBuilder<ABSAbilityPassed> {
 #[derive(Component)]
 pub struct CasterEntity;
 
-#[derive(EntityEvent)]
+#[derive(EntityEvent, Clone)]
 pub struct CasterAbilityCasted(pub Entity);
 
-#[derive(EntityEvent)]
+#[derive(EntityEvent, Clone)]
 pub struct CasterHitReceived(pub Entity);
 
 #[derive(Component)]
@@ -339,10 +376,10 @@ impl AbilityHandlerBuilder<ABSReady> {
 
     pub fn build(self, cmd: &mut Commands) -> AbilityHandler {
         let entity = self.base_entity.unwrap_or_else(|| cmd.spawn_empty().id());
-        cmd.entity(self.ability_entity)
-            .insert(FromCaster::new(entity));
+        println!("this the base entity : ");
+        cmd.entity(entity).log_components();
+        cmd.entity(self.ability_entity);
         let mut e_cmds = cmd.entity(entity);
-        println!("starting observer on : {:?}", entity);
         e_cmds.observe(observe_effects);
 
         e_cmds.with_children(|parent| {
@@ -399,23 +436,9 @@ pub fn projectile_template(commands: &mut Commands, entity: Option<Entity>) -> E
         let hit_and_done = parent
             .spawn_diesel_substate(
                 entity,
-                (
-                    Name::new("Hit"),
-                    StateComponent(DelayedDespawn::now()), // This repeats the template
-                                                           // GridSpawnConfig::target("projectile").with_target_generator(
-                                                           //     GridTargetGenerator::default()
-                                                           //         .with_gatherer(Grid3DGatherer::EntitiesInShape {
-                                                           //             shape: GridCheckShape::Sphere(12.0),
-                                                           //             gathering_filter: EntityGatheringFilter::All,
-                                                           //             sort_by_nearest: false,
-                                                           //         })
-                                                           //         .with_filter(Grid3DFilter::new(NumberType::Fixed(1))),
-                                                           // ),
-                ),
+                (Name::new("Hit"), StateComponent(DelayedDespawn::now())),
             )
             .id();
-
-        // parent.spawn_subeffect(hit_and_done, DamageEffect("Strength@Attacker * 2.0"));
 
         parent.spawn_transition::<AbilityHitEntity>(flying, hit_and_done);
 
@@ -427,7 +450,6 @@ pub fn projectile_template(commands: &mut Commands, entity: Option<Entity>) -> E
                 Marker::<Projectile>::new(),
                 ProjectileEffect::new(10.0),
                 Visibility::Inherited,
-                Ability,
             ))
             .init_state_machine(flying);
     });

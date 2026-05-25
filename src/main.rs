@@ -5,13 +5,23 @@ use std::sync::Arc;
 use bevy::DefaultPlugins;
 use bevy::app::{App, Startup};
 use bevy::asset::{AssetServer, Handle};
-use bevy::camera::ScalingMode;
-use bevy::color::palettes::tailwind::{GRAY_300, ORANGE_400};
-use bevy::light::DirectionalLightShadowMap;
+use bevy::camera::primitives::Aabb;
+use bevy::camera::visibility::RenderLayers;
+use bevy::camera::{RenderTarget, ScalingMode};
+use bevy::color::palettes::css::{PALE_TURQUOISE, RED};
+use bevy::color::palettes::tailwind::{GRAY_300, ORANGE_400, RED_300};
+use bevy::core_pipeline::core_3d::graph::Node3d;
+use bevy::core_pipeline::fullscreen_material::{FullscreenMaterial, FullscreenMaterialPlugin};
+use bevy::light::{DirectionalLightShadowMap, NotShadowCaster};
 use bevy::log::LogPlugin;
 use bevy::pbr::{ExtendedMaterial, MaterialExtension};
 use bevy::prelude::*;
-use bevy::render::render_resource::AsBindGroup;
+use bevy::render::extract_component::ExtractComponent;
+use bevy::render::render_graph::RenderLabel;
+use bevy::render::render_resource::{
+    AsBindGroup, Extent3d, ShaderType, TextureDescriptor, TextureDimension, TextureFormat,
+    TextureUsages,
+};
 use bevy::shader::ShaderRef;
 use bevy::state::app::StatesPlugin;
 use bevy_diesel::prelude::SpatialBackend;
@@ -37,6 +47,7 @@ use bevy_tween::BevyTweenRegisterSystems;
 use bevy_tween::prelude::Interpolator;
 use pyri_state::setup::StatePlugin;
 use rand::RngExt;
+use rand::distr::uniform;
 
 use crate::abilities::abilities_templates::AbilitiesTemplatePlugin;
 use crate::actions::{Action, ActionEffect, ActionPlugin};
@@ -624,6 +635,7 @@ fn startup_3d(
 
     cmd.spawn((
         Camera3d::default(),
+        // FullscreenEffect { intensity: 0.005 },
         Name::new("Camera"),
         ActiveCamera,
         Projection::from(OrthographicProjection {
@@ -651,10 +663,12 @@ fn startup_3d(
         .with_effects(vec![ActionEffect::Split])
         .get_entity();
 
+    let light_render_layers = [0, 1];
+
     // Scene lights
     cmd.insert_resource(GlobalAmbientLight {
         color: Color::Srgba(ORANGE_400),
-        brightness: 0.05,
+        brightness: 0.1,
         ..default()
     });
 
@@ -667,10 +681,11 @@ fn startup_3d(
         },
         DirectionalLight {
             shadows_enabled: true,
-            illuminance: 1800.,
+            illuminance: 1200.,
             color: Color::srgb(1.0, 0.85, 0.65),
             ..default()
         },
+        RenderLayers::from_layers(&light_render_layers),
     ));
 
     cmd.spawn((
@@ -682,10 +697,23 @@ fn startup_3d(
         },
         DirectionalLight {
             shadows_enabled: false,
-            illuminance: 550.,
+            illuminance: 2050.,
             color: Color::srgb(1.0, 0.85, 0.65),
             ..default()
         },
+        RenderLayers::from_layers(&light_render_layers),
+    ));
+
+    cmd.spawn((
+        Name::new("Light bis"),
+        Transform::from_translation(camera_position.with_z(20.0)).looking_at(Vec3::ZERO, Vec3::Y),
+        DirectionalLight {
+            shadows_enabled: true,
+            illuminance: 3550.,
+            color: Color::srgb(1.0, 0.85, 0.45),
+            ..default()
+        },
+        RenderLayers::from_layers(&light_render_layers),
     ));
 
     let (water_instance, _ground_rock_instance, models_assets, models, socket_collection) =
@@ -796,6 +824,60 @@ pub fn sync_cursor_target(
     }
 }
 
+// 1. Isolate the data into a dedicated ShaderType
+#[derive(ShaderType, Debug, Clone)]
+pub struct TrainMaterialUniforms {
+    pub scale: f32,
+    pub mesh_vp_min: Vec2,
+    pub mesh_vp_max: Vec2,
+}
+
+// 2. Bind the struct as a single uniform
+#[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
+pub struct TrainMaterial {
+    // Bind the isolated struct directly to 0
+    #[uniform(0)]
+    pub uniforms: TrainMaterialUniforms,
+
+    #[texture(1)]
+    #[sampler(2)]
+    pub mask_image: Option<Handle<Image>>,
+}
+
+impl Material for TrainMaterial {
+    fn vertex_shader() -> ShaderRef {
+        "shaders/train.wgsl".into()
+    }
+
+    fn fragment_shader() -> ShaderRef {
+        "shaders/train.wgsl".into()
+    }
+
+    fn alpha_mode(&self) -> AlphaMode {
+        AlphaMode::Blend
+    }
+}
+
+#[derive(Component, ExtractComponent, Clone, Copy, ShaderType, Default)]
+struct FullscreenEffect {
+    intensity: f32,
+}
+
+impl FullscreenMaterial for FullscreenEffect {
+    fn fragment_shader() -> ShaderRef {
+        "shaders/fullscreen.wgsl".into()
+    }
+
+    fn node_edges() -> Vec<bevy::render::render_graph::InternedRenderLabel> {
+        vec![
+            Node3d::Tonemapping.intern(),
+            // The label is automatically generated from the name of the struct
+            Self::node_label().intern(),
+            Node3d::EndMainPassPostProcessing.intern(),
+        ]
+    }
+}
+
 #[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
 pub struct SkewMaterial {
     #[uniform(100)]
@@ -806,6 +888,18 @@ pub struct SkewMaterial {
     pub offset: Vec3,
     #[uniform(100)]
     pub flatten: f32,
+}
+
+impl MaterialExtension for SkewMaterial {
+    fn vertex_shader() -> ShaderRef {
+        "shaders/skew_material.wgsl".into()
+    }
+    fn prepass_vertex_shader() -> ShaderRef {
+        "shaders/skew_material.wgsl".into()
+    }
+    fn deferred_vertex_shader() -> ShaderRef {
+        "shaders/skew_material.wgsl".into()
+    }
 }
 
 impl Default for SkewMaterial {
@@ -837,6 +931,80 @@ impl Interpolator for InterpolateSkew {
     }
 }
 
+#[derive(Component)]
+struct AssetIdHolder(pub AssetId<TrainMaterial>);
+
+#[derive(Component)]
+struct UnscaledAabb {
+    aabb: Aabb,
+}
+
+fn update_mesh_screen_bounds(
+    mut materials: ResMut<Assets<TrainMaterial>>,
+    mut cmd: Commands,
+    mesh_query: Query<(Entity, &AssetIdHolder, &Aabb, &GlobalTransform)>,
+    unscaled_q: Query<&UnscaledAabb>,
+    camera_query: Query<(&Camera, &GlobalTransform), With<ActiveCamera>>,
+) {
+    // 1. Get our primary camera and its projection matrices
+    let (camera, camera_transform) = camera_query.single().expect("Should have found one");
+
+    let Some(viewport_size) = camera.logical_viewport_size() else {
+        return;
+    };
+
+    // 2. Loop through our meshes using the TrainMaterial
+    for (e, handle_holder, _aabb, mesh_transform) in &mesh_query {
+        let aabb = match unscaled_q.get(e) {
+            Ok(res) => &res.aabb,
+            Err(_) => {
+                cmd.entity(e).insert(UnscaledAabb {
+                    aabb: _aabb.clone(),
+                });
+                _aabb
+            }
+        };
+        let asset_id = handle_holder.0;
+        if let Some(mat) = materials.get_mut(asset_id) {
+            let mut min_x = f32::INFINITY;
+            let mut max_x = f32::NEG_INFINITY;
+            let mut min_y = f32::INFINITY;
+            let mut max_y = f32::NEG_INFINITY;
+
+            // 3. Generate the 8 local corners of the AABB cube
+            let center = aabb.center.to_vec3();
+            let half_extents = aabb.half_extents;
+
+            for x in &[-1.0, 1.0] {
+                for y in &[-1.0, 1.0] {
+                    for z in &[-1.0, 1.0] {
+                        let local_corner = center
+                            + Vec3::new(half_extents.x * x, half_extents.y * y, half_extents.z * z);
+
+                        // 4. Transform local corner to 3D World Space
+                        let world_corner = mesh_transform.transform_point(local_corner);
+
+                        // 5. Project 3D World Space to 2D Screen Space (Pixels)
+                        if let Ok(screen_point) =
+                            camera.world_to_viewport(camera_transform, world_corner)
+                        {
+                            let uv_point = screen_point / viewport_size;
+                            min_x = min_x.min(uv_point.x);
+                            max_x = max_x.max(uv_point.x);
+                            min_y = min_y.min(uv_point.y);
+                            max_y = max_y.max(uv_point.y);
+                        }
+                    }
+                }
+            }
+
+            // 6. Push the finalized pixel boundary boundaries into the material uniform!
+            mat.uniforms.mesh_vp_min = Vec2::new(min_x, min_y);
+            mat.uniforms.mesh_vp_max = Vec2::new(max_x, max_y);
+        }
+    }
+}
+
 pub fn custom_interpolators_plugin(app: &mut App) {
     app.add_tween_systems(
         PostUpdate,
@@ -844,15 +1012,150 @@ pub fn custom_interpolators_plugin(app: &mut App) {
     );
 }
 
-impl MaterialExtension for SkewMaterial {
-    fn vertex_shader() -> ShaderRef {
-        "shaders/skew_material.wgsl".into()
+#[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
+pub struct PlaygroundMaterial {
+    #[uniform(100)]
+    pub scale: f32,
+    #[uniform(100)]
+    pub time: f32,
+}
+
+impl MaterialExtension for PlaygroundMaterial {
+    fn fragment_shader() -> ShaderRef {
+        "shaders/playground.wgsl".into()
     }
-    fn prepass_vertex_shader() -> ShaderRef {
-        "shaders/skew_material.wgsl".into()
+
+    fn deferred_fragment_shader() -> ShaderRef {
+        "shaders/playground.wgsl".into()
     }
-    fn deferred_vertex_shader() -> ShaderRef {
-        "shaders/skew_material.wgsl".into()
+}
+
+pub fn setup_object_masking(
+    windows_q: Query<&Window>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut std_materials: ResMut<Assets<StandardMaterial>>,
+    mut materials: ResMut<Assets<TrainMaterial>>,
+    mut ext_materials: ResMut<Assets<ExtendedMaterial<StandardMaterial, PlaygroundMaterial>>>,
+    mut images: ResMut<Assets<Image>>,
+    mut cmd: Commands,
+    time: Res<Time>,
+) {
+    let window = windows_q.single().expect("expected a single window");
+    let size = Extent3d {
+        width: window.width() as u32,
+        height: window.height() as u32,
+        depth_or_array_layers: 1,
+    };
+
+    let mask_image = Image {
+        texture_descriptor: TextureDescriptor {
+            label: None,
+            size,
+            dimension: TextureDimension::D2,
+            format: TextureFormat::Bgra8UnormSrgb,
+            mip_level_count: 1,
+            sample_count: 1,
+            usage: TextureUsages::TEXTURE_BINDING
+                | TextureUsages::COPY_DST
+                | TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        },
+        data: Some(vec![0; (size.width * size.height * 4) as usize]),
+        ..default()
+    };
+    let mask_image_handle = images.add(mask_image);
+
+    // Camera Setup
+    let camera_position = Vec3::new(45., 3. * GRID_HEIGHT as f32 + 20.0, 0.75 * GRID_Z as f32);
+    let camera_transform =
+        Transform::from_translation(camera_position).looking_at(Vec3::ZERO, Vec3::Y);
+    let camera_projection = Projection::from(OrthographicProjection {
+        scaling_mode: ScalingMode::FixedVertical {
+            viewport_height: 24.0,
+        },
+        ..OrthographicProjection::default_3d()
+    });
+
+    cmd.spawn((
+        Camera3d::default(),
+        Camera {
+            order: -2,
+            clear_color: ClearColorConfig::Custom(Color::NONE),
+            ..default()
+        },
+        camera_transform.clone(),
+        camera_projection,
+        RenderTarget::Image(mask_image_handle.clone().into()),
+        RenderLayers::layer(1),
+    ));
+
+    let mat = materials.add(TrainMaterial {
+        mask_image: Some(mask_image_handle),
+        uniforms: TrainMaterialUniforms {
+            scale: 1.0,
+            mesh_vp_min: Vec2::ZERO,
+            mesh_vp_max: Vec2::splat(1.0),
+        },
+    });
+
+    let asset_id = mat.id();
+
+    // ==========================================
+    // 1. SPAWN THE QUAD (The Canvas)
+    // ==========================================
+    let shader_obj_pos = Vec3::ZERO.with_y(6.0);
+    cmd.spawn((
+        Mesh3d(meshes.add(Rectangle::new(30.0, 30.0))),
+        MeshMaterial3d(mat),
+        Transform::from_translation(shader_obj_pos),
+        RenderLayers::layer(0),
+        NotShadowCaster,
+    ));
+
+    // ==========================================
+    // 2. SPAWN THE CAPSULE (The Target)
+    // ==========================================
+    let big_cube = Cuboid::new(3.5, 5.0, 2.5);
+    let mesh_h = meshes.add(big_cube);
+    let mat_h = std_materials.add(StandardMaterial {
+        base_color: Color::WHITE,
+        unlit: false,
+        ..default()
+    });
+
+    cmd.spawn((
+        Mesh3d::from(mesh_h),
+        MeshMaterial3d::from(mat_h),
+        Transform::from_translation(shader_obj_pos),
+        RenderLayers::layer(1),
+        AssetIdHolder(asset_id),
+    ));
+
+    let mesh_h = meshes.add(Sphere::new(4.0));
+    let mat_h = ext_materials.add(ExtendedMaterial {
+        base: StandardMaterial {
+            base_color: PALE_TURQUOISE.into(),
+            ..default()
+        },
+        extension: PlaygroundMaterial {
+            scale: 2.0,
+            time: time.elapsed_secs(),
+        },
+    });
+
+    cmd.spawn((
+        Mesh3d::from(mesh_h),
+        MeshMaterial3d::from(mat_h),
+        Transform::from_translation(Vec3::new(3.0, 5.0, 10.0)),
+    ));
+}
+
+fn update_mat_time(
+    mut ext_materials: ResMut<Assets<ExtendedMaterial<StandardMaterial, PlaygroundMaterial>>>,
+    time: Res<Time>,
+) {
+    for mat in ext_materials.iter_mut() {
+        mat.1.extension.time = time.elapsed_secs();
     }
 }
 
@@ -882,6 +1185,9 @@ fn main() {
         .add_plugins(TilemapPlugin)
         .add_plugins((
             MaterialPlugin::<ExtendedMaterial<StandardMaterial, SkewMaterial>>::default(),
+            MaterialPlugin::<ExtendedMaterial<StandardMaterial, PlaygroundMaterial>>::default(),
+            MaterialPlugin::<TrainMaterial>::default(),
+            FullscreenMaterialPlugin::<FullscreenEffect>::default(),
             custom_interpolators_plugin,
             EffectsPlugin,
             ActionPlugin,
@@ -899,11 +1205,13 @@ fn main() {
         .add_plugins(Grid3DBackend::plugin())
         .insert_resource(DirectionalLightShadowMap { size: 4096 })
         .insert_resource(HoveredTargetable(None))
-        .add_systems(Startup, startup_3d)
+        .add_systems(Startup, (startup_3d, setup_object_masking).chain())
         .add_systems(Update, tick_tilemap_effects_timer)
         .add_systems(Update, spread_tiles_effects)
         .add_systems(Update, update_tiles_texture)
         .add_systems(Update, sync_cursor_target)
+        .add_systems(Update, update_mesh_screen_bounds)
+        .add_systems(Update, update_mat_time)
         .add_observer(tag_hovered_targetable)
         .add_observer(untag_hoveredout_targetable)
         .run();

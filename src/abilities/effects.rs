@@ -5,6 +5,7 @@ use bevy_ecs::{
     bundle::Bundle,
     component::Component,
     entity::Entity,
+    event::EntityEvent,
     hierarchy::ChildOf,
     message::{MessageReader, MessageWriter},
     observer::On,
@@ -22,8 +23,11 @@ use bevy_ghx_grid::ghx_grid::cartesian::coordinates::CartesianPosition;
 
 use crate::{
     abilities::abilities_templates::{CasterAbilityCasted, CasterHitReceived},
+    deck::card_blueprints::SubAbilityOf,
     game_flow::turns::{CurrentDeckReference, PlayingEntity},
-    grid_abilities_backend::{CasterAbilityHit, GridGoOff, GridInvokerTarget, GridStartInvoke},
+    grid_abilities_backend::{
+        AbilityHitEntity, CasterAbilityHit, GridGoOff, GridInvokerTarget, GridStartInvoke,
+    },
     utils::IntoVec,
 };
 
@@ -98,6 +102,7 @@ pub fn handle_spawn_effect(
         println!("target for invoke : {:?}", target);
         cmd.entity(cast.casted).insert((
             InvokedBy(cast.caster),
+            SubAbilityOf(cast.caster),
             GridInvokerTarget::entity(target.entity.unwrap(), target.position),
         ));
         writer.write(GridStartInvoke::new(cast.casted, target));
@@ -154,96 +159,145 @@ impl AbilityEffectKind {
     }
 }
 
-pub trait EffectTrigger {}
+// pub trait EffectTrigger {}
 
-#[derive(Debug, Clone)]
-pub struct InvokeTrigger {}
-impl EffectTrigger for InvokeTrigger {}
+// #[derive(Debug, Clone)]
+// pub struct InvokeTrigger {}
+// impl EffectTrigger for InvokeTrigger {}
 
-#[derive(Debug, Clone)]
-pub struct HitTrigger {}
-impl EffectTrigger for HitTrigger {}
+// #[derive(Debug, Clone)]
+// pub struct HitTrigger {}
+// impl EffectTrigger for HitTrigger {}
 
 #[derive(Component, Debug, Clone)]
-pub struct AbilityEffects<T>
-where
-    T: EffectTrigger + Clone,
-{
-    pub effects: Vec<AbilityEffectKind>,
-    _data: PhantomData<T>,
-}
+#[relationship_target(relationship = StatusEffectOf, linked_spawn)]
+pub struct StatusEffects(Vec<Entity>);
 
-impl AbilityEffects<HitTrigger> {
-    pub fn hit(effects: impl IntoVec<AbilityEffectKind>) -> Self {
-        Self {
-            effects: effects.into_vec(),
-            _data: PhantomData,
-        }
+#[derive(Component, Debug, Clone)]
+#[relationship(relationship_target = StatusEffects)]
+pub struct StatusEffectOf(Entity);
+
+#[derive(Component, Debug, Clone)]
+#[relationship_target(relationship = EvReactorOf, linked_spawn)]
+pub struct EvReactors(Vec<Entity>);
+
+impl EvReactors {
+    pub fn get_all(&self) -> &Vec<Entity> {
+        &self.0
     }
 }
 
-impl AbilityEffects<InvokeTrigger> {
-    pub fn invoked(effects: Vec<AbilityEffectKind>) -> Self {
-        Self {
-            effects: effects,
-            _data: PhantomData,
-        }
-    }
+#[derive(Component, Debug, Clone)]
+#[relationship(relationship_target = EvReactors)]
+pub struct EvReactorOf(pub Entity);
+
+#[derive(Component, Debug, Clone)]
+#[relationship_target(relationship = AbilityOfCaster, linked_spawn)]
+pub struct CasterAbilities(Vec<Entity>);
+
+#[derive(Component, Debug, Clone)]
+#[relationship(relationship_target = CasterAbilities)]
+pub struct AbilityOfCaster(pub Entity);
+
+// impl StatusEffects<HitTrigger> {
+//     pub fn hit(effects: impl IntoVec<AbilityEffectKind>) -> Self {
+//         Self {
+//             effects: effects.into_vec(),
+//             _data: PhantomData,
+//         }
+//     }
+// }
+
+// impl StatusEffects<InvokeTrigger> {
+//     pub fn invoked(effects: Vec<AbilityEffectKind>) -> Self {
+//         Self {
+//             effects: effects,
+//             _data: PhantomData,
+//         }
+//     }
+// }
+
+// #[derive(Component)]
+// pub struct DamageEffect(pub &'static str);
+//
+#[derive(EntityEvent)]
+pub struct TriggerEffect<C: EntityEvent + Clone> {
+    pub entity: Entity,
+    pub cause: C,
 }
 
-#[derive(Component)]
-pub struct DamageEffect(pub &'static str);
+#[derive(Component, Clone)]
+pub struct TriggerOn<C: EntityEvent + Clone> {
+    _data: PhantomData<C>,
+}
+
+impl<C: EntityEvent + Clone> TriggerOn<C> {
+    pub fn new() -> Self {
+        Self { _data: PhantomData }
+    }
+}
 
 pub fn observe_effects(
-    e: On<CasterHitReceived>,
-    effect_q: Query<&AbilityEffects<HitTrigger>>,
-    invoked_by_q: Query<&InvokedBy>,
-    player_target_q: Query<&GridInvokerTarget, With<PlayingEntity>>,
-    mut attributes: AttributesMut,
-    curr_deck_refs_q: Query<&CurrentDeckReference>,
+    e: On<AbilityHitEntity>,
+    status_effects_q: Query<&StatusEffects>,
+    effect_reactors_q: Query<Entity, With<TriggerOn<CasterHitReceived>>>,
+    // invoked_by_q: Query<&InvokedBy>,
+    // player_target_q: Query<&GridInvokerTarget, With<PlayingEntity>>,
+    // mut attributes: AttributesMut,
+    // curr_deck_refs_q: Query<&CurrentDeckReference>,
+    mut cmd: Commands,
 ) {
-    let caster = e.0;
-    let Ok(effects) = effect_q.get(caster) else {
-        return;
-    };
-    println!("received caster hit");
+    println!("c'est la chefton");
+    // let ability_entity = e.entity;
+    // let Ok(status_effects) = status_effects_q.get(ability_entity) else {
+    //     return;
+    // };
 
-    let attacker = invoked_by_q
-        .get(caster)
-        .expect("should have found invoked by")
-        .0;
+    // // println!("received caster hit");
 
-    let target_entity = player_target_q
-        .get(attacker)
-        .expect("InvokerTarget should be set")
-        .entity
-        .unwrap();
+    // // let attacker = invoked_by_q
+    // //     .get(caster)
+    // //     .expect("should have found invoked by")
+    // //     .0;
 
-    let targeted_deck_entity = curr_deck_refs_q
-        .get(target_entity)
-        .expect("Attacks should target an entity with a deck")
-        .0;
+    // // let target_entity = player_target_q
+    // //     .get(attacker)
+    // //     .expect("InvokerTarget should be set")
+    // //     .entity
+    // //     .unwrap();
 
-    let roles = [("Attacker", attacker)];
+    // // let targeted_deck_entity = curr_deck_refs_q
+    // //     .get(target_entity)
+    // //     .expect("Attacks should target an entity with a deck")
+    // //     .0;
 
-    for effect in effects.effects.iter() {
-        // TODO / IDEA : Currently this applies everything on the deck, it's probably
-        // a good idea to add an arg to specify what is the target between these two
-        match effect {
-            // TODO :
-            AbilityEffectKind::Mod(modifier_set) => {
-                modifier_set
-                    .try_apply(targeted_deck_entity, &mut attributes)
-                    .expect("Failed to apply modifier set");
-            }
-            AbilityEffectKind::Instant(instant_modifier_set) => {
-                let evaluated_instant = attributes.evaluate_instant(
-                    &instant_modifier_set,
-                    &roles,
-                    targeted_deck_entity,
-                );
-                attributes.apply_evaluated_instant(&evaluated_instant, targeted_deck_entity);
-            }
-        }
-    }
+    // for effect_target in effect_reactors_q.iter_many(&status_effects.0) {
+    //     cmd.trigger(TriggerEffect {
+    //         entity: effect_target,
+    //         cause: e.event().clone(),
+    //     });
+    // }
+
+    // // let roles = [("Attacker", attacker)];
+    // // for effect in hit_effects_q.iter_many(status_effects.0) {
+    // //     match effect {
+    // //         // TODO :
+    // //         cmd
+    // //         AbilityEffectKind::Mod(modifier_set) => {
+    // //             modifier_set
+    // //                 .try_apply(targeted_deck_entity, &mut attributes)
+    // //                 .expect("Failed to apply modifier set");
+    // //         }
+    // //         AbilityEffectKind::Instant(instant_modifier_set) => {
+    // //             let evaluated_instant = attributes.evaluate_instant(
+    // //                 &instant_modifier_set,
+    // //                 &roles,
+    // //                 targeted_deck_entity,
+    // //             );
+    // //             attributes.apply_evaluated_instant(&evaluated_instant, targeted_deck_entity);
+    // //         }
+    // //     }
+    // // }
 }
+
+// pub fn handle_event_trigger(e: On<TriggerEffect>) {}

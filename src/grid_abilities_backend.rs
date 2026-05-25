@@ -38,9 +38,12 @@ use rand::{Rng, RngExt, SeedableRng};
 use crate::{
     GridCell,
     abilities::{
-        abilities_templates::{AbilityHandler, CasterEntity, FromCaster},
-        effects::{handle_just_casted_effect, handle_spawn_effect, propag_caster_hit},
+        abilities_templates::{AbilityHandler, ActionCastData, CasterEntity, FromCaster},
+        effects::{
+            AbilityOfCaster, handle_just_casted_effect, handle_spawn_effect, propag_caster_hit,
+        },
     },
+    deck::card_blueprints::NotifyActionHit,
     game_flow::turns::{PlayingEntity, TeamHitFilter, ToWorldPos},
     melee::MeleePlugin,
     projectiles::ProjectilePlugin,
@@ -68,10 +71,21 @@ pub enum HitTargetKind {
     Cell,
 }
 
+impl HitTargetKind {
+    pub fn is_player(&self) -> bool {
+        match self {
+            HitTargetKind::Playing => true,
+            _ => false,
+        }
+    }
+}
+
 /// Collision with an entity target.
-#[derive(Message, Clone, Debug, Reflect)]
+#[derive(Message, Clone, Debug, Reflect, EntityEvent)]
+#[entity_event(propagate = &'static InvokedBy, auto_propagate)]
 pub struct AbilityHitEntity {
     pub entity: Entity,
+    pub attacking_player: Entity,
     pub target: GridTarget,
     pub target_kind: HitTargetKind,
 }
@@ -84,9 +98,15 @@ impl GearboxMessage for AbilityHitEntity {
 }
 
 impl AbilityHitEntity {
-    pub fn new(entity: Entity, target: GridTarget, target_kind: HitTargetKind) -> Self {
+    pub fn new(
+        entity: Entity,
+        attacking_player: Entity,
+        target: GridTarget,
+        target_kind: HitTargetKind,
+    ) -> Self {
         Self {
             entity,
+            attacking_player,
             target,
             target_kind,
         }
@@ -211,72 +231,82 @@ impl Plugin for HitHandlingPlugin {
 
 #[derive(EntityEvent, Message)]
 pub struct HitReceived {
-    pub entity: Entity,
-    pub hit_by: Entity,
+    #[event_target]
+    pub hit_player: Entity,
+    pub ability_entity: Entity,
+    pub cast_data: ActionCastData,
+}
+
+impl HitReceived {
+    pub fn new(hit_player: Entity, ability_entity: Entity, cast_data: ActionCastData) -> Self {
+        Self {
+            hit_player,
+            ability_entity,
+            cast_data,
+        }
+    }
 }
 
 pub fn handle_unfiltered_hit_system(
     mut hit_events: MessageReader<HitReceived>,
     mut cmd: Commands,
-    from_caster_q: Query<&FromCaster>,
-    invoked_by_q: Query<&InvokedBy>,
     grid: Single<&CartesianGrid<Cartesian3D>>,
     grid_cells_q: Query<&GridNode, With<GridCell>>,
     grid_playing_q: Query<&CartesianPosition, With<PlayingEntity>>,
-    parent_q: Query<&ChildOf>,
-    children_q: Query<&Children>,
-    caster_q: Query<Entity, With<CasterEntity>>,
     mut entity_writer: MessageWriter<AbilityHitEntity>,
-    mut caster_writer: MessageWriter<CasterAbilityHit>,
     _position_writer: MessageWriter<AbilityHitPosition>,
 ) {
     let grid = grid.deref();
 
     for hit in hit_events.read() {
-        let mut maybe_target: Option<GridTarget> = None;
-        if let Ok(cell) = grid_cells_q.get(hit.entity) {
+        if let Ok(cell) = grid_cells_q.get(hit.hit_player) {
             let pos = grid.pos_from_index(cell.0);
-            let target = GridTarget::entity(hit.entity, pos);
-            maybe_target = Some(target);
-            entity_writer.write(AbilityHitEntity::new(
-                hit.hit_by,
+            let target = GridTarget::entity(hit.hit_player, pos);
+            let target_kind = HitTargetKind::Cell;
+            let evt = AbilityHitEntity::new(
+                hit.ability_entity,
+                hit.cast_data.source_playing_entity,
                 target,
-                HitTargetKind::Cell,
-            ));
-            println!("received a (cell) hit I guess");
-        } else if let Ok(playing_pos) = grid_playing_q.get(hit.entity) {
-            println!("received a (playing) hit I guess");
-            let target = GridTarget::entity(hit.entity, *playing_pos);
-            maybe_target = Some(target);
-            entity_writer.write(AbilityHitEntity::new(
-                hit.hit_by,
+                target_kind.clone(),
+            );
+
+            entity_writer.write(evt.clone());
+            cmd.trigger(evt);
+            // Apply effect from the action that just hit
+            cmd.trigger(NotifyActionHit {
+                sub_ability_entity: hit.ability_entity,
+                cast_data: hit.cast_data.clone(),
                 target,
-                HitTargetKind::Playing,
-            ));
+                target_kind,
+            });
+        } else if let Ok(playing_pos) = grid_playing_q.get(hit.hit_player) {
+            let target = GridTarget::entity(hit.hit_player, *playing_pos);
+            let target_kind = HitTargetKind::Playing;
+
+            cmd.entity(hit.ability_entity).log_components();
+
+            let evt = AbilityHitEntity::new(
+                hit.ability_entity,
+                hit.cast_data.source_playing_entity,
+                target,
+                target_kind.clone(),
+            );
+            entity_writer.write(evt.clone());
+            cmd.trigger(evt);
+            // Apply effect from the action that just hit
+            cmd.trigger(NotifyActionHit {
+                sub_ability_entity: hit.ability_entity,
+                cast_data: hit.cast_data.clone(),
+                target,
+                target_kind,
+            });
         };
-
-        let Some(target) = maybe_target else {
-            continue;
-        };
-
-        println!("jpp");
-        cmd.entity(hit.hit_by).log_components();
-
-        let invoker = invoked_by_q.get(hit.hit_by).expect("Invoker boss").0;
-
-        let caster = from_caster_q
-            .get(invoker)
-            .expect("FromCaster should be added to any casted ability")
-            .entity;
-        cmd.entity(caster).log_components();
-
-        println!("propag hit");
-        caster_writer.write(CasterAbilityHit::new(caster, target));
     }
 }
 
 pub fn handle_hit_system<F: HitFilter>(
     mut hit_events: MessageReader<HitReceived>,
+    mut cmd: Commands,
     _invoker_q: Query<&InvokedBy>,
     grid: Single<&CartesianGrid<Cartesian3D>>,
     grid_cells_q: Query<&GridNode, With<GridCell>>,
@@ -289,10 +319,10 @@ pub fn handle_hit_system<F: HitFilter>(
     let grid = grid.deref();
 
     for hit in hit_events.read() {
-        match filters_q.get(hit.entity) {
+        match filters_q.get(hit.hit_player) {
             Ok(filter) => {
-                let invoker_data = filter_lookup_q.get(hit.hit_by).ok();
-                let target_data = filter_lookup_q.get(hit.entity).ok();
+                let invoker_data = filter_lookup_q.get(hit.ability_entity).ok();
+                let target_data = filter_lookup_q.get(hit.hit_player).ok();
                 if !filter.can_target(invoker_data, target_data) {
                     continue;
                 }
@@ -300,20 +330,26 @@ pub fn handle_hit_system<F: HitFilter>(
             Err(_) => {}
         };
 
-        if let Ok(cell) = grid_cells_q.get(hit.entity) {
+        if let Ok(cell) = grid_cells_q.get(hit.hit_player) {
             let pos = grid.pos_from_index(cell.0);
-            entity_writer.write(AbilityHitEntity::new(
-                hit.entity,
-                GridTarget::entity(hit.hit_by, pos),
+            let evt = AbilityHitEntity::new(
+                hit.hit_player,
+                hit.cast_data.source_playing_entity,
+                GridTarget::entity(hit.ability_entity, pos),
                 HitTargetKind::Cell,
-            ));
+            );
+            entity_writer.write(evt.clone());
+            cmd.trigger(evt);
         } else {
-            if let Ok(playing_pos) = grid_playing_q.get(hit.entity) {
-                entity_writer.write(AbilityHitEntity::new(
-                    hit.entity,
-                    GridTarget::entity(hit.hit_by, *playing_pos),
+            if let Ok(playing_pos) = grid_playing_q.get(hit.hit_player) {
+                let evt = AbilityHitEntity::new(
+                    hit.hit_player,
+                    hit.cast_data.source_playing_entity,
+                    GridTarget::entity(hit.ability_entity, *playing_pos),
                     HitTargetKind::Playing,
-                ));
+                );
+                entity_writer.write(evt.clone());
+                cmd.trigger(evt);
             }
         }
     }
@@ -507,6 +543,7 @@ pub struct Grid3DContext<'w, 's> {
     pub grid_cells:
         Query<'w, 's, (Entity, &'static GridNode), (With<GridCell>, Without<PlayingEntity>)>,
     pub playing: Query<'w, 's, (Entity, &'static CartesianPosition), With<PlayingEntity>>,
+    pub positioned: Query<'w, 's, (Entity, &'static CartesianPosition), Without<PlayingEntity>>,
     global_transforms: Query<'w, 's, &'static GlobalTransform>,
     rng: Single<'w, 's, &'static mut WyRand, With<GlobalRng>>,
 }
@@ -805,7 +842,13 @@ impl SpatialBackend for Grid3DBackend {
             .ok()
             .map(|c| ctx.grid.pos_from_index(c.1.0))
             // The grid_cells from the context seems to exclude the player, so I added this extra lookup.
-            .or_else(|| ctx.playing.get(entity).ok().map(|(_, pos)| *pos))
+            .or_else(|| {
+                ctx.playing
+                    .get(entity)
+                    .ok()
+                    .map(|(_, pos)| *pos)
+                    .or_else(|| ctx.positioned.get(entity).ok().map(|(_, pos)| *pos))
+            })
     }
 
     fn gather(
