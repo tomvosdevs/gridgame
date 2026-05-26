@@ -1,33 +1,51 @@
-use std::{collections::HashMap, marker::PhantomData};
+use std::{any::TypeId, collections::HashMap, marker::PhantomData};
 
+use bevy::{app::Plugin, ui_widgets::observe};
 use bevy_diesel::prelude::InvokedBy;
 use bevy_ecs::{
     bundle::Bundle,
     component::Component,
     entity::Entity,
-    event::EntityEvent,
+    event::{EntityEvent, Event},
     hierarchy::ChildOf,
     message::{MessageReader, MessageWriter},
-    observer::On,
+    observer::{Observer, On},
     query::With,
-    system::{Commands, Query},
+    related,
+    relationship::RelationshipTarget,
+    system::{Commands, Query, SystemId},
+    world::EntityWorldMut,
 };
 use bevy_gauge::{
+    attributes,
     expr::Expr,
     instant,
     prelude::{
-        AttributeQueries, AttributesMut, InstantExt, InstantModifierSet, Modifier, ModifierSet,
+        AttributeInitializer, AttributeQueries, Attributes, AttributesMut, InstantExt,
+        InstantModifierSet, Modifier, ModifierSet,
     },
 };
 use bevy_ghx_grid::ghx_grid::cartesian::coordinates::CartesianPosition;
 
 use crate::{
     abilities::abilities_templates::{CasterAbilityCasted, CasterHitReceived},
-    deck::card_blueprints::SubAbilityOf,
-    game_flow::turns::{CurrentDeckReference, PlayingEntity},
+    deck::{
+        card_blueprints::SubAbilityOf,
+        card_builders::{CardPool, CardPoolStatus, PoolSupplier},
+        deck_and_cards::SoulLife,
+    },
+    game_flow::turns::{CurrentDeckReference, EntityTurnEnd, PlayingEntity},
     grid_abilities_backend::{AbilityHitEntity, GridGoOff, GridInvokerTarget, GridStartInvoke},
     utils::IntoVec,
 };
+
+pub struct StatusEffectsPlugin;
+
+impl Plugin for StatusEffectsPlugin {
+    fn build(&self, app: &mut bevy::app::App) {
+        app.add_observer(tick_on::<EntityTurnEnd>);
+    }
+}
 
 #[derive(Component)]
 pub struct JustCastedEffect {
@@ -136,15 +154,28 @@ pub struct ContextRoleAlias {
 }
 
 #[derive(Debug, Clone)]
-pub enum AbilityEffectKind {
+pub enum OneShotEffect {
     Mod(ModifierSet),
     Instant(InstantModifierSet),
 }
 
-impl AbilityEffectKind {
+#[derive(Debug, Clone)]
+pub struct StatusSpawnerSysId(pub SystemId);
+
+pub type SpawnFn = Box<dyn Fn(&mut EntityWorldMut) + Send + Sync + 'static>;
+
+#[derive(Clone)]
+pub enum EffectMod {
+    OneShot(OneShotEffect),
+    SpawnTickable(StatusEffectApplier),
+}
+
+impl EffectMod {
     pub fn flat_damage(damage: f32) -> Self {
         let damage: &'static str = Box::leak(format!("{}", damage).into_boxed_str());
-        Self::Instant(instant! {"SoulLife.current" -= damage})
+        Self::OneShot(OneShotEffect::Instant(
+            instant! {"SoulLife.current" -= damage},
+        ))
     }
 }
 
@@ -166,6 +197,165 @@ pub struct StatusEffects(Vec<Entity>);
 #[relationship(relationship_target = StatusEffects)]
 pub struct StatusEffectOf(Entity);
 
+// pub trait Applicable {}
+
+// impl<C> Applicable for C where C: ElementalTag {}
+
+// pub trait ElementalTag {}
+
+// pub struct Poison {}
+// impl ElementalTag for Poison {}
+// impl PoolSupplier for Poison {
+//     fn get_pools(&self) -> Vec<(CardPool, CardPoolStatus)> {
+//         vec![(CardPool::Toxic, CardPoolStatus::Accepted)]
+//     }
+// }
+
+// pub struct Fire {}
+// impl ElementalTag for Fire {}
+// impl PoolSupplier for Fire {
+//     fn get_pools(&self) -> Vec<(CardPool, CardPoolStatus)> {
+//         vec![
+//             (CardPool::Heated, CardPoolStatus::Accepted),
+//             (CardPool::Fire, CardPoolStatus::Accepted),
+//         ]
+//     }
+// }
+//
+
+#[derive(Component, Clone)]
+pub struct TickOn<T: EntityEvent + Clone> {
+    roles: HashMap<&'static str, Entity>,
+    _source: PhantomData<T>,
+}
+
+// pub fn tick_effects(e: On<EntityTurnEnd>, tickers_q: Query<&TickOn<EntityTurnEnd>>) {}
+
+// fn poison(duration: f32) -> impl Bundle {
+//     (
+//         Poison,
+//         StatusTimer(Timer::new(
+//             Duration::from_secs_f32(duration),
+//             TimerMode::Once,
+//         )),
+//         observe(tick_poison), // Note: requires `bevy_ui_widgets` feature
+//     )
+// }
+
+#[derive(EntityEvent, Clone)]
+pub struct Tick {
+    #[event_target]
+    status: Entity,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum StatusKind {
+    Poison,
+    Burn,
+}
+
+impl Into<&'static str> for StatusKind {
+    fn into(self) -> &'static str {
+        match self {
+            StatusKind::Poison => "Poison",
+            StatusKind::Burn => "Burn",
+        }
+    }
+}
+
+#[derive(Component, Debug, Clone)]
+pub struct StatusEffectApplier {
+    pub effect_kind: StatusKind,
+    pub amount: u32,
+}
+
+impl StatusEffectApplier {
+    pub fn new(effect_kind: StatusKind, amount: u32) -> Self {
+        Self {
+            effect_kind,
+            amount,
+        }
+    }
+}
+
+pub fn status_effect(
+    amount: u32,
+    source: Entity,
+    key_supplier: impl Into<&'static str>,
+) -> impl Bundle {
+    let mut status_default_mod = ModifierSet::new();
+    let key = key_supplier.into();
+    status_default_mod.add(key, amount as f32);
+    println!("spawning sttaus");
+
+    related!(
+        StatusEffects[(
+            EffectHandler {
+                amount,
+                effect_key: key,
+                status_applied_by: Some(source),
+            },
+            TriggerOn::<EntityTurnEnd>::new(),
+            Attributes::new(),
+            AttributeInitializer::new(status_default_mod),
+            observe(tick_status_effect),
+        )]
+    )
+}
+
+pub fn tick_on<T: EntityEvent + Clone>(
+    e: On<T>,
+    status_list_q: Query<&StatusEffects>,
+    q: Query<Entity, (With<TriggerOn<T>>, With<StatusEffectOf>)>,
+    mut cmd: Commands,
+) {
+    println!("suis la mon calisse MAIS pas tt a fait");
+    let target_entity = e.event_target();
+    cmd.entity(target_entity).log_components();
+    let Ok(all_target_status) = status_list_q.get(target_entity) else {
+        return;
+    };
+
+    for status in q.iter_many(all_target_status.iter()) {
+        println!("suis la mon calisse");
+
+        cmd.trigger(Tick { status });
+    }
+}
+
+#[derive(Component, Clone)]
+pub struct EffectHandler {
+    amount: u32,
+    effect_key: &'static str,
+    status_applied_by: Option<Entity>,
+}
+
+fn tick_status_effect(
+    tick: On<Tick>,
+    effect: Query<(&StatusEffectOf, &EffectHandler, Entity)>,
+    deck_ref_q: Query<&CurrentDeckReference>,
+    mut attrs: AttributesMut,
+) {
+    let (StatusEffectOf(player), handler, effect_entity) = effect
+        .get(tick.status)
+        .expect("Needs status effect of + EffectHandler");
+
+    let deck = deck_ref_q
+        .get(*player)
+        .expect("Player should have DeckRef")
+        .0;
+
+    let roles = match handler.status_applied_by {
+        Some(e) => vec![("Applicator", e.clone()), ("Effect", effect_entity)],
+        None => vec![("Effect", effect_entity)],
+    };
+
+    let health_mod = instant! {"SoulLife.current" -= format!("{}@Effect", handler.effect_key)};
+
+    let evaluated_instant = attrs.evaluate_instant(&health_mod, &roles.as_slice(), deck);
+    attrs.apply_evaluated_instant(&evaluated_instant, deck);
+}
+
 #[derive(Component, Debug, Clone)]
 #[relationship_target(relationship = EvReactorOf, linked_spawn)]
 pub struct EvReactors(Vec<Entity>);
@@ -182,26 +372,6 @@ pub struct CasterAbilities(Vec<Entity>);
 #[relationship(relationship_target = CasterAbilities)]
 pub struct AbilityOfCaster(pub Entity);
 
-// impl StatusEffects<HitTrigger> {
-//     pub fn hit(effects: impl IntoVec<AbilityEffectKind>) -> Self {
-//         Self {
-//             effects: effects.into_vec(),
-//             _data: PhantomData,
-//         }
-//     }
-// }
-
-// impl StatusEffects<InvokeTrigger> {
-//     pub fn invoked(effects: Vec<AbilityEffectKind>) -> Self {
-//         Self {
-//             effects: effects,
-//             _data: PhantomData,
-//         }
-//     }
-// }
-
-// #[derive(Component)]
-// pub struct DamageEffect(pub &'static str);
 //
 #[derive(EntityEvent)]
 pub struct TriggerEffect<C: EntityEvent + Clone> {

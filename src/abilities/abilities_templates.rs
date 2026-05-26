@@ -47,7 +47,7 @@ use rand::RngExt;
 use crate::{
     GridCell,
     abilities::effects::{
-        AbilityEffectKind, AbilityOfCaster, CasterHitEffect, JustCastedEffect, SpawnEffect,
+        AbilityOfCaster, CasterHitEffect, EffectMod, JustCastedEffect, SpawnEffect,
     },
     deck::deck_and_cards::Card,
     game_flow::turns::{CurrentDeckReference, CurrentPlayingEntity, PlayingEntity},

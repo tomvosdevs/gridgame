@@ -46,6 +46,10 @@ pub enum CardPool {
     Heavy,
     Light,
     Swift,
+    Fire,
+    Heated,
+    Electric,
+    Toxic,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

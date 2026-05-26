@@ -50,6 +50,7 @@ use rand::RngExt;
 use rand::distr::uniform;
 
 use crate::abilities::abilities_templates::AbilitiesTemplatePlugin;
+use crate::abilities::effects::StatusEffectsPlugin;
 use crate::actions::{Action, ActionEffect, ActionPlugin};
 use crate::creatures::generation::CreatureGenerationPlugin;
 use crate::debug::ui::DebugUiPlugin;
@@ -1196,9 +1197,12 @@ fn main() {
             TurnsPlugin,
             DeckAndCardsPlugin,
             DebugUiPlugin,
-            CreatureGenerationPlugin,
-            CardBlueprintPlugin,
-            EventReactionsPlugin,
+            (
+                CreatureGenerationPlugin,
+                StatusEffectsPlugin,
+                CardBlueprintPlugin,
+                EventReactionsPlugin,
+            ),
         ))
         .add_plugins(GridMovementPlugin)
         .add_plugins(AbilitiesTemplatePlugin)

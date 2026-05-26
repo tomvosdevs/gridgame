@@ -14,11 +14,12 @@ use bevy_ecs::{
     related,
     relationship::RelationshipTarget,
     schedule::IntoScheduleConfigs,
-    system::{Commands, Query, Res},
+    system::{Commands, IntoSystem, Query, Res},
+    world::{EntityWorldMut, World},
 };
 use bevy_gauge::{
     instant,
-    prelude::{AttributesMut, InstantExt},
+    prelude::{AttributesMut, InstantExt, InstantModifierSet, ModifierSet},
 };
 use bevy_prng::WyRand;
 use rand::RngExt;
@@ -28,8 +29,8 @@ use crate::{
         abilities_templates::{AbilityHandler, AbilityHandlerBuilder, ActionCastData, BaseAbility},
         definitions::register_abilities,
         effects::{
-            AbilityEffectKind, EvReactorOf, EvReactors, StatusEffectOf, StatusEffects,
-            TriggerEffect, TriggerOn,
+            EffectMod, EvReactorOf, EvReactors, OneShotEffect, SpawnFn, StatusEffectApplier,
+            StatusEffectOf, StatusEffects, StatusKind, TriggerEffect, TriggerOn, status_effect,
         },
     },
     deck::{
@@ -187,7 +188,8 @@ impl CardBlueprint {
     }
 }
 
-type E = AbilityEffectKind;
+type E = EffectMod;
+type OSE = OneShotEffect;
 
 #[derive(EntityEvent)]
 pub struct GotHit {
@@ -216,12 +218,16 @@ fn create_hit_observer(
     q: Query<&ObservesReaction, With<TriggerOn<NotifyActionHit>>>,
     mut cmd: Commands,
 ) {
-    let effect = q.get(e.entity).expect("It should be here").effect.clone();
+    let Some(effect) = q.get(e.entity).ok().map(|v| v.effect.clone()) else {
+        return;
+    };
+
     println!("creating obs");
     cmd.entity(e.entity).observe(
         move |e: On<TriggerEffect<NotifyActionHit>>,
               q: Query<&CurrentDeckReference>,
-              mut attributes: AttributesMut| {
+              mut attributes: AttributesMut,
+              mut obs_cmd: Commands| {
             println!("CCCC = 1 inside on hit eggect");
             let target = e.cause.target.entity.unwrap();
             let attacker = e.cause.cast_data.source_playing_entity;
@@ -234,18 +240,29 @@ fn create_hit_observer(
             let target_deck = q.get(target).expect("Target player should have deck").0;
             println!("applying damage");
 
-            match effect.clone() {
-                AbilityEffectKind::Mod(modifier_set) => {
-                    modifier_set
-                        .try_apply(target_deck, &mut attributes)
-                        .expect("Failed to apply modifier set");
+            match &effect {
+                EffectMod::OneShot(one_shot) => match one_shot {
+                    OneShotEffect::Mod(modifier_set) => {
+                        modifier_set
+                            .try_apply(target_deck, &mut attributes)
+                            .expect("Failed to apply modifier set");
+                    }
+                    OneShotEffect::Instant(instant_modifier_set) => {
+                        let evaluated_instant =
+                            attributes.evaluate_instant(&instant_modifier_set, &roles, target_deck);
+                        attributes.apply_evaluated_instant(&evaluated_instant, target_deck);
+                    }
+                },
+                EffectMod::SpawnTickable(effect_applier) => {
+                    println!("spawning status effect");
+                    obs_cmd.entity(target).log_components();
+                    obs_cmd.entity(target).insert(status_effect(
+                        effect_applier.amount,
+                        attacker,
+                        effect_applier.effect_kind.clone(),
+                    ));
                 }
-                AbilityEffectKind::Instant(instant_modifier_set) => {
-                    let evaluated_instant =
-                        attributes.evaluate_instant(&instant_modifier_set, &roles, target_deck);
-                    attributes.apply_evaluated_instant(&evaluated_instant, target_deck);
-                }
-            }
+            };
         },
     );
 }
@@ -290,9 +307,20 @@ fn handle_matching_reactors<T: EntityEvent + Clone>(
     }
 }
 
-pub fn effects(inner: impl Bundle) -> impl Bundle {
-    related!(EvReactors[inner])
+pub fn one_shot_instant(effect: InstantModifierSet) -> EffectMod {
+    EffectMod::OneShot(OSE::Instant(effect))
 }
+
+pub fn one_shot_mod(effect: ModifierSet) -> EffectMod {
+    EffectMod::OneShot(OSE::Mod(effect))
+}
+
+pub fn status_effect_applier(effect_applier: StatusEffectApplier) -> EffectMod {
+    EffectMod::SpawnTickable(effect_applier)
+}
+
+type EA = StatusEffectApplier;
+type EK = StatusKind;
 
 pub fn register_blueprints(mut cmd: Commands) {
     let projectile_tid = BaseAbility::Projectile.as_str();
@@ -301,26 +329,28 @@ pub fn register_blueprints(mut cmd: Commands) {
     let other_projectile_blueprint = CardBlueprint::new(projectile_tid)
         .create_base_entity(
             &mut cmd,
-            (effects(
-                on_hit_effect(E::Instant(
-                    instant! {"SoulLife.current" -= "Strength@Attacker"},
-                )),
-                // More here
+            (related!(
+                EvReactors[
+                    on_hit_effect(one_shot_instant(
+                        instant! {"SoulLife.current" -= "Strength@Attacker"},
+                    )),
+                    on_hit_effect(status_effect_applier(EA::new(EK::Poison, 3))), // More here
+                ]
             )),
         )
         .add_required_pool(CardPool::Ranged);
     cmd.spawn(other_projectile_blueprint);
 
-    let basic_projectile_blueprint = CardBlueprint::new(projectile_tid)
-        .create_base_entity(
-            &mut cmd,
-            (effects(
-                on_hit_effect(E::flat_damage(1.0)),
-                // More here
-            )),
-        )
-        .add_required_pool(CardPool::Ranged);
-    cmd.spawn(basic_projectile_blueprint);
+    // let basic_projectile_blueprint = CardBlueprint::new(projectile_tid)
+    //     .create_base_entity(
+    //         &mut cmd,
+    //         (effects(
+    //             on_hit_effect(E::flat_damage(1.0)),
+    //             // More here
+    //         )),
+    //     )
+    //     .add_required_pool(CardPool::Ranged);
+    // cmd.spawn(basic_projectile_blueprint);
 
     // let bomb_blueprint = CardBlueprint::new(projectile_tid)
     //     .create_base_entity(&mut cmd, ())
