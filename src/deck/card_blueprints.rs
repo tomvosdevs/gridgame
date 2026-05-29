@@ -1,3 +1,5 @@
+use std::vec::IntoIter;
+
 use bevy::{
     app::{App, Plugin, Startup},
     ui_widgets::observe,
@@ -14,7 +16,7 @@ use bevy_ecs::{
     related,
     relationship::RelationshipTarget,
     schedule::IntoScheduleConfigs,
-    system::{Commands, IntoSystem, Query, Res},
+    system::{Commands, EntityCommands, IntoSystem, Query, Res},
     world::{EntityWorldMut, World},
 };
 use bevy_gauge::{
@@ -26,7 +28,10 @@ use rand::RngExt;
 
 use crate::{
     abilities::{
-        abilities_templates::{AbilityHandler, AbilityHandlerBuilder, ActionCastData, BaseAbility},
+        abilities_templates::{
+            AbilityHandler, AbilityHandlerBuilder, ActionCastData, BaseAbility, melee_template,
+            projectile_template,
+        },
         definitions::register_abilities,
         effects::{
             EffectMod, EvReactorOf, EvReactors, OneShotEffect, SpawnFn, StatusEffectApplier,
@@ -81,9 +86,78 @@ impl NamePicker {
     }
 }
 
+#[derive(Debug, Clone)]
+pub enum AbilityConstructor {
+    Projectile,
+    Melee,
+    BundleAsEntity(Entity),
+}
+
+impl AbilityConstructor {
+    pub fn build(&self, entity: Entity, cmd: &mut Commands) {
+        match self {
+            AbilityConstructor::Projectile => {
+                projectile_template(cmd, Some(entity));
+            }
+            AbilityConstructor::Melee => {
+                melee_template(cmd, Some(entity));
+            }
+            AbilityConstructor::BundleAsEntity(bundle_entity) => {
+                println!("cloning bundle as entity, bundle has : ");
+                cmd.entity(*bundle_entity).log_components();
+                cmd.entity(entity).log_components();
+                cmd.entity(*bundle_entity)
+                    .clone_with_opt_out(entity, |builder| {
+                        builder.linked_cloning(true);
+                    });
+            }
+        }
+    }
+}
+
+impl Into<AbilityNode> for AbilityConstructor {
+    fn into(self) -> AbilityNode {
+        AbilityNode::End(self)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum AbilityNode {
+    End(AbilityConstructor),
+    Nested(Vec<AbilityNode>),
+}
+
+impl IntoIterator for AbilityNode {
+    type Item = AbilityNode;
+
+    type IntoIter = IntoIter<Self::Item>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        match self {
+            AbilityNode::End(ability_constructor) => {
+                vec![AbilityNode::End(ability_constructor)].into_iter()
+            }
+            AbilityNode::Nested(ability_nodes) => ability_nodes.into_iter(),
+        }
+    }
+}
+
+impl AbilityNode {
+    pub fn build_and_spawn(&self, entity: Entity, cmd: &mut Commands) {
+        match self {
+            AbilityNode::End(ability_constructor) => ability_constructor.build(entity, cmd),
+            AbilityNode::Nested(ability_nodes) => {
+                for node in ability_nodes.iter() {
+                    node.build_and_spawn(entity, cmd);
+                }
+            }
+        }
+    }
+}
+
 #[derive(Component, Debug)]
 pub struct CardBlueprint {
-    templates: Vec<&'static str>,
+    nodes: AbilityNode,
     base_entity: Option<Entity>,
     name_picker: NamePicker,
     matches_pools: Vec<(CardPool, CardPoolStatus)>,
@@ -91,9 +165,9 @@ pub struct CardBlueprint {
 }
 
 impl CardBlueprint {
-    pub fn new(base_template: &'static str) -> Self {
+    pub fn new(nodes: AbilityNode) -> Self {
         Self {
-            templates: vec![base_template],
+            nodes,
             base_entity: None,
             name_picker: NamePicker::Fixed("Missing name picker"),
             matches_pools: vec![],
@@ -101,30 +175,8 @@ impl CardBlueprint {
         }
     }
 
-    fn get_base_entity_instance(&self, cmd: &mut Commands) -> Option<Entity> {
-        let Some(base) = self.base_entity else {
-            return None;
-        };
-        let instance = cmd.spawn_empty().id();
-        cmd.entity(base).clone_with_opt_out(instance, |builder| {
-            builder.linked_cloning(true);
-        });
-        Some(instance)
-    }
-
     pub fn set_name_picker(&mut self, picker: NamePicker) {
         self.name_picker = picker
-    }
-
-    pub fn create_base_entity(mut self, cmd: &mut Commands, bundle: impl Bundle) -> Self {
-        let entity = cmd.spawn(bundle).id();
-        self.base_entity = Some(entity);
-        self
-    }
-
-    pub fn chain_template(mut self, template: &'static str) -> Self {
-        self.templates.push(template);
-        self
     }
 
     pub fn add_required_pool(mut self, pool: CardPool) -> Self {
@@ -163,28 +215,8 @@ impl CardBlueprint {
         })
     }
 
-    pub fn generate(
-        &self,
-        cmd: &mut Commands,
-        templates: &Res<TemplateRegistry>,
-        rng: &mut WyRand,
-        rarity: RarityPicker,
-    ) -> impl Bundle {
-        let mut ability_entity: Option<Entity> = None;
-        for id in self.templates.iter() {
-            let t_func = templates
-                .get(id)
-                .expect("should have found template for id");
-
-            ability_entity = Some(t_func(cmd, ability_entity));
-        }
-
-        let handler = AbilityHandlerBuilder::from_ability_entity(ability_entity.unwrap())
-            .add_modifiers(vec![])
-            .pass_base_entity(self.get_base_entity_instance(cmd))
-            .build(cmd);
-
-        (Card::new(handler), rarity.pick(rng))
+    pub fn generate(&self, rng: &mut WyRand, rarity: RarityPicker) -> impl Bundle {
+        (Card::new(self.nodes.clone()), rarity.pick(rng))
     }
 }
 
@@ -275,7 +307,7 @@ fn on_hit_effect(effect: E) -> impl Bundle {
 }
 
 #[derive(EntityEvent, Clone)]
-#[entity_event(propagate = &'static SubAbilityOf, auto_propagate)]
+#[entity_event(propagate = &'static InvokedBy, auto_propagate)]
 pub struct NotifyActionHit {
     #[event_target]
     pub sub_ability_entity: Entity,
@@ -326,19 +358,22 @@ pub fn register_blueprints(mut cmd: Commands) {
     let projectile_tid = BaseAbility::Projectile.as_str();
     let melee_tid = BaseAbility::Melee.as_str();
 
-    let other_projectile_blueprint = CardBlueprint::new(projectile_tid)
-        .create_base_entity(
-            &mut cmd,
-            (related!(
+    let other_projectile_blueprint = CardBlueprint::new(AbilityNode::Nested(vec![
+        AbilityConstructor::Projectile.into(),
+        AbilityConstructor::BundleAsEntity(
+            cmd.spawn(related!(
                 EvReactors[
                     on_hit_effect(one_shot_instant(
                         instant! {"SoulLife.current" -= "Strength@Attacker"},
                     )),
                     on_hit_effect(status_effect_applier(EA::new(EK::Poison, 3))), // More here
                 ]
-            )),
+            ))
+            .id(),
         )
-        .add_required_pool(CardPool::Ranged);
+        .into(),
+    ]))
+    .add_required_pool(CardPool::Ranged);
     cmd.spawn(other_projectile_blueprint);
 
     // let basic_projectile_blueprint = CardBlueprint::new(projectile_tid)

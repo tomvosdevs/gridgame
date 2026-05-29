@@ -26,16 +26,11 @@ use bevy_ecs::{
     event::EntityEvent,
     lifecycle::Add,
     message::{MessageReader, MessageWriter},
-    observer::On,
+    observer::{Observer, On},
     schedule::IntoScheduleConfigs,
     system::{Res, Single},
 };
-use bevy_gauge::{
-    attributes, instant,
-    prelude::{AttributesMut, Modifier},
-    requires,
-};
-use bevy_gearbox::{GearboxSet, InitStateMachine, SpawnTransition, StateComponent};
+use bevy_gearbox::{GearboxSet, InitStateMachine, SpawnSubstate, SpawnTransition, StateComponent};
 use bevy_ghx_grid::ghx_grid::cartesian::{
     coordinates::{Cartesian3D, CartesianPosition},
     grid::CartesianGrid,
@@ -49,8 +44,10 @@ use crate::{
     abilities::effects::{
         AbilityOfCaster, CasterHitEffect, EffectMod, JustCastedEffect, SpawnEffect,
     },
-    deck::deck_and_cards::Card,
-    game_flow::turns::{CurrentDeckReference, CurrentPlayingEntity, PlayingEntity},
+    deck::{card_blueprints::AbilityNode, deck_and_cards::Card},
+    game_flow::turns::{
+        CurrentDeckReference, CurrentPlayingEntity, EntityTurnStart, PlayingEntity,
+    },
     grid_abilities_backend::{
         AbilityHitEntity, CastEnd, EntityGatheringFilter, Grid3DFilter, Grid3DGatherer,
         GridCheckShape, GridGoOff, GridGoOffConfig, GridInvokerTarget, GridSpawnConfig,
@@ -58,7 +55,7 @@ use crate::{
     },
     melee::MeleeEffect,
     projectiles::ProjectileEffect,
-    utils::IntoVec,
+    utils::{CombatGridQ, IntoVec},
 };
 
 pub struct AbilitiesTemplatePlugin;
@@ -66,7 +63,7 @@ pub struct AbilitiesTemplatePlugin;
 impl Plugin for AbilitiesTemplatePlugin {
     fn build(&self, app: &mut bevy::app::App) {
         app.add_systems(Startup, register_templates)
-            .add_observer(handle_cast);
+            .add_observer(handle_action_cast);
     }
 }
 
@@ -91,68 +88,68 @@ impl ActionCastData {
     }
 }
 
-fn handle_cast(
-    e: On<AbilityCastRequested>,
-    mut cmd: Commands,
-    mut writer: MessageWriter<GridStartInvoke>,
-    card_q: Query<&Card>,
-    currently_playing: Res<CurrentPlayingEntity>,
-    cells_q: Query<&GridNode, With<GridCell>>,
-    playing_q: Query<(&CartesianPosition), With<PlayingEntity>>,
-    player_pos_q: Query<&GlobalTransform, With<PlayingEntity>>,
-    grid: Single<&mut CartesianGrid<Cartesian3D>>,
-) {
-    let card = card_q
-        .get(e.card_entity)
-        .expect("Card should exist in the card entity from cast event");
-    let attacking_player = match e.invoked_by {
-        CastInvokedBy::CurrentlyPlaying => currently_playing.0,
-        CastInvokedBy::Specific(entity) => entity,
-    };
-    let target = e.target;
+// fn handle_cast(
+//     e: On<AbilityCastRequested>,
+//     mut cmd: Commands,
+//     mut writer: MessageWriter<GridStartInvoke>,
+//     card_q: Query<&Card>,
+//     currently_playing: Res<CurrentPlayingEntity>,
+//     cells_q: Query<&GridNode, With<GridCell>>,
+//     playing_q: Query<(&CartesianPosition), With<PlayingEntity>>,
+//     player_pos_q: Query<&GlobalTransform, With<PlayingEntity>>,
+//     grid: Single<&mut CartesianGrid<Cartesian3D>>,
+// ) {
+//     let card = card_q
+//         .get(e.card_entity)
+//         .expect("Card should exist in the card entity from cast event");
+//     let attacking_player = match e.invoked_by {
+//         CastInvokedBy::CurrentlyPlaying => currently_playing.0,
+//         CastInvokedBy::Specific(entity) => entity,
+//     };
+//     let target = e.target;
 
-    let attacking_pos = playing_q
-        .get(attacking_player)
-        .expect("this man should have a cartesian pos");
+//     let attacking_pos = playing_q
+//         .get(attacking_player)
+//         .expect("this man should have a cartesian pos");
 
-    let target_position = cells_q.get(target).map_or_else(
-        |_| {
-            *playing_q
-                .get(target)
-                .expect("Target should be a GridCell or PlayingEntity")
-        },
-        |node| grid.pos_from_index(node.0),
-    );
+//     let target_position = cells_q.get(target).map_or_else(
+//         |_| {
+//             *playing_q
+//                 .get(target)
+//                 .expect("Target should be a GridCell or PlayingEntity")
+//         },
+//         |node| grid.pos_from_index(node.0),
+//     );
 
-    println!("on the player : ");
-    cmd.entity(attacking_player).log_components();
+//     println!("on the player : ");
+//     cmd.entity(attacking_player).log_components();
 
-    let invoker = cmd
-        .spawn((
-            attacking_pos.clone(),
-            Name::new("Da invokery"),
-            GridInvokerTarget::entity(target, target_position),
-            ActionCastData {
-                source_playing_entity: attacking_player,
-                source_caster_entity: card.ability_handler.caster_entity,
-            },
-        ))
-        .id();
+//     let invoker = cmd
+//         .spawn((
+//             attacking_pos.clone(),
+//             Name::new("Da invokery"),
+//             GridInvokerTarget::entity(target, target_position),
+//             ActionCastData {
+//                 source_playing_entity: attacking_player,
+//                 source_caster_entity: e.card_entity,
+//             },
+//         ))
+//         .id();
 
-    cmd.entity(attacking_player)
-        .insert(FromCaster::new(card.ability_handler.caster_entity));
-    cmd.entity(card.ability_handler.caster_entity).insert((
-        InvokedBy(invoker),
-        attacking_pos.clone(),
-        GridInvokerTarget::entity(target, target_position),
-    ));
+//     cmd.entity(attacking_player)
+//         .insert(FromCaster::new(card.ability_builder.caster_entity));
+//     cmd.entity(card.ability_builder.caster_entity).insert((
+//         InvokedBy(invoker),
+//         attacking_pos.clone(),
+//         GridInvokerTarget::entity(target, target_position),
+//     ));
 
-    let grid_target = GridTarget::entity(target, target_position);
-    writer.write(GridStartInvoke::new(
-        card.ability_handler.caster_entity,
-        grid_target,
-    ));
-}
+//     let grid_target = GridTarget::entity(target, target_position);
+//     writer.write(GridStartInvoke::new(
+//         card.ability_builder.caster_entity,
+//         grid_target,
+//     ));
+// }
 
 pub trait ComponentMarker {
     fn bundle() -> impl Bundle;
@@ -264,7 +261,7 @@ pub struct AbilityHandlerBuilder<S>
 where
     S: AbilityBuilderState,
 {
-    pub ability_entity: Entity,
+    pub nodes: AbilityNode,
     pub base_entity: Option<Entity>,
     pub modifiers: Vec<AbilityModifier>,
     _data: PhantomData<S>,
@@ -285,46 +282,10 @@ impl AbilityHandler {
     }
 }
 
-#[derive(EntityEvent)]
-pub struct AbilityCastRequested {
-    #[event_target]
-    card_entity: Entity,
-    invoked_by: CastInvokedBy,
-    target: Entity,
-}
-
-impl AbilityCastRequested {
-    pub fn new(card_entity: Entity, invoked_by: CastInvokedBy, target: Entity) -> Self {
-        Self {
-            card_entity,
-            invoked_by,
-            target,
-        }
-    }
-}
-
 impl AbilityHandlerBuilder<ABSInitial> {
-    pub fn from_ability_entity(ability_entity: Entity) -> AbilityHandlerBuilder<ABSAbilityPassed> {
+    pub fn from_nodes(nodes: AbilityNode) -> AbilityHandlerBuilder<ABSAbilityPassed> {
         AbilityHandlerBuilder::<ABSAbilityPassed> {
-            ability_entity,
-            base_entity: None,
-            modifiers: vec![],
-            _data: PhantomData,
-        }
-    }
-
-    pub fn from_template(
-        template: BaseAbility,
-        templates: &Res<TemplateRegistry>,
-        cmd: &mut Commands,
-    ) -> AbilityHandlerBuilder<ABSAbilityPassed> {
-        let spawn_fn = templates
-            .get(template.as_str())
-            .expect("Failed to find template");
-        let ability_entity = spawn_fn(cmd, None);
-
-        AbilityHandlerBuilder::<ABSAbilityPassed> {
-            ability_entity,
+            nodes,
             base_entity: None,
             modifiers: vec![],
             _data: PhantomData,
@@ -338,7 +299,7 @@ impl AbilityHandlerBuilder<ABSAbilityPassed> {
         ability_modifiers: impl IntoVec<AbilityModifier>,
     ) -> AbilityHandlerBuilder<ABSReady> {
         AbilityHandlerBuilder::<ABSReady> {
-            ability_entity: self.ability_entity,
+            nodes: self.nodes,
             base_entity: None,
             modifiers: ability_modifiers.into_vec(),
             _data: PhantomData,
@@ -374,7 +335,6 @@ impl AbilityHandlerBuilder<ABSReady> {
 
     pub fn build(self, cmd: &mut Commands) -> AbilityHandler {
         let entity = self.base_entity.unwrap_or_else(|| cmd.spawn_empty().id());
-        cmd.entity(self.ability_entity);
         let mut e_cmds = cmd.entity(entity);
 
         e_cmds.with_children(|parent| {
@@ -391,7 +351,7 @@ impl AbilityHandlerBuilder<ABSReady> {
             parent.spawn_subeffect(
                 s__cast,
                 (
-                    SpawnEffect::new(entity, self.ability_entity),
+                    // SpawnEffect::new(entity, self.ability_entity),
                     JustCastedEffect::new(entity),
                 ),
             );
@@ -414,10 +374,140 @@ impl AbilityHandlerBuilder<ABSReady> {
 }
 
 fn register_templates(mut registry: ResMut<TemplateRegistry>) {
-    registry.register("projectile", projectile_template);
+    // TODO remove
+    registry.register("projectile", melee_template);
     registry.register("melee", melee_template);
     registry.register(BaseAbility::Projectile.as_str(), basic_projectile_ability);
     registry.register(BaseAbility::Melee.as_str(), basic_melee_ability);
+}
+
+#[derive(EntityEvent)]
+pub struct AbilityCastRequested {
+    #[event_target]
+    card_entity: Entity,
+    invoked_by: CastInvokedBy,
+    target: Entity,
+}
+
+impl AbilityCastRequested {
+    pub fn new(card_entity: Entity, invoked_by: CastInvokedBy, target: Entity) -> Self {
+        Self {
+            card_entity,
+            invoked_by,
+            target,
+        }
+    }
+}
+
+pub fn action_base(
+    cmd: &mut Commands,
+    target: GridTarget,
+    invoker: Entity,
+    builder: &AbilityNode,
+) -> Entity {
+    let initial = init_action(cmd, target, invoker);
+
+    builder.build_and_spawn(initial, cmd);
+    initial
+}
+
+pub fn handle_action_cast(
+    e: On<AbilityCastRequested>,
+    cards_q: Query<&Card>,
+    cells_q: Query<&GridNode, With<GridCell>>,
+    playing_q: Query<(&CartesianPosition, &Transform), With<PlayingEntity>>,
+    currently_playing: Res<CurrentPlayingEntity>,
+    grid: CombatGridQ,
+    mut cmd: Commands,
+    mut writer: MessageWriter<GridStartInvoke>,
+) {
+    let (attacking_player, (origin_grid_pos, origin_tf)) = match e.invoked_by {
+        CastInvokedBy::CurrentlyPlaying => (
+            currently_playing.0,
+            playing_q
+                .get(currently_playing.0)
+                .expect("Player should have cartesian pos"),
+        ),
+        CastInvokedBy::Specific(entity) => (
+            entity,
+            playing_q
+                .get(currently_playing.0)
+                .expect("Player should have cartesian pos"),
+        ),
+    };
+
+    let target_entity = e.target;
+    let target_position = cells_q.get(target_entity).map_or_else(
+        |_| {
+            *playing_q
+                .get(target_entity)
+                .expect("Target should be a GridCell or PlayingEntity")
+                .0
+        },
+        |node| grid.pos_from_index(node.0),
+    );
+    let target = GridInvokerTarget::entity(e.target, target_position);
+    let grid_target = GridTarget::entity(target.entity.unwrap(), target.position);
+
+    // Maybe define a list of states that are required by any action and return them for event triggers ?
+    let action_entity = cmd
+        .spawn((
+            *origin_grid_pos,
+            Transform::from_translation(origin_tf.translation),
+        ))
+        .id();
+
+    let card_entity = e.card_entity;
+    let card = cards_q
+        .get(card_entity)
+        .expect("Passed card entity does not have the 'Card' entity");
+
+    let inner = action_base(&mut cmd, grid_target, action_entity, &card.ability_builder);
+
+    cmd.entity(action_entity).with_children(|parent| {
+        let ready = parent
+            .spawn_substate(action_entity, Name::new("ActionReady"))
+            .id();
+        let invoke = parent
+            .spawn_substate(action_entity, Name::new("ActionInvoke"))
+            .id();
+
+        parent.spawn_subeffect(
+            invoke,
+            (SpawnEffect::new(attacking_player, action_entity, card_entity, inner)),
+        );
+
+        parent.spawn_transition::<GridStartInvoke>(ready, invoke);
+
+        parent
+            .commands_mut()
+            .entity(action_entity)
+            .insert((
+                target,
+                ActionCastData::new(attacking_player, action_entity),
+                Ability,
+            ))
+            .init_state_machine(ready);
+    });
+
+    // cmd.entity(attacking_player).insert((
+    //     target,
+    //     ActionCastData::new(attacking_player, attacking_player),
+    // ));
+
+    writer.write(GridStartInvoke::new(action_entity, grid_target));
+}
+
+#[derive(Component, Clone)]
+pub struct MarkerTest;
+
+pub fn init_action(cmd: &mut Commands, target: GridTarget, invoker: Entity) -> Entity {
+    cmd.spawn((
+        target,
+        InvokedBy(invoker),
+        GridGoOffConfig::invoker_target(),
+    ))
+    .id()
 }
 
 pub fn projectile_template(commands: &mut Commands, entity: Option<Entity>) -> Entity {
@@ -425,7 +515,7 @@ pub fn projectile_template(commands: &mut Commands, entity: Option<Entity>) -> E
 
     commands.entity(entity).with_children(|parent| {
         let flying = parent
-            .spawn_diesel_substate(entity, Name::new("Flying"))
+            .spawn_diesel_substate(entity, (Name::new("Flying"), StateComponent(MarkerTest)))
             .id();
 
         let hit_and_done = parent
@@ -445,6 +535,7 @@ pub fn projectile_template(commands: &mut Commands, entity: Option<Entity>) -> E
                 Marker::<Projectile>::new(),
                 ProjectileEffect::new(10.0),
                 Visibility::Inherited,
+                GridGoOffConfig::invoker_target(),
             ))
             .init_state_machine(flying);
     });

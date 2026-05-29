@@ -85,13 +85,20 @@ pub fn handle_just_casted_effect(
 
 #[derive(Component)]
 pub struct SpawnEffect {
-    pub caster: Entity,
+    pub invoking_player: Entity,
+    pub action_root: Entity,
+    pub card: Entity,
     pub casted: Entity,
 }
 
 impl SpawnEffect {
-    pub fn new(caster: Entity, casted: Entity) -> Self {
-        Self { caster, casted }
+    pub fn new(invoking_player: Entity, action_root: Entity, card: Entity, casted: Entity) -> Self {
+        Self {
+            invoking_player,
+            action_root,
+            card,
+            casted,
+        }
     }
 }
 
@@ -103,14 +110,16 @@ pub fn handle_spawn_effect(
 ) {
     for go_off in reader.read() {
         let effect_entity = go_off.entity;
+        println!("A GoOff was received for :");
+        cmd.entity(effect_entity).log_components();
         let Ok(cast) = q_effect.get(effect_entity) else {
             continue;
         };
         let target = go_off.target;
         println!("target for invoke : {:?}", target);
         cmd.entity(cast.casted).insert((
-            InvokedBy(cast.caster),
-            SubAbilityOf(cast.caster),
+            InvokedBy(cast.action_root),
+            SubAbilityOf(cast.card),
             GridInvokerTarget::entity(target.entity.unwrap(), target.position),
         ));
         writer.write(GridStartInvoke::new(cast.casted, target));

@@ -165,7 +165,6 @@ pub trait CardBuilder {
         rng: &mut WyRand,
         cmd: &mut Commands,
         rarity: RarityPicker,
-        templates: &Res<TemplateRegistry>,
         blueprints: &Vec<&CardBlueprint>,
     ) -> impl Bundle;
 }
@@ -201,7 +200,6 @@ impl CardBuilder for RandomPoolCardBuilder {
         rng: &mut WyRand,
         cmd: &mut Commands,
         rarity: RarityPicker,
-        templates: &Res<TemplateRegistry>,
         blueprints: &Vec<&CardBlueprint>,
     ) -> impl Bundle {
         let matching_blueprints: Vec<&CardBlueprint> = blueprints
@@ -222,7 +220,7 @@ impl CardBuilder for RandomPoolCardBuilder {
                 .as_str(),
             );
 
-        selected_blueprint.generate(cmd, templates, rng, rarity)
+        selected_blueprint.generate(rng, rarity)
     }
 }
 
@@ -234,7 +232,6 @@ pub struct DefaultDeckGenRequested {
 pub fn gen_and_spawn_default_deck(
     e: On<DefaultDeckGenRequested>,
     q: Query<&dyn PoolSupplier>,
-    templates: Res<TemplateRegistry>,
     rng: Single<&mut WyRand, With<GlobalRng>>,
     blueprint_q: Query<&CardBlueprint>,
     mut attributes: AttributesMut,
@@ -264,7 +261,6 @@ pub fn gen_and_spawn_default_deck(
             &mut rng,
             &mut cmd,
             RarityPicker::Random(RarityCond::EqOrBelow(RarityTier::Rare)),
-            &templates,
             &blueprints,
         );
 

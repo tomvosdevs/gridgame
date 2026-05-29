@@ -523,12 +523,12 @@ pub struct CombatStart;
 
 #[derive(EntityEvent, Clone)]
 pub struct EntityTurnStart {
-    entity: Entity,
+    pub entity: Entity,
 }
 
 #[derive(EntityEvent, Clone)]
 pub struct EntityTurnEnd {
-    entity: Entity,
+    pub entity: Entity,
 }
 
 #[derive(Event)]

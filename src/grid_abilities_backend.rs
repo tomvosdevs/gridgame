@@ -44,7 +44,7 @@ use crate::{
     deck::card_blueprints::NotifyActionHit,
     game_flow::turns::{PlayingEntity, TeamHitFilter, ToWorldPos},
     melee::MeleePlugin,
-    projectiles::ProjectilePlugin,
+    projectiles::{ProjectilePlugin, init_projectile},
 };
 
 // Vec3 type aliases
@@ -251,6 +251,7 @@ pub fn handle_unfiltered_hit_system(
     grid: Single<&CartesianGrid<Cartesian3D>>,
     grid_cells_q: Query<&GridNode, With<GridCell>>,
     grid_playing_q: Query<&CartesianPosition, With<PlayingEntity>>,
+    invoked_q: Query<&InvokedBy>,
     mut entity_writer: MessageWriter<AbilityHitEntity>,
     mut cast_end_writer: MessageWriter<CastEnd>,
     _position_writer: MessageWriter<AbilityHitPosition>,
@@ -272,6 +273,8 @@ pub fn handle_unfiltered_hit_system(
             entity_writer.write(evt.clone());
             cmd.trigger(evt);
             // Apply effect from the action that just hit
+            println!("action hit notif sent");
+
             cmd.trigger(NotifyActionHit {
                 sub_ability_entity: hit.ability_entity,
                 cast_data: hit.cast_data.clone(),
@@ -301,6 +304,9 @@ pub fn handle_unfiltered_hit_system(
             entity_writer.write(evt.clone());
             cmd.trigger(evt);
             // Apply effect from the action that just hit
+            println!("action hit notif sent to :");
+            cmd.entity(invoked_q.get(hit.ability_entity).expect("ahptn").0.clone())
+                .log_components();
             cmd.trigger(NotifyActionHit {
                 sub_ability_entity: hit.ability_entity,
                 cast_data: hit.cast_data.clone(),
@@ -401,6 +407,7 @@ impl Plugin for Grid3dDieselPlugin {
                 bevy_diesel::print::print_effect::<CartesianPosition>,
                 handle_spawn_effect,
                 handle_just_casted_effect,
+                init_projectile,
             )
                 .in_set(bevy_diesel::DieselSet::Effects),
         );
