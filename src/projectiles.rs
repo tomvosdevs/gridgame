@@ -24,7 +24,6 @@ use bevy_ghx_grid::ghx_grid::cartesian::{coordinates::Cartesian3D, grid::Cartesi
 use crate::{
     NODE_SIZE,
     abilities::abilities_templates::{ActionCastData, Marker, Projectile},
-    deck::card_blueprints::SubAbilityOf,
     game_flow::turns::{PlayingEntity, ToWorldPos},
     grid_abilities_backend::{GridGoOff, GridTarget, HitReceived},
 };
@@ -81,19 +80,19 @@ impl Plugin for ProjectilePlugin {
 
 pub fn init_projectile(
     mut reader: MessageReader<GridGoOff>,
-    projectile_q: Query<(&GridTarget, &InvokedBy, &ProjectileEffect), With<Marker<Projectile>>>,
+    projectile_q: Query<(&InvokedBy, &ProjectileEffect), With<Marker<Projectile>>>,
     invoked_by_q: Query<&InvokedBy>,
     grid_tf: Single<&GlobalTransform, With<CartesianGrid<Cartesian3D>>>,
-    tf_q: Query<&Transform, With<Ability>>,
+    tf_q: Query<&Transform>,
     names_q: Query<&Name>,
     playing_q: Query<&PlayingEntity>,
     mut cmd: Commands,
 ) {
     for go_off in reader.read() {
         let projectile_entity = go_off.entity;
-        println!("checking for projectile - C =>");
-        cmd.entity(projectile_entity).log_components();
-        let Ok((target, invoked_by, effect)) = projectile_q.get(projectile_entity) else {
+        let target = go_off.target;
+
+        let Ok((invoked_by, effect)) = projectile_q.get(projectile_entity) else {
             return;
         };
 
@@ -106,13 +105,10 @@ pub fn init_projectile(
         );
 
         println!("DDD = projectile invoked by :");
-        let root_invoker = invoked_by_q
-            .get(projectile_entity)
+        let invoker_invoker = invoked_by_q
+            .get(invoker)
             .expect("Could not find invoked by on ability")
             .0;
-
-        println!("component on invoked by : ");
-        cmd.entity(root_invoker).log_components();
 
         let offset = match target.entity {
             Some(e) => match playing_q.get(e) {
@@ -129,7 +125,13 @@ pub fn init_projectile(
             "pos of target was and is : {:?} -> {:?}",
             target.position, target_world_pos
         );
-        let projectile_tf = tf_q.get(invoker).expect("should find ts").clone();
+        let projectile_tf = tf_q
+            .get(invoker)
+            .ok()
+            .map(|v| v)
+            .or_else(|| tf_q.get(invoker_invoker).ok().map(|v| v))
+            .expect("should find tf on invoker or invoker's invoker")
+            .clone();
         let dir = (target_world_pos - projectile_tf.translation).normalize_or_zero();
 
         let dir = if dir == Vec3::ZERO { Vec3::NEG_Y } else { dir };
@@ -161,11 +163,22 @@ pub fn handle_projectiles(
                     .0;
                 let cast_data = cast_data_q
                     .get(invoker)
+                    .ok()
+                    .map(|v| v)
+                    .or_else(|| {
+                        cast_data_q
+                            .get(
+                                invoked_by_q
+                                    .get(invoker)
+                                    .expect("invoker has no above invoker")
+                                    .0,
+                            )
+                            .ok()
+                            .map(|v| v)
+                    })
                     .expect("Invoker entity should always have ActionCastData");
 
                 // TODO : see how to remove attacking player her or how to get it properly, maybe by adding a AbilityOfPlayer() component on the invoker/caster ?
-
-                println!("here we have :");
                 cmd.entity(projectile_entity).remove::<MovingProjectile>();
 
                 hit_writer.write(HitReceived {

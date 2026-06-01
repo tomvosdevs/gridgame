@@ -30,6 +30,7 @@ use bevy_ecs::{
     schedule::IntoScheduleConfigs,
     system::{Res, Single},
 };
+use bevy_gauge::{attributes, prelude::Attributes, requires};
 use bevy_gearbox::{GearboxSet, InitStateMachine, SpawnSubstate, SpawnTransition, StateComponent};
 use bevy_ghx_grid::ghx_grid::cartesian::{
     coordinates::{Cartesian3D, CartesianPosition},
@@ -51,10 +52,11 @@ use crate::{
     grid_abilities_backend::{
         AbilityHitEntity, CastEnd, EntityGatheringFilter, Grid3DFilter, Grid3DGatherer,
         GridCheckShape, GridGoOff, GridGoOffConfig, GridInvokerTarget, GridSpawnConfig,
-        GridStartInvoke, GridTarget, GridTargetGenerator, NumberType,
+        GridStartInvoke, GridTarget, GridTargetGenerator, GridTargetMutator, NumberType,
     },
     melee::MeleeEffect,
     projectiles::ProjectileEffect,
+    stats::players::Speed,
     utils::{CombatGridQ, IntoVec},
 };
 
@@ -510,12 +512,72 @@ pub fn init_action(cmd: &mut Commands, target: GridTarget, invoker: Entity) -> E
     .id()
 }
 
-pub fn projectile_template(commands: &mut Commands, entity: Option<Entity>) -> Entity {
+#[derive(Component)]
+pub struct AbilityInitialized;
+
+pub fn ripple_effect(commands: &mut Commands, entity: Option<Entity>, ripple_count: u32) -> Entity {
+    let entity = entity.unwrap_or_else(|| commands.spawn_empty().id());
+
+    commands.entity(entity).with_children(|parent| {
+        let ready = parent
+            .spawn_diesel_substate(entity, Name::new("Ready"))
+            .id();
+
+        let invoked = parent
+            .spawn_diesel_substate(entity, Name::new("Invoke"))
+            .id();
+
+        let done = parent
+            .spawn_diesel_substate(
+                entity,
+                (
+                    Name::new("Hit"),
+                    StateComponent(DelayedDespawn::now()),
+                    GridTargetMutator::root()
+                        .with_gatherer(Grid3DGatherer::EntitiesInShape {
+                            shape: GridCheckShape::Sphere(4.0),
+                            gathering_filter: EntityGatheringFilter::Playing,
+                            sort_by_nearest: true,
+                        })
+                        .with_filter(Grid3DFilter::new(NumberType::Fixed(1))),
+                ),
+            )
+            .id();
+
+        parent.spawn_transition_always(ready, invoked);
+        parent.spawn_branch::<AbilityHitEntity>(invoked, |b| {
+            b.when(done, move |t| {
+                t.insert(requires! {"RippleCount <= 0"})
+                    .insert(RequiresStatsOf(entity));
+            });
+            b.otherwise(ready);
+        });
+
+        let commands = parent.commands_mut();
+        commands
+            .entity(entity)
+            .insert((
+                Ability,
+                Name::new("Ripple"),
+                Visibility::Inherited,
+                Attributes::new(),
+                attributes! {
+                    "RippleCount" => ripple_count as f32
+                },
+                GridGoOffConfig::invoker_target(),
+            ))
+            .init_state_machine(ready);
+    });
+
+    entity
+}
+
+pub fn projectile_template(commands: &mut Commands, entity: Option<Entity>, speed: f32) -> Entity {
     let entity = entity.unwrap_or_else(|| commands.spawn_empty().id());
 
     commands.entity(entity).with_children(|parent| {
         let flying = parent
-            .spawn_diesel_substate(entity, (Name::new("Flying"), StateComponent(MarkerTest)))
+            .spawn_diesel_substate(entity, (Name::new("Flying")))
             .id();
 
         let hit_and_done = parent
@@ -531,9 +593,12 @@ pub fn projectile_template(commands: &mut Commands, entity: Option<Entity>) -> E
         commands
             .entity(entity)
             .insert((
+                Ability,
                 Name::new("BaseProjectile"),
+                Speed::new(speed as i32),
+                AbilityInitialized,
                 Marker::<Projectile>::new(),
-                ProjectileEffect::new(10.0),
+                ProjectileEffect::new(speed),
                 Visibility::Inherited,
                 GridGoOffConfig::invoker_target(),
             ))

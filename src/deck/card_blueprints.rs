@@ -30,7 +30,7 @@ use crate::{
     abilities::{
         abilities_templates::{
             AbilityHandler, AbilityHandlerBuilder, ActionCastData, BaseAbility, melee_template,
-            projectile_template,
+            projectile_template, ripple_effect,
         },
         definitions::register_abilities,
         effects::{
@@ -43,7 +43,10 @@ use crate::{
         deck_and_cards::Card,
     },
     game_flow::turns::CurrentDeckReference,
-    grid_abilities_backend::{AbilityHitEntity, GridTarget, HitReceived, HitTargetKind},
+    grid_abilities_backend::{
+        AbilityHitEntity, GridGoOffConfig, GridTarget, GridTargetGenerator, GridTargetMutator,
+        HitReceived, HitTargetKind,
+    },
 };
 
 pub struct CardBlueprintPlugin;
@@ -52,19 +55,10 @@ impl Plugin for CardBlueprintPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, register_blueprints.after(register_abilities))
             .add_observer(handle_matching_reactors::<NotifyActionHit>)
-            .add_observer(create_hit_observer);
+            .add_observer(create_hit_observer)
+            .add_observer(log_notified);
     }
 }
-
-#[derive(Component, Debug, Clone)]
-#[relationship_target(relationship = SubAbilityOf)]
-pub struct SubAbilities(Vec<Entity>);
-
-#[derive(Component, Debug, Clone)]
-#[relationship(relationship_target = SubAbilities)]
-pub struct SubAbilityOf(pub Entity);
-
-pub fn read_notified_hit(e: On<NotifyActionHit>) {}
 
 // pub enum PoolMatch
 
@@ -91,25 +85,47 @@ pub enum AbilityConstructor {
     Projectile,
     Melee,
     BundleAsEntity(Entity),
+    WrapWithModifier(AbilityMod, &'static AbilityConstructor),
+}
+
+#[derive(Debug, Clone)]
+pub enum AbilityMod {
+    Ripple(u32),
+}
+
+impl AbilityMod {
+    pub fn build(&self, cmd: &mut Commands, entity: Entity) -> Entity {
+        match self {
+            AbilityMod::Ripple(count) => ripple_effect(cmd, Some(entity), *count),
+        }
+    }
 }
 
 impl AbilityConstructor {
     pub fn build(&self, entity: Entity, cmd: &mut Commands) {
+        let ability_container = cmd.spawn(InvokedBy(entity)).id();
         match self {
             AbilityConstructor::Projectile => {
-                projectile_template(cmd, Some(entity));
+                let speed = rand::rng().random_range(2.0..10.0);
+                println!("here i guess");
+                projectile_template(cmd, Some(ability_container), speed);
             }
             AbilityConstructor::Melee => {
-                melee_template(cmd, Some(entity));
+                melee_template(cmd, Some(ability_container));
             }
             AbilityConstructor::BundleAsEntity(bundle_entity) => {
                 println!("cloning bundle as entity, bundle has : ");
                 cmd.entity(*bundle_entity).log_components();
-                cmd.entity(entity).log_components();
                 cmd.entity(*bundle_entity)
                     .clone_with_opt_out(entity, |builder| {
                         builder.linked_cloning(true);
                     });
+            }
+            AbilityConstructor::WrapWithModifier(ability_mod, ability_constructor) => {
+                println!("spawning modifier");
+                let modifier_container = cmd.spawn(InvokedBy(ability_container)).id();
+                let mod_entity = ability_mod.build(cmd, modifier_container);
+                ability_constructor.build(mod_entity, cmd);
             }
         }
     }
@@ -316,6 +332,11 @@ pub struct NotifyActionHit {
     pub target_kind: HitTargetKind,
 }
 
+fn log_notified(e: On<NotifyActionHit>, mut cmd: Commands) {
+    println!("Hit notified on : {:?}", e.event_target());
+    cmd.entity(e.event_target()).log_components();
+}
+
 fn handle_matching_reactors<T: EntityEvent + Clone>(
     e: On<T>,
     reactors_q: Query<&EvReactors>,
@@ -360,6 +381,7 @@ pub fn register_blueprints(mut cmd: Commands) {
 
     let other_projectile_blueprint = CardBlueprint::new(AbilityNode::Nested(vec![
         AbilityConstructor::Projectile.into(),
+        AbilityConstructor::Projectile.into(),
         AbilityConstructor::BundleAsEntity(
             cmd.spawn(related!(
                 EvReactors[
@@ -375,6 +397,25 @@ pub fn register_blueprints(mut cmd: Commands) {
     ]))
     .add_required_pool(CardPool::Ranged);
     cmd.spawn(other_projectile_blueprint);
+
+    // let shield_blueprint = CardBlueprint::new(AbilityNode::Nested(vec![
+    //     AbilityConstructor::Projectile.into(),
+    //     AbilityConstructor::Projectile.into(),
+    //     AbilityConstructor::BundleAsEntity(
+    //         cmd.spawn(related!(
+    //             EvReactors[
+    //                 on_hit_effect(one_shot_instant(
+    //                     instant! {"SoulLife.current" -= "Strength@Attacker"},
+    //                 )),
+    //                 on_hit_effect(status_effect_applier(EA::new(EK::Poison, 3))), // More here
+    //             ]
+    //         ))
+    //         .id(),
+    //     )
+    //     .into(),
+    // ]))
+    // .add_required_pool(CardPool::Ranged);
+    // cmd.spawn(other_projectile_blueprint);
 
     // let basic_projectile_blueprint = CardBlueprint::new(projectile_tid)
     //     .create_base_entity(

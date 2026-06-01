@@ -30,7 +30,6 @@ use bevy_ghx_grid::ghx_grid::cartesian::coordinates::CartesianPosition;
 use crate::{
     abilities::abilities_templates::{CasterAbilityCasted, CasterHitReceived},
     deck::{
-        card_blueprints::SubAbilityOf,
         card_builders::{CardPool, CardPoolStatus, PoolSupplier},
         deck_and_cards::SoulLife,
     },
@@ -119,7 +118,6 @@ pub fn handle_spawn_effect(
         println!("target for invoke : {:?}", target);
         cmd.entity(cast.casted).insert((
             InvokedBy(cast.action_root),
-            SubAbilityOf(cast.card),
             GridInvokerTarget::entity(target.entity.unwrap(), target.position),
         ));
         writer.write(GridStartInvoke::new(cast.casted, target));

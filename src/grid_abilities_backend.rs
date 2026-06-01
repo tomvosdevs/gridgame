@@ -304,9 +304,6 @@ pub fn handle_unfiltered_hit_system(
             entity_writer.write(evt.clone());
             cmd.trigger(evt);
             // Apply effect from the action that just hit
-            println!("action hit notif sent to :");
-            cmd.entity(invoked_q.get(hit.ability_entity).expect("ahptn").0.clone())
-                .log_components();
             cmd.trigger(NotifyActionHit {
                 sub_ability_entity: hit.ability_entity,
                 cast_data: hit.cast_data.clone(),

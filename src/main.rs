@@ -1209,7 +1209,9 @@ fn main() {
         .add_plugins(Grid3DBackend::plugin())
         .insert_resource(DirectionalLightShadowMap { size: 4096 })
         .insert_resource(HoveredTargetable(None))
-        .add_systems(Startup, (startup_3d, setup_object_masking).chain())
+        .add_systems(
+            Startup, startup_3d, // setup_object_masking).chain()
+        )
         .add_systems(Update, tick_tilemap_effects_timer)
         .add_systems(Update, spread_tiles_effects)
         .add_systems(Update, update_tiles_texture)
