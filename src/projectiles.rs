@@ -23,7 +23,9 @@ use bevy_ghx_grid::ghx_grid::cartesian::{coordinates::Cartesian3D, grid::Cartesi
 
 use crate::{
     NODE_SIZE,
-    abilities::abilities_templates::{ActionCastData, Marker, Projectile},
+    abilities::abilities_templates::{
+        ActionCastData, AttachedToPlayer, HasRootInvoker, Marker, Projectile,
+    },
     game_flow::turns::{PlayingEntity, ToWorldPos},
     grid_abilities_backend::{GridGoOff, GridTarget, HitReceived},
 };
@@ -86,6 +88,7 @@ pub fn init_projectile(
     tf_q: Query<&Transform>,
     names_q: Query<&Name>,
     playing_q: Query<&PlayingEntity>,
+    attached_to_player_q: Query<&AttachedToPlayer>,
     mut cmd: Commands,
 ) {
     for go_off in reader.read() {
@@ -104,11 +107,10 @@ pub fn init_projectile(
                 .unwrap_or(&Name::new("some entity"))
         );
 
+        cmd.entity(invoker).log_components();
+
         println!("DDD = projectile invoked by :");
-        let invoker_invoker = invoked_by_q
-            .get(invoker)
-            .expect("Could not find invoked by on ability")
-            .0;
+        let maybe_invoker_invoker = invoked_by_q.get(invoker);
 
         let offset = match target.entity {
             Some(e) => match playing_q.get(e) {
@@ -125,11 +127,14 @@ pub fn init_projectile(
             "pos of target was and is : {:?} -> {:?}",
             target.position, target_world_pos
         );
+
+        let attacking_player = invoker;
+
         let projectile_tf = tf_q
-            .get(invoker)
+            .get(attacking_player)
             .ok()
             .map(|v| v)
-            .or_else(|| tf_q.get(invoker_invoker).ok().map(|v| v))
+            .or_else(|| tf_q.get(maybe_invoker_invoker.unwrap().0).ok().map(|v| v))
             .expect("should find tf on invoker or invoker's invoker")
             .clone();
         let dir = (target_world_pos - projectile_tf.translation).normalize_or_zero();
@@ -148,6 +153,7 @@ pub fn init_projectile(
 pub fn handle_projectiles(
     mut projectiles_q: Query<(Entity, &MovingProjectile, &mut Transform)>,
     invoked_by_q: Query<&InvokedBy>,
+    root_invoker_q: Query<&HasRootInvoker>,
     cast_data_q: Query<&ActionCastData>,
     time: Res<Time>,
     mut hit_writer: MessageWriter<HitReceived>,
@@ -161,25 +167,11 @@ pub fn handle_projectiles(
                     .get(projectile_entity)
                     .expect("No invoked by here mate")
                     .0;
-                let cast_data = cast_data_q
-                    .get(invoker)
-                    .ok()
-                    .map(|v| v)
-                    .or_else(|| {
-                        cast_data_q
-                            .get(
-                                invoked_by_q
-                                    .get(invoker)
-                                    .expect("invoker has no above invoker")
-                                    .0,
-                            )
-                            .ok()
-                            .map(|v| v)
-                    })
-                    .expect("Invoker entity should always have ActionCastData");
 
                 // TODO : see how to remove attacking player her or how to get it properly, maybe by adding a AbilityOfPlayer() component on the invoker/caster ?
                 cmd.entity(projectile_entity).remove::<MovingProjectile>();
+
+                let cast_data = ActionCastData::new(invoker, invoker);
 
                 hit_writer.write(HitReceived {
                     hit_player,

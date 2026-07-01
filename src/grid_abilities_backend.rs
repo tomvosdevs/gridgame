@@ -39,7 +39,10 @@ use crate::{
     GridCell,
     abilities::{
         abilities_templates::{AbilityHandler, ActionCastData, CasterEntity, FromCaster},
-        effects::{AbilityOfCaster, handle_just_casted_effect, handle_spawn_effect},
+        effects::{
+            AbilityOfCaster, handle_invoke_subability_effect, handle_just_casted_effect,
+            handle_spawn_effect,
+        },
     },
     deck::card_blueprints::NotifyActionHit,
     game_flow::turns::{PlayingEntity, TeamHitFilter, ToWorldPos},
@@ -62,6 +65,7 @@ pub type GridTargetGenerator = bevy_diesel::target::TargetGenerator<Grid3DBacken
 pub type GridTargetMutator = bevy_diesel::target::TargetMutator<Grid3DBackend>;
 pub type GridSpawnConfig = bevy_diesel::spawn::SpawnConfig<Grid3DBackend>;
 pub type GridGoOffConfig = bevy_diesel::effect::GoOffConfig<Grid3DBackend>;
+pub type GridGoOffOrigin = bevy_diesel::effect::GoOffOrigin<Grid3DBackend>;
 
 #[derive(Debug, Clone, Reflect, PartialEq)]
 pub enum HitTargetKind {
@@ -403,6 +407,7 @@ impl Plugin for Grid3dDieselPlugin {
                 bevy_diesel::spawn::spawn_system::<Grid3DBackend>,
                 bevy_diesel::print::print_effect::<CartesianPosition>,
                 handle_spawn_effect,
+                handle_invoke_subability_effect,
                 handle_just_casted_effect,
                 init_projectile,
             )

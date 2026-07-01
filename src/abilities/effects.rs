@@ -28,7 +28,9 @@ use bevy_gauge::{
 use bevy_ghx_grid::ghx_grid::cartesian::coordinates::CartesianPosition;
 
 use crate::{
-    abilities::abilities_templates::{CasterAbilityCasted, CasterHitReceived},
+    abilities::abilities_templates::{
+        CasterAbilityCasted, CasterHitReceived, InvokingTriggerEffect,
+    },
     deck::{
         card_builders::{CardPool, CardPoolStatus, PoolSupplier},
         deck_and_cards::SoulLife,
@@ -82,20 +84,35 @@ pub fn handle_just_casted_effect(
     }
 }
 
+pub fn handle_invoke_subability_effect(
+    mut reader: MessageReader<GridGoOff>,
+    q_effect: Query<&InvokingTriggerEffect>,
+    mut writer: MessageWriter<GridStartInvoke>,
+) {
+    for go_off in reader.read() {
+        let Ok((template_entity, source_entity)) = q_effect
+            .get(go_off.entity)
+            .map(|v| (v.template_entity, v.source))
+        else {
+            continue;
+        };
+
+        println!("One check down");
+        let target = go_off.target;
+        writer.write(GridStartInvoke::new(template_entity, target));
+    }
+}
+
 #[derive(Component)]
 pub struct SpawnEffect {
-    pub invoking_player: Entity,
     pub action_root: Entity,
-    pub card: Entity,
     pub casted: Entity,
 }
 
 impl SpawnEffect {
-    pub fn new(invoking_player: Entity, action_root: Entity, card: Entity, casted: Entity) -> Self {
+    pub fn new(action_root: Entity, casted: Entity) -> Self {
         Self {
-            invoking_player,
             action_root,
-            card,
             casted,
         }
     }

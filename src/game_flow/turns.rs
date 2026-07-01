@@ -61,6 +61,7 @@ use crate::{
         UnassignedDeckState,
     },
     grid_abilities_backend::HitFilter,
+    projectiles::MovingProjectile,
     stats::players::{MeleeRange, Speed, Strength},
     tiles_templates::Targetable,
     utils::AsFlippedUVec3,
@@ -399,7 +400,7 @@ pub fn start_combat_test(mut cmd: Commands, keyboard_input: Res<ButtonInput<KeyC
 
 fn attach_visuals(
     mut commands: Commands,
-    q_projectiles: Query<Entity, Added<Marker<Projectile>>>,
+    q_projectiles: Query<Entity, Added<MovingProjectile>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut meshes: ResMut<Assets<Mesh>>,
 ) {

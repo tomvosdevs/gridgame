@@ -30,7 +30,7 @@ use bevy_ecs::{
     schedule::IntoScheduleConfigs,
     system::{Res, Single},
 };
-use bevy_gauge::{attributes, prelude::Attributes, requires};
+use bevy_gauge::{attributes, instant, prelude::Attributes, requires};
 use bevy_gearbox::{GearboxSet, InitStateMachine, SpawnSubstate, SpawnTransition, StateComponent};
 use bevy_ghx_grid::ghx_grid::cartesian::{
     coordinates::{Cartesian3D, CartesianPosition},
@@ -42,8 +42,9 @@ use rand::RngExt;
 
 use crate::{
     GridCell,
-    abilities::effects::{
-        AbilityOfCaster, CasterHitEffect, EffectMod, JustCastedEffect, SpawnEffect,
+    abilities::{
+        effects::{AbilityOfCaster, CasterHitEffect, EffectMod, JustCastedEffect, SpawnEffect},
+        utils::AbilityComposingPlugin,
     },
     deck::{card_blueprints::AbilityNode, deck_and_cards::Card},
     game_flow::turns::{
@@ -64,7 +65,8 @@ pub struct AbilitiesTemplatePlugin;
 
 impl Plugin for AbilitiesTemplatePlugin {
     fn build(&self, app: &mut bevy::app::App) {
-        app.add_systems(Startup, register_templates)
+        app.add_plugins(AbilityComposingPlugin)
+            .add_systems(Startup, register_templates)
             .add_observer(handle_action_cast);
     }
 }
@@ -377,9 +379,9 @@ impl AbilityHandlerBuilder<ABSReady> {
 
 fn register_templates(mut registry: ResMut<TemplateRegistry>) {
     // TODO remove
-    registry.register("projectile", melee_template);
+    registry.register("projectile", projectile_template);
     registry.register("melee", melee_template);
-    registry.register(BaseAbility::Projectile.as_str(), basic_projectile_ability);
+    // registry.register(BaseAbility::Projectile.as_str(), basic_projectile_ability);
     registry.register(BaseAbility::Melee.as_str(), basic_melee_ability);
 }
 
@@ -401,17 +403,19 @@ impl AbilityCastRequested {
     }
 }
 
-pub fn action_base(
-    cmd: &mut Commands,
-    target: GridTarget,
-    invoker: Entity,
-    builder: &AbilityNode,
-) -> Entity {
-    let initial = init_action(cmd, target, invoker);
+pub fn action_base(cmd: &mut Commands, builder: &AbilityNode) -> (Entity, Vec<Entity>) {
+    let initial = cmd.spawn_empty().id();
+    let mut created_entities: Vec<Entity> = Vec::new();
 
-    builder.build_and_spawn(initial, cmd);
-    initial
+    builder.build_and_spawn(initial, &mut created_entities, cmd);
+    (initial, created_entities)
 }
+
+#[derive(Component, Debug, Clone)]
+pub struct AttachedToPlayer(pub Entity);
+
+#[derive(Component, Debug, Clone)]
+pub struct HasRootInvoker(pub Entity);
 
 pub fn handle_action_cast(
     e: On<AbilityCastRequested>,
@@ -452,21 +456,49 @@ pub fn handle_action_cast(
     let grid_target = GridTarget::entity(target.entity.unwrap(), target.position);
 
     // Maybe define a list of states that are required by any action and return them for event triggers ?
-    let action_entity = cmd
-        .spawn((
-            *origin_grid_pos,
-            Transform::from_translation(origin_tf.translation),
-        ))
-        .id();
+    // let action_entity = cmd
+    //     .spawn((
+    //         *origin_grid_pos,
+    //         Transform::from_translation(origin_tf.translation),
+    //     ))
+    //     .id();
 
     let card_entity = e.card_entity;
     let card = cards_q
         .get(card_entity)
         .expect("Passed card entity does not have the 'Card' entity");
 
-    let inner = action_base(&mut cmd, grid_target, action_entity, &card.ability_builder);
+    let (action_entity, created_entities) = action_base(&mut cmd, &card.ability_builder);
 
-    cmd.entity(action_entity).with_children(|parent| {
+    cmd.entity(action_entity).insert((
+        *origin_grid_pos,
+        Transform::from_translation(origin_tf.translation),
+        GridInvokerTarget::entity(grid_target.entity.unwrap(), grid_target.position),
+        InvokedBy(attacking_player),
+        AttachedToPlayer(attacking_player),
+    ));
+
+    for e in created_entities.iter() {
+        cmd.entity(*e).insert((
+            AttachedToPlayer(attacking_player),
+            HasRootInvoker(action_entity),
+            GridInvokerTarget::entity(grid_target.entity.unwrap(), grid_target.position),
+            *origin_grid_pos,
+        ));
+    }
+
+    let invoker_test = cmd
+        .spawn((
+            target,
+            AttachedToPlayer(attacking_player),
+            HasRootInvoker(action_entity),
+            ActionCastData::new(attacking_player, action_entity),
+            InvokedBy(attacking_player),
+            Ability,
+        ))
+        .id();
+
+    cmd.entity(invoker_test).with_children(|parent| {
         let ready = parent
             .spawn_substate(action_entity, Name::new("ActionReady"))
             .id();
@@ -474,10 +506,7 @@ pub fn handle_action_cast(
             .spawn_substate(action_entity, Name::new("ActionInvoke"))
             .id();
 
-        parent.spawn_subeffect(
-            invoke,
-            (SpawnEffect::new(attacking_player, action_entity, card_entity, inner)),
-        );
+        parent.spawn_subeffect(invoke, (SpawnEffect::new(action_entity, action_entity)));
 
         parent.spawn_transition::<GridStartInvoke>(ready, invoke);
 
@@ -486,18 +515,34 @@ pub fn handle_action_cast(
             .entity(action_entity)
             .insert((
                 target,
+                AttachedToPlayer(attacking_player),
+                HasRootInvoker(action_entity),
                 ActionCastData::new(attacking_player, action_entity),
                 Ability,
             ))
             .init_state_machine(ready);
     });
 
-    // cmd.entity(attacking_player).insert((
-    //     target,
-    //     ActionCastData::new(attacking_player, attacking_player),
-    // ));
+    cmd.entity(attacking_player).insert((
+        GridInvokerTarget::entity(grid_target.entity.unwrap(), grid_target.position),
+        ActionCastData::new(attacking_player, invoker_test),
+    ));
 
-    writer.write(GridStartInvoke::new(action_entity, grid_target));
+    writer.write(GridStartInvoke::new(invoker_test, grid_target));
+    // card.invoking_kind.start_invoke_on(
+    //     &mut cmd,
+    //     action_entity,
+    //     writer,
+    //     grid_target,
+    //     (
+    //         InvokedBy(action_entity),
+    //         AttachedToPlayer(attacking_player),
+    //         HasRootInvoker(action_entity),
+    //         ActionCastData::new(attacking_player, action_entity),
+    //         Ability,
+    //         grid_target,
+    //     ),
+    // );
 }
 
 #[derive(Component, Clone)]
@@ -515,25 +560,53 @@ pub fn init_action(cmd: &mut Commands, target: GridTarget, invoker: Entity) -> E
 #[derive(Component)]
 pub struct AbilityInitialized;
 
-pub fn ripple_effect(commands: &mut Commands, entity: Option<Entity>, ripple_count: u32) -> Entity {
+#[derive(Component)]
+pub struct InvokingTriggerEffect {
+    pub template_entity: Entity,
+    pub source: Entity,
+}
+
+impl InvokingTriggerEffect {
+    pub fn new(template_entity: Entity, source: Entity) -> Self {
+        Self {
+            template_entity,
+            source,
+        }
+    }
+}
+
+pub fn ripple_invoking(
+    commands: &mut Commands,
+    entity: Option<Entity>,
+    ripple_count: u32,
+    template_entity: Entity,
+) -> Entity {
     let entity = entity.unwrap_or_else(|| commands.spawn_empty().id());
+    println!("spawn ripple");
 
     commands.entity(entity).with_children(|parent| {
+        let initial_invoke = parent
+            .spawn_diesel_substate(
+                entity,
+                (
+                    Name::new("Initial spawn"),
+                    InvokingTriggerEffect::new(template_entity, entity),
+                    GridGoOffConfig::invoker_target(),
+                ),
+            )
+            .id();
+
         let ready = parent
             .spawn_diesel_substate(entity, Name::new("Ready"))
             .id();
 
-        let invoked = parent
-            .spawn_diesel_substate(entity, Name::new("Invoke"))
-            .id();
-
-        let done = parent
+        let invoke = parent
             .spawn_diesel_substate(
                 entity,
                 (
-                    Name::new("Hit"),
-                    StateComponent(DelayedDespawn::now()),
-                    GridTargetMutator::root()
+                    Name::new("Invoke"),
+                    InvokingTriggerEffect::new(template_entity, entity),
+                    GridGoOffConfig::invoker_target()
                         .with_gatherer(Grid3DGatherer::EntitiesInShape {
                             shape: GridCheckShape::Sphere(4.0),
                             gathering_filter: EntityGatheringFilter::Playing,
@@ -544,8 +617,20 @@ pub fn ripple_effect(commands: &mut Commands, entity: Option<Entity>, ripple_cou
             )
             .id();
 
-        parent.spawn_transition_always(ready, invoked);
-        parent.spawn_branch::<AbilityHitEntity>(invoked, |b| {
+        let hit = parent.spawn_diesel_substate(entity, Name::new("Hit")).id();
+        parent.spawn_subeffect(hit, instant! {"RippleCount" -= 1.0});
+
+        let done = parent
+            .spawn_diesel_substate(
+                entity,
+                (Name::new("Hit"), StateComponent(DelayedDespawn::now())),
+            )
+            .id();
+
+        parent.spawn_transition::<AbilityHitEntity>(initial_invoke, hit);
+        parent.spawn_transition_always(ready, invoke);
+        parent.spawn_transition::<AbilityHitEntity>(invoke, hit);
+        parent.spawn_branch::<AbilityHitEntity>(hit, |b| {
             b.when(done, move |t| {
                 t.insert(requires! {"RippleCount <= 0"})
                     .insert(RequiresStatsOf(entity));
@@ -564,19 +649,27 @@ pub fn ripple_effect(commands: &mut Commands, entity: Option<Entity>, ripple_cou
                 attributes! {
                     "RippleCount" => ripple_count as f32
                 },
-                GridGoOffConfig::invoker_target(),
             ))
-            .init_state_machine(ready);
+            .init_state_machine(initial_invoke);
     });
 
     entity
 }
 
-pub fn projectile_template(commands: &mut Commands, entity: Option<Entity>, speed: f32) -> Entity {
+#[derive(Component, Debug, Clone)]
+pub struct AbilityTemplate(pub Entity);
+
+pub struct StateBundleEntity(Entity);
+
+pub fn projectile_template(commands: &mut Commands, entity: Option<Entity>) -> Entity {
     let entity = entity.unwrap_or_else(|| commands.spawn_empty().id());
 
     commands.entity(entity).with_children(|parent| {
-        let flying = parent
+        let ready = parent
+            .spawn_diesel_substate(entity, (Name::new("Ready")))
+            .id();
+
+        let active = parent
             .spawn_diesel_substate(entity, (Name::new("Flying")))
             .id();
 
@@ -587,7 +680,7 @@ pub fn projectile_template(commands: &mut Commands, entity: Option<Entity>, spee
             )
             .id();
 
-        parent.spawn_transition::<AbilityHitEntity>(flying, hit_and_done);
+        parent.spawn_transition::<AbilityHitEntity>(active, hit_and_done);
 
         let commands = parent.commands_mut();
         commands
@@ -595,14 +688,14 @@ pub fn projectile_template(commands: &mut Commands, entity: Option<Entity>, spee
             .insert((
                 Ability,
                 Name::new("BaseProjectile"),
-                Speed::new(speed as i32),
+                Speed::new(8),
                 AbilityInitialized,
                 Marker::<Projectile>::new(),
-                ProjectileEffect::new(speed),
+                ProjectileEffect::new(8.0),
                 Visibility::Inherited,
                 GridGoOffConfig::invoker_target(),
             ))
-            .init_state_machine(flying);
+            .init_state_machine(active);
     });
 
     entity

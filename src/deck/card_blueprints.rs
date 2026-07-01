@@ -11,6 +11,7 @@ use bevy_ecs::{
     entity::Entity,
     event::EntityEvent,
     lifecycle::Add,
+    message::MessageWriter,
     observer::{self, Observer, On},
     query::With,
     related,
@@ -29,8 +30,8 @@ use rand::RngExt;
 use crate::{
     abilities::{
         abilities_templates::{
-            AbilityHandler, AbilityHandlerBuilder, ActionCastData, BaseAbility, melee_template,
-            projectile_template, ripple_effect,
+            AbilityHandler, AbilityHandlerBuilder, ActionCastData, BaseAbility,
+            basic_projectile_ability, melee_template, projectile_template, ripple_invoking,
         },
         definitions::register_abilities,
         effects::{
@@ -44,8 +45,8 @@ use crate::{
     },
     game_flow::turns::CurrentDeckReference,
     grid_abilities_backend::{
-        AbilityHitEntity, GridGoOffConfig, GridTarget, GridTargetGenerator, GridTargetMutator,
-        HitReceived, HitTargetKind,
+        AbilityHitEntity, GridGoOffConfig, GridStartInvoke, GridTarget, GridTargetGenerator,
+        GridTargetMutator, HitReceived, HitTargetKind,
     },
 };
 
@@ -80,35 +81,33 @@ impl NamePicker {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AbilityConstructor {
     Projectile,
     Melee,
     BundleAsEntity(Entity),
-    WrapWithModifier(AbilityMod, &'static AbilityConstructor),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AbilityMod {
     Ripple(u32),
 }
 
 impl AbilityMod {
-    pub fn build(&self, cmd: &mut Commands, entity: Entity) -> Entity {
+    pub fn build(&self, cmd: &mut Commands, entity: Entity, sub_template: Entity) -> Entity {
         match self {
-            AbilityMod::Ripple(count) => ripple_effect(cmd, Some(entity), *count),
+            AbilityMod::Ripple(count) => ripple_invoking(cmd, Some(entity), *count, sub_template),
         }
     }
 }
 
 impl AbilityConstructor {
-    pub fn build(&self, entity: Entity, cmd: &mut Commands) {
+    pub fn build(&self, entity: Entity, created_entities: &mut Vec<Entity>, cmd: &mut Commands) {
         let ability_container = cmd.spawn(InvokedBy(entity)).id();
+        created_entities.push(ability_container);
         match self {
             AbilityConstructor::Projectile => {
-                let speed = rand::rng().random_range(2.0..10.0);
-                println!("here i guess");
-                projectile_template(cmd, Some(ability_container), speed);
+                projectile_template(cmd, Some(ability_container));
             }
             AbilityConstructor::Melee => {
                 melee_template(cmd, Some(ability_container));
@@ -120,12 +119,6 @@ impl AbilityConstructor {
                     .clone_with_opt_out(entity, |builder| {
                         builder.linked_cloning(true);
                     });
-            }
-            AbilityConstructor::WrapWithModifier(ability_mod, ability_constructor) => {
-                println!("spawning modifier");
-                let modifier_container = cmd.spawn(InvokedBy(ability_container)).id();
-                let mod_entity = ability_mod.build(cmd, modifier_container);
-                ability_constructor.build(mod_entity, cmd);
             }
         }
     }
@@ -159,20 +152,56 @@ impl IntoIterator for AbilityNode {
 }
 
 impl AbilityNode {
-    pub fn build_and_spawn(&self, entity: Entity, cmd: &mut Commands) {
+    pub fn build_and_spawn(
+        &self,
+        entity: Entity,
+        mut created_entities: &mut Vec<Entity>,
+        cmd: &mut Commands,
+    ) {
         match self {
-            AbilityNode::End(ability_constructor) => ability_constructor.build(entity, cmd),
+            AbilityNode::End(ability_constructor) => {
+                ability_constructor.build(entity, &mut created_entities, cmd)
+            }
             AbilityNode::Nested(ability_nodes) => {
                 for node in ability_nodes.iter() {
-                    node.build_and_spawn(entity, cmd);
+                    node.build_and_spawn(entity, &mut created_entities, cmd);
                 }
             }
         }
     }
 }
 
+#[derive(Debug, Clone)]
+pub enum InvokingHandlerKind {
+    Single,
+    Ripple(u32),
+}
+
+impl InvokingHandlerKind {
+    pub fn start_invoke_on(
+        &self,
+        cmd: &mut Commands,
+        template_entity: Entity,
+        mut writer: MessageWriter<GridStartInvoke>,
+        target: GridTarget,
+        invoker_bundle: impl Bundle,
+    ) {
+        let invoked = match self {
+            InvokingHandlerKind::Single => template_entity,
+            InvokingHandlerKind::Ripple(ripple_count) => {
+                let invoked = cmd.spawn(invoker_bundle).id();
+                let invoker = ripple_invoking(cmd, Some(invoked), *ripple_count, template_entity);
+                cmd.entity(invoker).insert(InvokedBy(invoked));
+                invoked
+            }
+        };
+        writer.write(GridStartInvoke::new(invoked, target));
+    }
+}
+
 #[derive(Component, Debug)]
 pub struct CardBlueprint {
+    invoking_handler_kind: InvokingHandlerKind,
     nodes: AbilityNode,
     base_entity: Option<Entity>,
     name_picker: NamePicker,
@@ -181,8 +210,9 @@ pub struct CardBlueprint {
 }
 
 impl CardBlueprint {
-    pub fn new(nodes: AbilityNode) -> Self {
+    pub fn new(nodes: AbilityNode, invoking_handler_kind: InvokingHandlerKind) -> Self {
         Self {
+            invoking_handler_kind,
             nodes,
             base_entity: None,
             name_picker: NamePicker::Fixed("Missing name picker"),
@@ -232,7 +262,10 @@ impl CardBlueprint {
     }
 
     pub fn generate(&self, rng: &mut WyRand, rarity: RarityPicker) -> impl Bundle {
-        (Card::new(self.nodes.clone()), rarity.pick(rng))
+        (
+            Card::new(self.nodes.clone(), self.invoking_handler_kind.clone()),
+            rarity.pick(rng),
+        )
     }
 }
 
@@ -379,22 +412,24 @@ pub fn register_blueprints(mut cmd: Commands) {
     let projectile_tid = BaseAbility::Projectile.as_str();
     let melee_tid = BaseAbility::Melee.as_str();
 
-    let other_projectile_blueprint = CardBlueprint::new(AbilityNode::Nested(vec![
-        AbilityConstructor::Projectile.into(),
-        AbilityConstructor::Projectile.into(),
-        AbilityConstructor::BundleAsEntity(
-            cmd.spawn(related!(
-                EvReactors[
-                    on_hit_effect(one_shot_instant(
-                        instant! {"SoulLife.current" -= "Strength@Attacker"},
-                    )),
-                    on_hit_effect(status_effect_applier(EA::new(EK::Poison, 3))), // More here
-                ]
-            ))
-            .id(),
-        )
-        .into(),
-    ]))
+    let other_projectile_blueprint = CardBlueprint::new(
+        AbilityNode::Nested(vec![
+            AbilityConstructor::Projectile.into(),
+            AbilityConstructor::BundleAsEntity(
+                cmd.spawn(related!(
+                    EvReactors[
+                        on_hit_effect(one_shot_instant(
+                            instant! {"SoulLife.current" -= "Strength@Attacker"},
+                        )),
+                        on_hit_effect(status_effect_applier(EA::new(EK::Poison, 3))), // More here
+                    ]
+                ))
+                .id(),
+            )
+            .into(),
+        ]),
+        InvokingHandlerKind::Ripple(3),
+    )
     .add_required_pool(CardPool::Ranged);
     cmd.spawn(other_projectile_blueprint);
 
