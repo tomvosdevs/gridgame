@@ -15,12 +15,8 @@ use bevy::{
 use bevy_gauge::{AttributeComponent, prelude::Attributes};
 
 use crate::{
-    abilities::abilities_templates::AbilityHandler,
     creatures::definitions::CreatureKind,
-    deck::{
-        card_blueprints::{AbilityNode, InvokingHandlerKind},
-        card_builders::{PoolSupplier, gen_and_spawn_default_deck},
-    },
+    deck::card_builders::{PoolSupplier, gen_and_spawn_default_deck},
     game_flow::turns::EntityTurnEnd,
     ui::{CardTextureCamera, CardUiTargetMesh},
 };
@@ -208,17 +204,11 @@ impl Default for CardPile {
 pub struct InDeck(pub Entity);
 
 #[derive(Component, Clone)]
-pub struct Card {
-    pub ability_builder: AbilityNode,
-    pub invoking_kind: InvokingHandlerKind,
-}
+pub struct Card {}
 
 impl Card {
-    pub fn new(ability_builder: AbilityNode, invoking_kind: InvokingHandlerKind) -> Self {
-        Self {
-            ability_builder,
-            invoking_kind,
-        }
+    pub fn new() -> Self {
+        Self {}
     }
 }
 

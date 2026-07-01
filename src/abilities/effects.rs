@@ -28,9 +28,7 @@ use bevy_gauge::{
 use bevy_ghx_grid::ghx_grid::cartesian::coordinates::CartesianPosition;
 
 use crate::{
-    abilities::abilities_templates::{
-        CasterAbilityCasted, CasterHitReceived, InvokingTriggerEffect,
-    },
+    abilities::abilities_templates::InvokingTriggerEffect,
     deck::{
         card_builders::{CardPool, CardPoolStatus, PoolSupplier},
         deck_and_cards::SoulLife,
@@ -49,17 +47,6 @@ impl Plugin for StatusEffectsPlugin {
 }
 
 #[derive(Component)]
-pub struct JustCastedEffect {
-    caster: Entity,
-}
-
-impl JustCastedEffect {
-    pub fn new(caster: Entity) -> Self {
-        Self { caster }
-    }
-}
-
-#[derive(Component)]
 pub struct CasterHitEffect {
     caster: Entity,
 }
@@ -67,20 +54,6 @@ pub struct CasterHitEffect {
 impl CasterHitEffect {
     pub fn new(caster: Entity) -> Self {
         Self { caster }
-    }
-}
-
-pub fn handle_just_casted_effect(
-    mut reader: MessageReader<GridGoOff>,
-    mut cmd: Commands,
-    q_effect: Query<&JustCastedEffect>,
-) {
-    for go_off in reader.read() {
-        let Ok(effect) = q_effect.get(go_off.entity) else {
-            continue;
-        };
-
-        cmd.trigger(CasterAbilityCasted(effect.caster));
     }
 }
 

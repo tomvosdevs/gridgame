@@ -26,41 +26,31 @@ use bevy_diesel::{pipeline::propagate_system, prelude::SpatialBackend, target::T
 use bevy_ecs::{hierarchy::Children, system::Commands};
 use bevy_gauge::AttributeResolvable;
 use bevy_gearbox::{AcceptAll, GearboxMessage, GearboxSet, RegistrationAppExt};
-use bevy_ghx_grid::ghx_grid::cartesian::{
-    coordinates::{Cartesian3D, CartesianPosition},
-    grid::CartesianGrid,
-};
 use bevy_ghx_proc_gen::GridNode;
 use bevy_prng::WyRand;
 use bevy_rand::{plugin::EntropyPlugin, prelude::GlobalRng};
 use rand::{Rng, RngExt, SeedableRng};
 
 use crate::{
-    GridCell,
     abilities::{
-        abilities_templates::{AbilityHandler, ActionCastData, CasterEntity, FromCaster},
-        effects::{
-            AbilityOfCaster, handle_invoke_subability_effect, handle_just_casted_effect,
-            handle_spawn_effect,
-        },
+        abilities_templates::ActionCastData,
+        effects::{AbilityOfCaster, handle_invoke_subability_effect, handle_spawn_effect},
     },
-    deck::card_blueprints::NotifyActionHit,
-    game_flow::turns::{PlayingEntity, TeamHitFilter, ToWorldPos},
-    melee::MeleePlugin,
-    projectiles::{ProjectilePlugin, init_projectile},
+    deck::{card_blueprints::NotifyActionHit, deck_and_cards::Card},
+    game_flow::turns::PlayingEntity,
 };
 
 // Vec3 type aliases
-pub type GridInvokerTarget = bevy_diesel::target::InvokerTarget<CartesianPosition>;
-pub type GridTarget = bevy_diesel::target::Target<CartesianPosition>;
-pub type GridGoOff = bevy_diesel::effect::GoOff<CartesianPosition>;
-pub type GridStartInvoke = bevy_diesel::events::StartInvoke<CartesianPosition>;
-pub type GridStopInvoke = bevy_diesel::events::StopInvoke<CartesianPosition>;
-pub type GridOnRepeat = bevy_diesel::events::OnRepeat<CartesianPosition>;
-pub type GridOnSpawnOrigin = bevy_diesel::spawn::OnSpawnOrigin<CartesianPosition>;
-pub type GridOnSpawnTarget = bevy_diesel::spawn::OnSpawnTarget<CartesianPosition>;
-pub type GridOnSpawnInvoker = bevy_diesel::spawn::OnSpawnInvoker<CartesianPosition>;
-pub type GridTargetType = bevy_diesel::target::TargetType<CartesianPosition>;
+pub type GridInvokerTarget = bevy_diesel::target::InvokerTarget<BoardPos>;
+pub type GridTarget = bevy_diesel::target::Target<BoardPos>;
+pub type GridGoOff = bevy_diesel::effect::GoOff<BoardPos>;
+pub type GridStartInvoke = bevy_diesel::events::StartInvoke<BoardPos>;
+pub type GridStopInvoke = bevy_diesel::events::StopInvoke<BoardPos>;
+pub type GridOnRepeat = bevy_diesel::events::OnRepeat<BoardPos>;
+pub type GridOnSpawnOrigin = bevy_diesel::spawn::OnSpawnOrigin<BoardPos>;
+pub type GridOnSpawnTarget = bevy_diesel::spawn::OnSpawnTarget<BoardPos>;
+pub type GridOnSpawnInvoker = bevy_diesel::spawn::OnSpawnInvoker<BoardPos>;
+pub type GridTargetType = bevy_diesel::target::TargetType<BoardPos>;
 pub type GridTargetGenerator = bevy_diesel::target::TargetGenerator<Grid3DBackend>;
 pub type GridTargetMutator = bevy_diesel::target::TargetMutator<Grid3DBackend>;
 pub type GridSpawnConfig = bevy_diesel::spawn::SpawnConfig<Grid3DBackend>;
@@ -135,8 +125,8 @@ impl GearboxMessage for CastEnd {
     }
 }
 
-impl HasDieselTarget<CartesianPosition> for CastEnd {
-    fn diesel_target(&self) -> Target<CartesianPosition> {
+impl HasDieselTarget<BoardPos> for CastEnd {
+    fn diesel_target(&self) -> Target<BoardPos> {
         self.target
     }
 }
@@ -180,56 +170,56 @@ impl AbilityHitPosition {
     }
 }
 
-impl HasDieselTarget<CartesianPosition> for AbilityHitEntity {
+impl HasDieselTarget<BoardPos> for AbilityHitEntity {
     fn diesel_target(&self) -> GridTarget {
         self.target
     }
 }
 
-impl HasDieselTarget<CartesianPosition> for AbilityHitPosition {
+impl HasDieselTarget<BoardPos> for AbilityHitPosition {
     fn diesel_target(&self) -> GridTarget {
         self.target
     }
 }
 
-pub trait HitFilter: Component + Clone + Debug + Send + Sync + 'static {
-    /// Component queried on invoker and target entities.
-    type Lookup: Component;
+// pub trait HitFilter: Component + Clone + Debug + Send + Sync + 'static {
+//     /// Component queried on invoker and target entities.
+//     type Lookup: Component;
 
-    /// Return `true` if the ability should affect this target.
-    fn can_target(
-        &self,
-        invoker_data: Option<&Self::Lookup>,
-        target_data: Option<&Self::Lookup>,
-    ) -> bool;
-}
+//     /// Return `true` if the ability should affect this target.
+//     fn can_target(
+//         &self,
+//         invoker_data: Option<&Self::Lookup>,
+//         target_data: Option<&Self::Lookup>,
+//     ) -> bool;
+// }
 
-struct HitFilterPlugin<F: HitFilter> {
-    _marker: PhantomData<F>,
-}
+// struct HitFilterPlugin<F: HitFilter> {
+//     _marker: PhantomData<F>,
+// }
 
-impl<F: HitFilter> Default for HitFilterPlugin<F> {
-    fn default() -> Self {
-        Self {
-            _marker: PhantomData,
-        }
-    }
-}
+// impl<F: HitFilter> Default for HitFilterPlugin<F> {
+//     fn default() -> Self {
+//         Self {
+//             _marker: PhantomData,
+//         }
+//     }
+// }
 
-impl<F: HitFilter> Plugin for HitFilterPlugin<F> {
-    fn build(&self, app: &mut App) {
-        app.add_systems(Update, handle_hit_system::<F>);
-    }
-}
+// impl<F: HitFilter> Plugin for HitFilterPlugin<F> {
+//     fn build(&self, app: &mut App) {
+//         app.add_systems(Update, handle_hit_system::<F>);
+//     }
+// }
 
-pub struct HitHandlingPlugin;
+// pub struct HitHandlingPlugin;
 
-impl Plugin for HitHandlingPlugin {
-    fn build(&self, app: &mut App) {
-        app.add_plugins(HitFilterPlugin::<TeamHitFilter>::default())
-            .add_systems(Update, handle_unfiltered_hit_system.before(GearboxSet));
-    }
-}
+// impl Plugin for HitHandlingPlugin {
+//     fn build(&self, app: &mut App) {
+//         app.add_plugins(HitFilterPlugin::<TeamHitFilter>::default())
+//             .add_systems(Update, handle_unfiltered_hit_system.before(GearboxSet));
+//     }
+// }
 
 #[derive(EntityEvent, Message)]
 pub struct HitReceived {
@@ -252,130 +242,64 @@ impl HitReceived {
 pub fn handle_unfiltered_hit_system(
     mut hit_events: MessageReader<HitReceived>,
     mut cmd: Commands,
-    grid: Single<&CartesianGrid<Cartesian3D>>,
-    grid_cells_q: Query<&GridNode, With<GridCell>>,
-    grid_playing_q: Query<&CartesianPosition, With<PlayingEntity>>,
+    grid_playing_q: Query<&BoardPos>,
     invoked_q: Query<&InvokedBy>,
     mut entity_writer: MessageWriter<AbilityHitEntity>,
     mut cast_end_writer: MessageWriter<CastEnd>,
     _position_writer: MessageWriter<AbilityHitPosition>,
 ) {
-    let grid = grid.deref();
-
-    for hit in hit_events.read() {
-        if let Ok(cell) = grid_cells_q.get(hit.hit_player) {
-            let pos = grid.pos_from_index(cell.0);
-            let target = GridTarget::entity(hit.hit_player, pos);
-            let target_kind = HitTargetKind::Cell;
-            let evt = AbilityHitEntity::new(
-                hit.ability_entity,
-                hit.cast_data.source_playing_entity,
-                target,
-                target_kind.clone(),
-            );
-
-            entity_writer.write(evt.clone());
-            cmd.trigger(evt);
-            // Apply effect from the action that just hit
-            println!("action hit notif sent");
-
-            cmd.trigger(NotifyActionHit {
-                sub_ability_entity: hit.ability_entity,
-                cast_data: hit.cast_data.clone(),
-                target,
-                target_kind,
-            });
-            cast_end_writer.write(CastEnd {
-                entity: hit.cast_data.source_caster_entity,
-                target,
-            });
-            cmd.trigger(CastEnd {
-                entity: hit.cast_data.source_caster_entity,
-                target,
-            });
-        } else if let Ok(playing_pos) = grid_playing_q.get(hit.hit_player) {
-            let target = GridTarget::entity(hit.hit_player, *playing_pos);
-            let target_kind = HitTargetKind::Playing;
-
-            cmd.entity(hit.ability_entity).log_components();
-
-            let evt = AbilityHitEntity::new(
-                hit.ability_entity,
-                hit.cast_data.source_playing_entity,
-                target,
-                target_kind.clone(),
-            );
-            entity_writer.write(evt.clone());
-            cmd.trigger(evt);
-            // Apply effect from the action that just hit
-            cmd.trigger(NotifyActionHit {
-                sub_ability_entity: hit.ability_entity,
-                cast_data: hit.cast_data.clone(),
-                target,
-                target_kind,
-            });
-            cast_end_writer.write(CastEnd {
-                entity: hit.cast_data.source_caster_entity,
-                target,
-            });
-            cmd.trigger(CastEnd {
-                entity: hit.cast_data.source_caster_entity,
-                target,
-            });
-        };
-    }
+    println!("needs rewrite");
 }
 
-pub fn handle_hit_system<F: HitFilter>(
-    mut hit_events: MessageReader<HitReceived>,
-    mut cmd: Commands,
-    _invoker_q: Query<&InvokedBy>,
-    grid: Single<&CartesianGrid<Cartesian3D>>,
-    grid_cells_q: Query<&GridNode, With<GridCell>>,
-    grid_playing_q: Query<&CartesianPosition, With<PlayingEntity>>,
-    filters_q: Query<&F>,
-    filter_lookup_q: Query<&F::Lookup>,
-    mut entity_writer: MessageWriter<AbilityHitEntity>,
-    _position_writer: MessageWriter<AbilityHitPosition>,
-) {
-    let grid = grid.deref();
+// pub fn handle_hit_system<F: HitFilter>(
+//     mut hit_events: MessageReader<HitReceived>,
+//     mut cmd: Commands,
+//     _invoker_q: Query<&InvokedBy>,
+//     grid: Single<&CartesianGrid<Cartesian3D>>,
+//     cards: Query<&Card>,
+//     filters_q: Query<&F>,
+//     filter_lookup_q: Query<&F::Lookup>,
+//     mut entity_writer: MessageWriter<AbilityHitEntity>,
+//     _position_writer: MessageWriter<AbilityHitPosition>,
+// ) {
+//     let grid = grid.deref();
 
-    for hit in hit_events.read() {
-        match filters_q.get(hit.hit_player) {
-            Ok(filter) => {
-                let invoker_data = filter_lookup_q.get(hit.ability_entity).ok();
-                let target_data = filter_lookup_q.get(hit.hit_player).ok();
-                if !filter.can_target(invoker_data, target_data) {
-                    continue;
-                }
-            }
-            Err(_) => {}
-        };
+//     for hit in hit_events.read() {
+//         match filters_q.get(hit.hit_player) {
+//             Ok(filter) => {
+//                 let invoker_data = filter_lookup_q.get(hit.ability_entity).ok();
+//                 let target_data = filter_lookup_q.get(hit.hit_player).ok();
+//                 if !filter.can_target(invoker_data, target_data) {
+//                     continue;
+//                 }
+//             }
+//             Err(_) => {}
+//         };
 
-        if let Ok(cell) = grid_cells_q.get(hit.hit_player) {
-            let pos = grid.pos_from_index(cell.0);
-            let evt = AbilityHitEntity::new(
-                hit.hit_player,
-                hit.cast_data.source_playing_entity,
-                GridTarget::entity(hit.ability_entity, pos),
-                HitTargetKind::Cell,
-            );
-            entity_writer.write(evt.clone());
-            cmd.trigger(evt);
-        } else {
-            if let Ok(playing_pos) = grid_playing_q.get(hit.hit_player) {
-                let evt = AbilityHitEntity::new(
-                    hit.hit_player,
-                    hit.cast_data.source_playing_entity,
-                    GridTarget::entity(hit.ability_entity, *playing_pos),
-                    HitTargetKind::Playing,
-                );
-                entity_writer.write(evt.clone());
-                cmd.trigger(evt);
-            }
-        }
-    }
-}
+//         if let Ok(cell) = grid_cells_q.get(hit.hit_player) {
+//             let pos = grid.pos_from_index(cell.0);
+//             let evt = AbilityHitEntity::new(
+//                 hit.hit_player,
+//                 hit.cast_data.source_playing_entity,
+//                 GridTarget::entity(hit.ability_entity, pos),
+//                 HitTargetKind::Cell,
+//             );
+//             entity_writer.write(evt.clone());
+//             cmd.trigger(evt);
+//         } else {
+//             if let Ok(playing_pos) = grid_playing_q.get(hit.hit_player) {
+//                 let evt = AbilityHitEntity::new(
+//                     hit.hit_player,
+//                     hit.cast_data.source_playing_entity,
+//                     GridTarget::entity(hit.ability_entity, *playing_pos),
+//                     HitTargetKind::Playing,
+//                 );
+//                 entity_writer.write(evt.clone());
+//                 cmd.trigger(evt);
+//             }
+//         }
+//     }
+// }
 
 pub struct Grid3dDieselPlugin;
 
@@ -405,11 +329,9 @@ impl Plugin for Grid3dDieselPlugin {
             bevy_diesel::bevy_gearbox::GearboxSchedule,
             (
                 bevy_diesel::spawn::spawn_system::<Grid3DBackend>,
-                bevy_diesel::print::print_effect::<CartesianPosition>,
+                bevy_diesel::print::print_effect::<BoardPos>,
                 handle_spawn_effect,
                 handle_invoke_subability_effect,
-                handle_just_casted_effect,
-                init_projectile,
             )
                 .in_set(bevy_diesel::DieselSet::Effects),
         );
@@ -422,9 +344,6 @@ impl Plugin for Grid3dDieselPlugin {
                 .in_set(bevy_diesel::gauge::SustainedModifierSet),
         );
 
-        app.add_plugins(ProjectilePlugin);
-        app.add_plugins(MeleePlugin);
-
         // #TODO: Will need to do something similar
         // // Collision types + system (unfiltered - entities with Collides marker)
         app.register_transition::<AbilityHitEntity>();
@@ -436,16 +355,16 @@ impl Plugin for Grid3dDieselPlugin {
         app.add_systems(
             bevy_diesel::bevy_gearbox::GearboxSchedule,
             (
-                bevy_diesel::events::go_off_side_effect::<AbilityHitEntity, CartesianPosition>
+                bevy_diesel::events::go_off_side_effect::<AbilityHitEntity, BoardPos>
                     .in_set(bevy_diesel::bevy_gearbox::GearboxPhase::SideEffectPhase),
-                bevy_diesel::events::go_off_side_effect::<AbilityHitPosition, CartesianPosition>
+                bevy_diesel::events::go_off_side_effect::<AbilityHitPosition, BoardPos>
                     .in_set(bevy_diesel::bevy_gearbox::GearboxPhase::SideEffectPhase),
-                bevy_diesel::events::go_off_side_effect::<CastEnd, CartesianPosition>
+                bevy_diesel::events::go_off_side_effect::<CastEnd, BoardPos>
                     .in_set(bevy_diesel::bevy_gearbox::GearboxPhase::SideEffectPhase),
             ),
         );
 
-        app.add_plugins(HitHandlingPlugin);
+        // app.add_plugins(HitHandlingPlugin);
     }
 }
 
@@ -503,33 +422,10 @@ pub enum GridCheckShape {
 }
 
 #[derive(Clone, Debug, AttributeResolvable)]
-pub enum Grid3DGatherer {
-    // Position generators - produce N random points around origin
-    Sphere {
-        radius: f32,
-        count: NumberType,
-    },
-    Circle {
-        radius: f32,
-        count: NumberType,
-    },
-    // Box {
-    //     #[skip]
-    //     half_extents: CartesianPosition,
-    //     count: NumberType,
-    // },
-    // Line {
-    //     #[skip]
-    //     direction: Dir3,
-    //     length: f32,
-    //     count: NumberType,
-    // },
-    /// All entities in an shape.
-    EntitiesInShape {
-        shape: GridCheckShape,
-        gathering_filter: EntityGatheringFilter,
-        sort_by_nearest: bool,
-    },
+pub enum BoardGatherer {
+    NextCard,
+    PrevCard,
+    OffsetBy(i32),
 }
 
 #[derive(Clone, Debug, AttributeResolvable)]
@@ -560,14 +456,9 @@ impl Default for Grid3DFilter {
 }
 
 #[derive(SystemParam)]
-pub struct Grid3DContext<'w, 's> {
-    pub grid: Single<'w, 's, &'static CartesianGrid<Cartesian3D>>,
-    pub grid_tf: Single<'w, 's, &'static Transform, With<CartesianGrid<Cartesian3D>>>,
-    pub transforms: Query<'w, 's, &'static Transform, Without<CartesianGrid<Cartesian3D>>>,
-    pub grid_cells:
-        Query<'w, 's, (Entity, &'static GridNode), (With<GridCell>, Without<PlayingEntity>)>,
-    pub playing: Query<'w, 's, (Entity, &'static CartesianPosition), With<PlayingEntity>>,
-    pub positioned: Query<'w, 's, (Entity, &'static CartesianPosition), Without<PlayingEntity>>,
+pub struct BoardContext<'w, 's> {
+    pub playing: Query<'w, 's, (Entity, &'static BoardPos), With<PlayingEntity>>,
+    pub cards: Query<'w, 's, (Entity, &'static Card, &'static BoardPos)>,
     global_transforms: Query<'w, 's, &'static GlobalTransform>,
     rng: Single<'w, 's, &'static mut WyRand, With<GlobalRng>>,
 }
@@ -580,299 +471,44 @@ fn rand_u32_range(rng: Single<&mut WyRand, With<GlobalRng>>, min: u32, max: u32)
     min + rand_u32(rng) * (max - min)
 }
 
-pub enum SmoothingShape {
-    Circle(u32),
-    // Diamond,
-    // RoundedSquare,
-    // Square,
-    // Superellipse(i32), // custom n exponent
-    Annulus { inner: f32, outer: f32 },
-    Gaussian { std_dev_ratio: f32, radius: f32 }, // ratio of r, e.g. 0.33 = r/3
-}
-
-impl SmoothingShape {
-    fn exponent(&self) -> Option<i32> {
-        match self {
-            SmoothingShape::Circle(_) => Some(2),
-            // SmoothingShape::Diamond => Some(1),
-            // SmoothingShape::RoundedSquare => Some(4),
-            // SmoothingShape::Square => Some(i32::MAX),
-            // SmoothingShape::Superellipse(n) => Some(*n),
-            _ => None,
-        }
-    }
-}
-
-pub fn random_in_shape(mut rng: WyRand, shape: &SmoothingShape) -> (i32, i32) {
-    match shape {
-        SmoothingShape::Circle(r) => {
-            let angle = rng.random_range(0.0..TAU);
-            let radius = (*r as f32) * rng.random::<f32>().sqrt();
-            ((radius * angle.cos()) as i32, (radius * angle.sin()) as i32)
-        }
-
-        SmoothingShape::Annulus { inner, outer } => {
-            let angle = rng.random_range(0.0..TAU);
-            let t = rng.random::<f32>();
-            let radius: f32 = (inner * inner + t * (outer * outer - inner * inner)).sqrt();
-            ((radius * angle.cos()) as i32, (radius * angle.sin()) as i32)
-        }
-
-        SmoothingShape::Gaussian {
-            std_dev_ratio,
-            radius,
-        } => {
-            let std_dev = radius * std_dev_ratio;
-            let u1: f32 = rng.random();
-            let u2: f32 = rng.random();
-            let mag = std_dev * (-2.0 * u1.ln()).sqrt();
-            (
-                (mag * (TAU * u2).cos()) as i32,
-                (mag * (TAU * u2).sin()) as i32,
-            )
-        }
-    }
-}
-
-// pub fn random_in_shape_specific(
-//     mut rng: Single<&mut WyRand, With<GlobalRng>>,
-//     shape: &SmoothingShape,
-//     rad: f32,
-// ) -> (i32, i32) {
-//     match shape {
-//         SmoothingShape::Circle(r) => {
-//             let angle = rng.random_range(0.0..TAU);
-//             let radius = r * rng.random::<f32>().sqrt();
-//             ((radius * angle.cos()) as i32, (radius * angle.sin()) as i32)
-//         }
-
-//         SmoothingShape::Annulus { inner, outer } => {
-//             let angle = rng.random_range(0.0..TAU);
-//             let t = rng.random::<f32>();
-//             let radius: f32 = (inner * inner + t * (outer * outer - inner * inner)).sqrt();
-//             ((radius * angle.cos()) as i32, (radius * angle.sin()) as i32)
-//         }
-
-//         SmoothingShape::Gaussian {
-//             std_dev_ratio,
-//             radius,
-//         } => {
-//             let std_dev = radius * std_dev_ratio;
-//             let u1: f32 = rng.random();
-//             let u2: f32 = rng.random();
-//             let mag = std_dev * (-2.0 * u1.ln()).sqrt();
-//             (
-//                 (mag * (TAU * u2).cos()) as i32,
-//                 (mag * (TAU * u2).sin()) as i32,
-//             )
-//         }
-
-//         shape => {
-//             let n = shape.exponent().unwrap();
-//             let rf = rad;
-//             if n == f32::INFINITY {
-//                 let r = rad as i32;
-//                 return (rng.random_range(-r..=r), rng.random_range(-r..=r));
-//             }
-//             let r_i = rad as i32;
-//             loop {
-//                 let x = rng.random_range(-r_i..=r_i);
-//                 let y = rng.random_range(-r_i..=r_i);
-//                 let xf = x as f32 / rf;
-//                 let yf = y as f32 / rf;
-//                 if xf.abs().powf(n) + yf.abs().powf(n) <= 1.0 {
-//                     return (x, y);
-//                 }
-//             }
-//         }
-//     }
-// }
-
-#[derive(Clone, Debug, AttributeResolvable)]
-pub struct GridDirectionOffset {
-    #[skip]
-    pub dir: Dir3,
-    pub min_dist: i32,
-    pub max_dist: i32,
-}
-
-#[derive(Clone, Debug, AttributeResolvable)]
-pub struct GridFixedOffset {
-    x: u32,
-    y: u32,
-    z: u32,
-}
-
-impl GridFixedOffset {
-    pub fn new(x: u32, y: u32, z: u32) -> Self {
-        Self { x, y, z }
-    }
-
-    pub fn from_cartesian_pos(pos: CartesianPosition) -> Self {
-        Self {
-            x: pos.x,
-            y: pos.y,
-            z: pos.z,
-        }
-    }
-}
-
-#[derive(Clone, Debug, AttributeResolvable)]
-pub enum GridPosOffset {
-    None,
-    Fixed(GridFixedOffset),
-    RandomInDir(GridDirectionOffset),
-    RandomInCircle(u32),
-    RandomInSphere(u32),
-}
-
-impl GridPosOffset {
-    pub fn apply_to(
-        self: &Self,
-        target: CartesianPosition,
-        mut rng: WyRand,
-        grid: &CartesianGrid<Cartesian3D>,
-    ) -> CartesianPosition {
-        match self {
-            GridPosOffset::None => target,
-            GridPosOffset::Fixed(grid_fixed_offset) => CartesianPosition {
-                x: target.x + grid_fixed_offset.x,
-                y: target.y + grid_fixed_offset.y,
-                z: target.z + grid_fixed_offset.z,
-            }
-            .grid_clamped(grid),
-            GridPosOffset::RandomInDir(grid_direction_offset) => {
-                let random_dist = rng
-                    .random_range(grid_direction_offset.min_dist..grid_direction_offset.max_dist);
-
-                let random_offset = random_dist as f32 * grid_direction_offset.dir;
-                CartesianPosition {
-                    x: (target.x as f32 + random_offset.x.trunc()).max(0.) as u32,
-                    y: (target.y as f32 + random_offset.y.trunc()).max(0.) as u32,
-                    z: (target.z as f32 + random_offset.z.trunc()).max(0.) as u32,
-                }
-            }
-            GridPosOffset::RandomInCircle(radius) => {
-                let (x, z) = random_in_shape(rng, &SmoothingShape::Circle(*radius));
-                CartesianPosition {
-                    x: (target.x as i32 + x).max(0) as u32,
-                    y: target.y,
-                    z: (target.z as i32 + z).max(0) as u32,
-                }
-                .grid_clamped(grid)
-            }
-            GridPosOffset::RandomInSphere(radius) => {
-                let sphere = Sphere::new(*radius as f32);
-                let rand_offset = sphere.sample_interior(&mut rng);
-                CartesianPosition::new(
-                    (target.x as f32 + rand_offset.x).max(0.) as u32,
-                    (target.y as f32 + rand_offset.y).max(0.) as u32,
-                    (target.z as f32 + rand_offset.z).max(0.) as u32,
-                )
-                .grid_clamped(grid)
-            }
-        }
-    }
-}
-
-pub trait InGridBoundaries {
-    fn grid_clamped(self: Self, grid: &CartesianGrid<Cartesian3D>) -> Self;
-}
-
-impl InGridBoundaries for CartesianPosition {
-    fn grid_clamped(mut self: Self, grid: &CartesianGrid<Cartesian3D>) -> Self {
-        self.x = self.x.clamp(0, grid.size_x());
-        self.y = self.y.clamp(0, grid.size_y());
-        self.z = self.z.clamp(0, grid.size_z());
-        self
-    }
-}
-
-impl Default for GridPosOffset {
-    fn default() -> Self {
-        GridPosOffset::None
-    }
-}
-
-pub fn get_entity_targets_in_shape(
-    origin: CartesianPosition,
-    potential_targets: &mut Vec<(Entity, CartesianPosition)>,
-    shape: &GridCheckShape,
-    sort_by_nearest: bool,
-) -> Vec<GridTarget> {
-    let radius = match shape {
-        GridCheckShape::Circle(r) => *r,
-        GridCheckShape::Sphere(r) => *r,
-    };
-
-    let mut unsorted: Vec<(f32, GridTarget)> = potential_targets
-        .iter()
-        .filter_map(|(e, node_pos)| {
-            match shape {
-                GridCheckShape::Circle(_) => {
-                    if node_pos.y != origin.y {
-                        return None;
-                    }
-                }
-                _ => {}
-            }
-
-            let distance = Vec3::new(node_pos.x as f32, node_pos.y as f32, node_pos.z as f32)
-                .distance(Vec3::new(origin.x as f32, origin.y as f32, origin.z as f32));
-            if distance <= radius {
-                Some((distance, GridTarget::entity(*e, *node_pos)))
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    if !sort_by_nearest {
-        return unsorted.iter().map(|(_, t)| *t).collect();
-    }
-
-    unsorted.sort_by(|(dist_a, _), (dist_b, _)| dist_a.total_cmp(&dist_b));
-    unsorted.iter().map(|(_, t)| *t).collect()
-}
-
 pub struct Grid3DBackend;
 
+#[derive(Reflect, Debug, Default, Clone, Copy, AttributeResolvable, Component)]
+pub struct BoardPos {
+    hand_index: i32,
+}
+
+impl BoardPos {
+    pub fn new(hand_index: i32) -> Self {
+        Self { hand_index }
+    }
+}
+
 impl SpatialBackend for Grid3DBackend {
-    type Pos = CartesianPosition;
+    type Pos = BoardPos;
 
-    type Offset = GridPosOffset;
+    type Offset = BoardPos;
 
-    type Gatherer = Grid3DGatherer;
+    type Gatherer = BoardGatherer;
 
     type Filter = Grid3DFilter;
 
-    type Context<'w, 's> = Grid3DContext<'w, 's>;
+    type Context<'w, 's> = BoardContext<'w, 's>;
 
     fn apply_offset(
         ctx: &mut Self::Context<'_, '_>,
         pos: Self::Pos,
         offset: &Self::Offset,
     ) -> Self::Pos {
-        offset.apply_to(pos, ctx.rng.fork(), &ctx.grid.deref())
+        BoardPos::new(pos.hand_index + offset.hand_index)
     }
 
     fn distance(a: &Self::Pos, b: &Self::Pos) -> f32 {
-        a.manhattan_distance(b) as f32
+        (a.hand_index - b.hand_index) as f32
     }
 
     fn position_of(ctx: &Self::Context<'_, '_>, entity: Entity) -> Option<Self::Pos> {
-        ctx.grid_cells
-            .get(entity)
-            .ok()
-            .map(|c| ctx.grid.pos_from_index(c.1.0))
-            // The grid_cells from the context seems to exclude the player, so I added this extra lookup.
-            .or_else(|| {
-                ctx.playing
-                    .get(entity)
-                    .ok()
-                    .map(|(_, pos)| *pos)
-                    .or_else(|| ctx.positioned.get(entity).ok().map(|(_, pos)| *pos))
-            })
+        ctx.cards.get(entity).ok().map(|c| *c.2)
     }
 
     fn gather(
@@ -881,110 +517,18 @@ impl SpatialBackend for Grid3DBackend {
         gatherer: &Self::Gatherer,
         exclude: Entity,
     ) -> Vec<bevy_diesel::prelude::Target<Self::Pos>> {
-        match gatherer {
-            Grid3DGatherer::Sphere { radius, count } => {
-                let rng = ctx.rng.fork();
-                let n = count.resolve_count(rng.clone());
-                (0..n)
-                    .map(|_| {
-                        let (rand_x, rand_z) =
-                            random_in_shape(rng.clone(), &SmoothingShape::Circle(*radius as u32));
-                        let pos = CartesianPosition::new(
-                            (origin.x as i32 + rand_x) as u32,
-                            origin.y + 4,
-                            (origin.z as i32 + rand_z) as u32,
-                        );
-                        Target::position(pos)
-                    })
-                    .collect()
-            }
-            Grid3DGatherer::Circle { radius, count } => {
-                let rng = ctx.rng.fork();
-                let n = count.resolve_count(rng.clone());
-                (0..n)
-                    .map(|_| {
-                        let (rand_x, rand_z) =
-                            random_in_shape(rng.clone(), &SmoothingShape::Circle(*radius as u32));
-                        let pos = CartesianPosition::new(
-                            (origin.x as i32 + rand_x) as u32,
-                            origin.y,
-                            (origin.z as i32 + rand_z) as u32,
-                        );
-                        Target::position(pos)
-                    })
-                    .collect()
-            }
-            // Grid3DGatherer::Box {
-            //     half_extents,
-            //     count,
-            // } => todo!(),
-            // Grid3DGatherer::Line {
-            //     direction,
-            //     length,
-            //     count,
-            // } => todo!(),
-            Grid3DGatherer::EntitiesInShape {
-                shape,
-                gathering_filter,
-                sort_by_nearest,
-            } => {
-                let grid = ctx.grid.deref();
-                let mut found_entities: Vec<Target<Self::Pos>> = vec![];
+        let index_offset = match gatherer {
+            BoardGatherer::NextCard => 1,
+            BoardGatherer::PrevCard => -1,
+            BoardGatherer::OffsetBy(offset) => *offset,
+        };
 
-                if *gathering_filter == EntityGatheringFilter::Cells
-                    || *gathering_filter == EntityGatheringFilter::All
-                {
-                    let mut potential_targets: Vec<(Entity, CartesianPosition)> = ctx
-                        .grid_cells
-                        .iter()
-                        .filter_map(|(e, grid_node)| {
-                            if e == exclude {
-                                return None;
-                            }
-
-                            let node_index = grid_node.0;
-                            let node_pos = grid.pos_from_index(node_index);
-                            Some((e, node_pos))
-                        })
-                        .collect();
-
-                    let mut matching_targets = get_entity_targets_in_shape(
-                        origin,
-                        &mut potential_targets,
-                        shape,
-                        *sort_by_nearest,
-                    );
-
-                    found_entities.append(&mut matching_targets);
-                }
-
-                if *gathering_filter == EntityGatheringFilter::Playing
-                    || *gathering_filter == EntityGatheringFilter::All
-                {
-                    let mut potential_targets: Vec<(Entity, CartesianPosition)> = ctx
-                        .playing
-                        .iter()
-                        .filter_map(|(e, cartesian_pos)| {
-                            if e == exclude {
-                                return None;
-                            }
-                            Some((e, *cartesian_pos))
-                        })
-                        .collect();
-
-                    let mut matching_targets = get_entity_targets_in_shape(
-                        origin,
-                        &mut potential_targets,
-                        shape,
-                        *sort_by_nearest,
-                    );
-
-                    found_entities.append(&mut matching_targets);
-                }
-
-                found_entities
-            }
-        }
+        ctx.cards
+            .iter()
+            .find(|(_, _, pos)| pos.hand_index == (origin.hand_index + index_offset))
+            .map_or(vec![], |(card, _, pos)| {
+                vec![GridTarget::entity(card, *pos)]
+            })
     }
 
     fn apply_filter(
@@ -1009,19 +553,7 @@ impl SpatialBackend for Grid3DBackend {
         pos: Self::Pos,
         parent: Option<bevy::ecs::entity::Entity>,
     ) {
-        let world_pos = pos.as_world_pos(ctx.grid_tf.translation);
-
-        let transform = if let Some(parent_entity) = parent {
-            if let Ok(parent_gt) = ctx.global_transforms.get(parent_entity) {
-                let local_pos = parent_gt.affine().inverse().transform_point3(world_pos);
-                Transform::from_translation(local_pos)
-            } else {
-                Transform::from_translation(world_pos)
-            }
-        } else {
-            Transform::from_translation(world_pos)
-        };
-        commands.insert(transform);
+        commands.insert(pos.clone());
     }
 
     fn plugin() -> impl Plugin {

@@ -18,7 +18,6 @@ use bevy_gearbox::{InitStateMachine, SpawnTransition};
 use bevy_ghx_grid::ghx_grid::cartesian::coordinates::CartesianPosition;
 
 use crate::{
-    abilities::abilities_templates::AttachedToPlayer,
     game_flow::turns::{EntityTurnStart, PlayingEntity},
     grid_abilities_backend::{GridSpawnConfig, GridStartInvoke, GridTarget, GridTargetGenerator},
 };
@@ -48,11 +47,11 @@ impl Plugin for AbilityComposingPlugin {
 
                 let ability_entity = create_base_ability_entity(&mut cmd, entity);
 
-                basic_projectile_card(&mut cmd, ability_entity);
-                writer.write(GridStartInvoke::new(
-                    ability_entity,
-                    GridTarget::entity(target_entity, *target_pos),
-                ));
+                // basic_projectile_card(&mut cmd, ability_entity);
+                // writer.write(GridStartInvoke::new(
+                //     ability_entity,
+                //     GridTarget::entity(target_entity, *target_pos),
+                // ));
                 println!("NEWARCH --- {:?}", player_grid_pos);
             },
         );
@@ -197,7 +196,7 @@ pub fn create_base_ability_entity(cmd: &mut Commands, parent_entity: Entity) -> 
         .spawn((
             InvokedBy(parent_entity),
             Ability,
-            AttachedToPlayer(parent_entity),
+            // AttachedToPlayer(parent_entity),
         ))
         .id();
     cmd.entity(parent_entity).add_child(child);

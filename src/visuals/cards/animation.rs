@@ -37,12 +37,11 @@ use bevy_tween::{
 };
 
 use crate::{
-    ActiveCamera, GridCell, InterpolateSkew, SkewMaterial,
+    ActiveCamera, InterpolateSkew, SkewMaterial,
     abilities::abilities_templates::{AbilityCastRequested, CastInvokedBy},
     deck::deck_and_cards::Card,
     game_flow::turns::{CurrentPlayingEntity, PlayingEntity},
     grid_abilities_backend::{GridInvokerTarget, GridStartInvoke, GridTarget},
-    tiles_templates::Targetable,
     ui::{CardUiTargetMesh, DraggedCard},
 };
 
@@ -137,6 +136,9 @@ impl CardAnimatedBy {
         }
     }
 }
+
+#[derive(Component)]
+pub struct Targetable;
 
 pub fn handle_targetable_mouseover_check(
     e: On<Pointer<Over>>,

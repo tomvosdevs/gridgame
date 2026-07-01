@@ -77,7 +77,7 @@ use haalka::{
 };
 
 use crate::{
-    ActiveCamera, CursorTarget, Health, MaxHealth, SkewMaterial,
+    ActiveCamera, CursorTarget, SkewMaterial,
     deck::deck_and_cards::{CardDrawn, SoulLife},
     game_flow::turns::CurrentDeckReference,
     visuals::cards::animation::{CardAnimatedBy, CardReleased, HighlightedTarget},

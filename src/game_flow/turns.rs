@@ -50,7 +50,6 @@ use pyri_state::{
 use rand::RngExt;
 
 use crate::{
-    GRID_X, GRID_Z, GridCell, NODE_SIZE,
     abilities::abilities_templates::{Marker, Projectile},
     creatures::{
         definitions::{Creature, CreatureKind},
@@ -60,10 +59,7 @@ use crate::{
         ActiveDeck, CardPile, CardState, Deck, DrawHand, InDrawPile, StatelessCard,
         UnassignedDeckState,
     },
-    grid_abilities_backend::HitFilter,
-    projectiles::MovingProjectile,
     stats::players::{MeleeRange, Speed, Strength},
-    tiles_templates::Targetable,
     utils::AsFlippedUVec3,
 };
 
@@ -74,7 +70,7 @@ impl Plugin for TurnsPlugin {
         app.init_state::<GameState>()
             .init_state::<CombatState>()
             .add_observer(handle_playing_gen_req)
-            .add_observer(spawn_combat_playing_entities)
+            // .add_observer(spawn_combat_playing_entities)
             .add_observer(handle_combat_start)
             .add_observer(handle_turn_start)
             .add_observer(handle_turn_end)
@@ -83,14 +79,10 @@ impl Plugin for TurnsPlugin {
                 GameState::InCombat.on_enter(request_test_playing_gen),
             )
             .add_systems(Startup, spawn_dev_text)
-            .add_systems(Update, (draw_dev_text, check_grid_gen_status))
+            .add_systems(Update, draw_dev_text)
             .add_systems(
                 Update,
-                GameState::InCombat.on_update((
-                    keyboard_update_turn_test,
-                    start_combat_test,
-                    attach_visuals,
-                )),
+                GameState::InCombat.on_update((keyboard_update_turn_test, start_combat_test)),
             );
     }
 }
@@ -223,197 +215,12 @@ fn handle_turn_end(e: On<EntityTurnEnd>, mut cmd: Commands, mut combat_data: Res
     });
 }
 
-pub trait ToWorldPos {
-    fn as_world_pos(self: &Self, grid_origin_pos: Vec3) -> Vec3;
-}
-
-impl ToWorldPos for CartesianPosition {
-    fn as_world_pos(self: &Self, grid_origin_pos: Vec3) -> Vec3 {
-        Vec3::new(
-            (self.x as f32 * NODE_SIZE.x) - (NODE_SIZE.x * 0.5),
-            (self.y as f32 * NODE_SIZE.y) + (NODE_SIZE.y * 0.5),
-            (self.z as f32 * NODE_SIZE.z) - (NODE_SIZE.z * 0.5),
-        ) + grid_origin_pos
-    }
-}
-
-pub trait FromGrid {
-    fn crate_grid_pos_bundle(grid: &CartesianGrid<Cartesian3D>, pos: UVec3) -> impl Bundle;
-
-    fn create_ground_grid_pos_bundle(
-        grid: &CartesianGrid<Cartesian3D>,
-        nav_grid: Entity,
-        grid_origin_offset: Vec3,
-        player_mesh_size: Vec2,
-        pos: UVec2,
-        grid_nodes: &Vec<&GridNode>,
-    ) -> (Transform, impl Bundle);
-}
-
-impl FromGrid for Transform {
-    fn crate_grid_pos_bundle(grid: &CartesianGrid<Cartesian3D>, pos: UVec3) -> impl Bundle {
-        let node_size = NODE_SIZE;
-        let index = grid.index_from_coords(pos.x, pos.y, pos.z);
-        let grid_pos = grid.pos_from_index(index);
-        let translation = Vec3::new(
-            grid_pos.x as f32 * node_size.x,
-            grid_pos.y as f32 * node_size.y,
-            grid_pos.z as f32 * node_size.z,
-        );
-        (Transform::from_translation(translation), grid_pos)
-    }
-
-    fn create_ground_grid_pos_bundle(
-        grid: &CartesianGrid<Cartesian3D>,
-        nav_grid: Entity,
-        grid_origin_offset: Vec3,
-        player_mesh_size: Vec2,
-        pos: UVec2,
-        grid_nodes: &Vec<&GridNode>,
-    ) -> (Transform, impl Bundle) {
-        let node_size = NODE_SIZE;
-
-        println!("grid nodes : {:?}", grid_nodes.iter().count());
-
-        let ground = grid_nodes
-            .iter()
-            .filter_map(|n| {
-                let node_grid_pos = grid.pos_from_index(n.0);
-                if node_grid_pos.x == pos.x && node_grid_pos.z == pos.y {
-                    println!("MATCH : {:?}", node_grid_pos);
-                    return Some(node_grid_pos.y);
-                }
-                None
-            })
-            .max()
-            .expect("could not find a highest z (height) pos");
-
-        println!("ground y pos is : {:?}", ground);
-
-        let groud_pos_index = grid.index_from_coords(pos.x, ground, pos.y);
-        let cell_grid_pos = grid.pos_from_index(groud_pos_index);
-        println!("result pos : {:?}", cell_grid_pos);
-        let translation = Vec3::new(
-            (cell_grid_pos.x as f32 * node_size.x) + (player_mesh_size.x * 0.5),
-            (cell_grid_pos.y as f32 * node_size.y) + player_mesh_size.y + node_size.y,
-            (cell_grid_pos.z as f32 * node_size.z) + (player_mesh_size.x * 0.5),
-        ) + grid_origin_offset;
-        (
-            Transform::from_translation(translation),
-            (
-                cell_grid_pos,
-                AgentPos(cell_grid_pos.as_flipped_uvec3()),
-                Blocking,
-                AgentOfGrid(nav_grid),
-            ),
-        )
-    }
-}
-
-#[derive(Component)]
-pub struct AbilityTest(pub Entity);
-
-fn get_rand_pos_in_grid(rng: &mut WyRand, side_padding: u32) -> UVec2 {
-    UVec2::new(
-        rng.random_range((0 + side_padding)..GRID_X - (1 + side_padding)),
-        rng.random_range((0 + side_padding)..GRID_Z - (1 + side_padding)),
-    )
-}
-
-pub fn get_random_available_pos(
-    taken_positions: &mut Vec<UVec2>,
-    rng: &mut WyRand,
-    side_padding: u32,
-) -> UVec2 {
-    let mut pos = get_rand_pos_in_grid(rng, side_padding);
-    while taken_positions.contains(&pos) {
-        pos = get_rand_pos_in_grid(rng, side_padding);
-    }
-    taken_positions.push(pos.clone());
-    pos
-}
-
-pub fn spawn_combat_playing_entities(
-    _: On<CombatInit>,
-    mut cmd: Commands,
-    q: Query<Entity, With<Deck>>,
-    grid_q: Query<(&CartesianGrid<Cartesian3D>, &GlobalTransform)>,
-    nav_grid_q: Query<Entity, With<CardinalIsoGrid>>,
-    grid_nodes_q: Query<(Entity, &GridNode), With<GridCell>>,
-    players_q: Query<Entity, With<PlayingEntity>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut rng: Single<&mut WyRand, With<GlobalRng>>,
-) {
-    let (grid, grid_tf) = grid_q.single().expect("Expected to find one single grid");
-    let nav_grid = nav_grid_q.single().expect("Expected one nav grid");
-    println!("grid rotation : {:?}", grid_tf.rotation());
-    let player_size = Vec2::new(0.7, 1.2);
-    let player_test_mesh_handle = meshes.add(Capsule3d::new(player_size.x, player_size.y));
-    let player_test_mat_handle =
-        materials.add(StandardMaterial::from_color(Srgba::new(0.8, 0.1, 0.5, 1.0)));
-
-    let grid_nodes: Vec<&GridNode> = grid_nodes_q.iter().map(|(_, n)| n).collect();
-
-    let grid_origin_pos = grid_tf.translation();
-
-    let mut taken_positions: Vec<UVec2> = Vec::new();
-    for (_, entity) in players_q.iter().enumerate() {
-        let side_pad = 4;
-        let flat_pos = get_random_available_pos(&mut taken_positions, &mut rng, side_pad);
-
-        cmd.entity(entity).insert((
-            Mesh3d::from(player_test_mesh_handle.clone()),
-            MeshMaterial3d::from(player_test_mat_handle.clone()),
-            Transform::create_ground_grid_pos_bundle(
-                &grid,
-                nav_grid,
-                grid_origin_pos,
-                player_size,
-                flat_pos,
-                &grid_nodes,
-            ),
-        ));
-    }
-
-    cmd.trigger(CombatStart);
-}
-
-fn check_grid_gen_status(
-    wfc_generator: Single<&Generator<Cartesian3D, CartesianGrid<Cartesian3D>>>,
-    mut next_game_state: NextMut<GameState>,
-) {
-    if wfc_generator.nodes_left() > 0 {
-        return;
-    }
-
-    next_game_state.enter(GameState::InCombat);
-}
-
 pub fn start_combat_test(mut cmd: Commands, keyboard_input: Res<ButtonInput<KeyCode>>) {
     if !keyboard_input.just_pressed(KeyCode::KeyC) {
         return;
     }
 
     cmd.trigger(CombatInit);
-}
-
-fn attach_visuals(
-    mut commands: Commands,
-    q_projectiles: Query<Entity, Added<MovingProjectile>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-    mut meshes: ResMut<Assets<Mesh>>,
-) {
-    for entity in q_projectiles.iter() {
-        println!("adding mesh to projectile");
-        let mesh_handle = Sphere::new(3.0);
-        let mat_handle = StandardMaterial::from_color(RED);
-        let mesh = meshes.add(mesh_handle);
-        let mat = materials.add(mat_handle);
-        commands
-            .entity(entity)
-            .insert((Mesh3d(mesh), MeshMaterial3d(mat)));
-    }
 }
 
 pub fn spawn_dev_text(mut cmd: Commands) {
@@ -572,25 +379,24 @@ pub enum PlayingTeam {
     Environment,
 }
 
-#[derive(Clone, Debug, Component)]
-pub enum TeamHitFilter {
-    Enemies,
-    Allies,
-}
+// #[derive(Clone, Debug, Component)]
+// pub enum TeamHitFilter {
+//     Enemies,
+//     Allies,
+// }
 
-impl HitFilter for TeamHitFilter {
-    type Lookup = PlayingTeam;
+// impl HitFilter for TeamHitFilter {
+//     type Lookup = PlayingTeam;
 
-    fn can_target(&self, invoker: Option<&Self::Lookup>, target: Option<&Self::Lookup>) -> bool {
-        match (self, invoker, target) {
-            (TeamHitFilter::Enemies, Some(i), Some(t)) => i != t,
-            _ => true, // no team info → allow (e.g. hitting terrain)
-        }
-    }
-}
+//     fn can_target(&self, invoker: Option<&Self::Lookup>, target: Option<&Self::Lookup>) -> bool {
+//         match (self, invoker, target) {
+//             (TeamHitFilter::Enemies, Some(i), Some(t)) => i != t,
+//             _ => true, // no team info → allow (e.g. hitting terrain)
+//         }
+//     }
+// }
 
 #[derive(Component, Default)]
-#[require(Targetable)]
 pub struct PlayingEntity;
 
 #[derive(Component)]

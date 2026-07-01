@@ -29,10 +29,7 @@ use rand::RngExt;
 
 use crate::{
     abilities::{
-        abilities_templates::{
-            AbilityHandler, AbilityHandlerBuilder, ActionCastData, BaseAbility,
-            basic_projectile_ability, melee_template, projectile_template, ripple_invoking,
-        },
+        abilities_templates::ActionCastData,
         definitions::register_abilities,
         effects::{
             EffectMod, EvReactorOf, EvReactors, OneShotEffect, SpawnFn, StatusEffectApplier,
@@ -81,128 +78,8 @@ impl NamePicker {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum AbilityConstructor {
-    Projectile,
-    Melee,
-    BundleAsEntity(Entity),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum AbilityMod {
-    Ripple(u32),
-}
-
-impl AbilityMod {
-    pub fn build(&self, cmd: &mut Commands, entity: Entity, sub_template: Entity) -> Entity {
-        match self {
-            AbilityMod::Ripple(count) => ripple_invoking(cmd, Some(entity), *count, sub_template),
-        }
-    }
-}
-
-impl AbilityConstructor {
-    pub fn build(&self, entity: Entity, created_entities: &mut Vec<Entity>, cmd: &mut Commands) {
-        let ability_container = cmd.spawn(InvokedBy(entity)).id();
-        created_entities.push(ability_container);
-        match self {
-            AbilityConstructor::Projectile => {
-                projectile_template(cmd, Some(ability_container));
-            }
-            AbilityConstructor::Melee => {
-                melee_template(cmd, Some(ability_container));
-            }
-            AbilityConstructor::BundleAsEntity(bundle_entity) => {
-                println!("cloning bundle as entity, bundle has : ");
-                cmd.entity(*bundle_entity).log_components();
-                cmd.entity(*bundle_entity)
-                    .clone_with_opt_out(entity, |builder| {
-                        builder.linked_cloning(true);
-                    });
-            }
-        }
-    }
-}
-
-impl Into<AbilityNode> for AbilityConstructor {
-    fn into(self) -> AbilityNode {
-        AbilityNode::End(self)
-    }
-}
-
-#[derive(Debug, Clone)]
-pub enum AbilityNode {
-    End(AbilityConstructor),
-    Nested(Vec<AbilityNode>),
-}
-
-impl IntoIterator for AbilityNode {
-    type Item = AbilityNode;
-
-    type IntoIter = IntoIter<Self::Item>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        match self {
-            AbilityNode::End(ability_constructor) => {
-                vec![AbilityNode::End(ability_constructor)].into_iter()
-            }
-            AbilityNode::Nested(ability_nodes) => ability_nodes.into_iter(),
-        }
-    }
-}
-
-impl AbilityNode {
-    pub fn build_and_spawn(
-        &self,
-        entity: Entity,
-        mut created_entities: &mut Vec<Entity>,
-        cmd: &mut Commands,
-    ) {
-        match self {
-            AbilityNode::End(ability_constructor) => {
-                ability_constructor.build(entity, &mut created_entities, cmd)
-            }
-            AbilityNode::Nested(ability_nodes) => {
-                for node in ability_nodes.iter() {
-                    node.build_and_spawn(entity, &mut created_entities, cmd);
-                }
-            }
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub enum InvokingHandlerKind {
-    Single,
-    Ripple(u32),
-}
-
-impl InvokingHandlerKind {
-    pub fn start_invoke_on(
-        &self,
-        cmd: &mut Commands,
-        template_entity: Entity,
-        mut writer: MessageWriter<GridStartInvoke>,
-        target: GridTarget,
-        invoker_bundle: impl Bundle,
-    ) {
-        let invoked = match self {
-            InvokingHandlerKind::Single => template_entity,
-            InvokingHandlerKind::Ripple(ripple_count) => {
-                let invoked = cmd.spawn(invoker_bundle).id();
-                let invoker = ripple_invoking(cmd, Some(invoked), *ripple_count, template_entity);
-                cmd.entity(invoker).insert(InvokedBy(invoked));
-                invoked
-            }
-        };
-        writer.write(GridStartInvoke::new(invoked, target));
-    }
-}
-
 #[derive(Component, Debug)]
 pub struct CardBlueprint {
-    invoking_handler_kind: InvokingHandlerKind,
-    nodes: AbilityNode,
     base_entity: Option<Entity>,
     name_picker: NamePicker,
     matches_pools: Vec<(CardPool, CardPoolStatus)>,
@@ -210,10 +87,8 @@ pub struct CardBlueprint {
 }
 
 impl CardBlueprint {
-    pub fn new(nodes: AbilityNode, invoking_handler_kind: InvokingHandlerKind) -> Self {
+    pub fn new() -> Self {
         Self {
-            invoking_handler_kind,
-            nodes,
             base_entity: None,
             name_picker: NamePicker::Fixed("Missing name picker"),
             matches_pools: vec![],
@@ -262,10 +137,7 @@ impl CardBlueprint {
     }
 
     pub fn generate(&self, rng: &mut WyRand, rarity: RarityPicker) -> impl Bundle {
-        (
-            Card::new(self.nodes.clone(), self.invoking_handler_kind.clone()),
-            rarity.pick(rng),
-        )
+        (Card::new(), rarity.pick(rng))
     }
 }
 
@@ -409,29 +281,8 @@ type EA = StatusEffectApplier;
 type EK = StatusKind;
 
 pub fn register_blueprints(mut cmd: Commands) {
-    let projectile_tid = BaseAbility::Projectile.as_str();
-    let melee_tid = BaseAbility::Melee.as_str();
-
-    let other_projectile_blueprint = CardBlueprint::new(
-        AbilityNode::Nested(vec![
-            AbilityConstructor::Projectile.into(),
-            AbilityConstructor::BundleAsEntity(
-                cmd.spawn(related!(
-                    EvReactors[
-                        on_hit_effect(one_shot_instant(
-                            instant! {"SoulLife.current" -= "Strength@Attacker"},
-                        )),
-                        on_hit_effect(status_effect_applier(EA::new(EK::Poison, 3))), // More here
-                    ]
-                ))
-                .id(),
-            )
-            .into(),
-        ]),
-        InvokingHandlerKind::Ripple(3),
-    )
-    .add_required_pool(CardPool::Ranged);
-    cmd.spawn(other_projectile_blueprint);
+    // let projectile_tid = BaseAbility::Projectile.as_str();
+    // let melee_tid = BaseAbility::Melee.as_str();
 
     // let shield_blueprint = CardBlueprint::new(AbilityNode::Nested(vec![
     //     AbilityConstructor::Projectile.into(),
