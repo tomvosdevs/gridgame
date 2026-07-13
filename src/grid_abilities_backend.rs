@@ -36,26 +36,26 @@ use crate::{
         abilities_templates::ActionCastData,
         effects::{AbilityOfCaster, handle_invoke_subability_effect, handle_spawn_effect},
     },
-    deck::{card_blueprints::NotifyActionHit, deck_and_cards::Card},
+    deck::deck_and_cards::Card,
     game_flow::turns::PlayingEntity,
 };
 
 // Vec3 type aliases
-pub type GridInvokerTarget = bevy_diesel::target::InvokerTarget<BoardPos>;
-pub type GridTarget = bevy_diesel::target::Target<BoardPos>;
-pub type GridGoOff = bevy_diesel::effect::GoOff<BoardPos>;
-pub type GridStartInvoke = bevy_diesel::events::StartInvoke<BoardPos>;
-pub type GridStopInvoke = bevy_diesel::events::StopInvoke<BoardPos>;
-pub type GridOnRepeat = bevy_diesel::events::OnRepeat<BoardPos>;
-pub type GridOnSpawnOrigin = bevy_diesel::spawn::OnSpawnOrigin<BoardPos>;
-pub type GridOnSpawnTarget = bevy_diesel::spawn::OnSpawnTarget<BoardPos>;
-pub type GridOnSpawnInvoker = bevy_diesel::spawn::OnSpawnInvoker<BoardPos>;
-pub type GridTargetType = bevy_diesel::target::TargetType<BoardPos>;
-pub type GridTargetGenerator = bevy_diesel::target::TargetGenerator<Grid3DBackend>;
-pub type GridTargetMutator = bevy_diesel::target::TargetMutator<Grid3DBackend>;
-pub type GridSpawnConfig = bevy_diesel::spawn::SpawnConfig<Grid3DBackend>;
-pub type GridGoOffConfig = bevy_diesel::effect::GoOffConfig<Grid3DBackend>;
-pub type GridGoOffOrigin = bevy_diesel::effect::GoOffOrigin<Grid3DBackend>;
+pub type DeckInvokerTarget = bevy_diesel::target::InvokerTarget<BoardPos>;
+pub type DeckTarget = bevy_diesel::target::Target<BoardPos>;
+pub type DeckGoOff = bevy_diesel::effect::GoOff<BoardPos>;
+pub type DeckStartInvoke = bevy_diesel::events::StartInvoke<BoardPos>;
+pub type DeckStopInvoke = bevy_diesel::events::StopInvoke<BoardPos>;
+pub type DeckOnRepeat = bevy_diesel::events::OnRepeat<BoardPos>;
+pub type DeckOnSpawnOrigin = bevy_diesel::spawn::OnSpawnOrigin<BoardPos>;
+pub type DeckOnSpawnTarget = bevy_diesel::spawn::OnSpawnTarget<BoardPos>;
+pub type DeckOnSpawnInvoker = bevy_diesel::spawn::OnSpawnInvoker<BoardPos>;
+pub type DeckTargetType = bevy_diesel::target::TargetType<BoardPos>;
+pub type DeckTargetGenerator = bevy_diesel::target::TargetGenerator<DeckBackend>;
+pub type DeckTargetMutator = bevy_diesel::target::TargetMutator<DeckBackend>;
+pub type DeckSpawnConfig = bevy_diesel::spawn::SpawnConfig<DeckBackend>;
+pub type DeckGoOffConfig = bevy_diesel::effect::GoOffConfig<DeckBackend>;
+pub type DeckGoOffOrigin = bevy_diesel::effect::GoOffOrigin<DeckBackend>;
 
 #[derive(Debug, Clone, Reflect, PartialEq)]
 pub enum HitTargetKind {
@@ -78,7 +78,7 @@ impl HitTargetKind {
 pub struct AbilityHitEntity {
     pub entity: Entity,
     pub attacking_player: Entity,
-    pub target: GridTarget,
+    pub target: DeckTarget,
     pub target_kind: HitTargetKind,
 }
 
@@ -93,7 +93,7 @@ impl AbilityHitEntity {
     pub fn new(
         entity: Entity,
         attacking_player: Entity,
-        target: GridTarget,
+        target: DeckTarget,
         target_kind: HitTargetKind,
     ) -> Self {
         Self {
@@ -109,11 +109,11 @@ impl AbilityHitEntity {
 #[derive(Message, Clone, Debug, Reflect, EntityEvent)]
 pub struct CastEnd {
     pub entity: Entity,
-    pub target: GridTarget,
+    pub target: DeckTarget,
 }
 
 impl CastEnd {
-    pub fn new(entity: Entity, target: GridTarget) -> Self {
+    pub fn new(entity: Entity, target: DeckTarget) -> Self {
         Self { entity, target }
     }
 }
@@ -154,7 +154,7 @@ impl GearboxMessage for StartCast {
 #[derive(Message, Clone, Debug, Reflect)]
 pub struct AbilityHitPosition {
     pub entity: Entity,
-    pub target: GridTarget,
+    pub target: DeckTarget,
 }
 
 impl GearboxMessage for AbilityHitPosition {
@@ -165,19 +165,19 @@ impl GearboxMessage for AbilityHitPosition {
 }
 
 impl AbilityHitPosition {
-    pub fn new(entity: Entity, target: GridTarget) -> Self {
+    pub fn new(entity: Entity, target: DeckTarget) -> Self {
         Self { entity, target }
     }
 }
 
 impl HasDieselTarget<BoardPos> for AbilityHitEntity {
-    fn diesel_target(&self) -> GridTarget {
+    fn diesel_target(&self) -> DeckTarget {
         self.target
     }
 }
 
 impl HasDieselTarget<BoardPos> for AbilityHitPosition {
-    fn diesel_target(&self) -> GridTarget {
+    fn diesel_target(&self) -> DeckTarget {
         self.target
     }
 }
@@ -301,24 +301,24 @@ pub fn handle_unfiltered_hit_system(
 //     }
 // }
 
-pub struct Grid3dDieselPlugin;
+pub struct BoardDieselPlugin;
 
-impl Plugin for Grid3dDieselPlugin {
+impl Plugin for BoardDieselPlugin {
     fn build(&self, app: &mut bevy::app::App) {
         app.add_message::<HitReceived>();
 
         app.add_plugins(EntropyPlugin::<bevy_prng::WyRand>::default());
-        app.add_plugins(Grid3DBackend::plugin_core());
+        app.add_plugins(DeckBackend::plugin_core());
 
         use bevy_diesel::bevy_gauge::prelude::AttributesAppExt;
-        app.register_attribute_derived::<GridSpawnConfig>();
-        app.register_attribute_derived::<GridTargetMutator>();
+        app.register_attribute_derived::<DeckSpawnConfig>();
+        app.register_attribute_derived::<DeckTargetMutator>();
 
         app.add_systems(
             bevy_diesel::bevy_gearbox::GearboxSchedule,
             (
-                bevy_diesel::effect::go_off_on_entry::<Grid3DBackend>,
-                propagate_system::<Grid3DBackend>,
+                bevy_diesel::effect::go_off_on_entry::<DeckBackend>,
+                propagate_system::<DeckBackend>,
             )
                 .chain()
                 .in_set(bevy_diesel::DieselSet::Propagation),
@@ -328,7 +328,7 @@ impl Plugin for Grid3dDieselPlugin {
         app.add_systems(
             bevy_diesel::bevy_gearbox::GearboxSchedule,
             (
-                bevy_diesel::spawn::spawn_system::<Grid3DBackend>,
+                bevy_diesel::spawn::spawn_system::<DeckBackend>,
                 bevy_diesel::print::print_effect::<BoardPos>,
                 handle_spawn_effect,
                 handle_invoke_subability_effect,
@@ -340,7 +340,7 @@ impl Plugin for Grid3dDieselPlugin {
         // fn needs B::Context which can only resolve with a concrete backend.
         app.add_systems(
             Update,
-            bevy_diesel::gauge::modifiers::sustained_modifier_apply::<Grid3DBackend>
+            bevy_diesel::gauge::modifiers::sustained_modifier_apply::<DeckBackend>
                 .in_set(bevy_diesel::gauge::SustainedModifierSet),
         );
 
@@ -350,7 +350,7 @@ impl Plugin for Grid3dDieselPlugin {
         app.register_transition::<AbilityHitPosition>();
         app.register_transition::<StartCast>();
         app.register_transition::<CastEnd>();
-        app.register_transition::<GridStartInvoke>();
+        app.register_transition::<DeckStartInvoke>();
 
         app.add_systems(
             bevy_diesel::bevy_gearbox::GearboxSchedule,
@@ -429,28 +429,21 @@ pub enum BoardGatherer {
 }
 
 #[derive(Clone, Debug, AttributeResolvable)]
-pub struct Grid3DFilter {
+pub struct BoardFilter {
     /// Max target count. `NumberType::All` passes everything through.
     pub count: NumberType,
-    /// Require line-of-sight (TODO).
-    #[skip]
-    pub line_of_sight: bool,
 }
 
-impl Grid3DFilter {
+impl BoardFilter {
     pub fn new(count: NumberType) -> Self {
-        Self {
-            count,
-            line_of_sight: false,
-        }
+        Self { count }
     }
 }
 
-impl Default for Grid3DFilter {
+impl Default for BoardFilter {
     fn default() -> Self {
         Self {
             count: NumberType::All,
-            line_of_sight: false,
         }
     }
 }
@@ -471,27 +464,38 @@ fn rand_u32_range(rng: Single<&mut WyRand, With<GlobalRng>>, min: u32, max: u32)
     min + rand_u32(rng) * (max - min)
 }
 
-pub struct Grid3DBackend;
+pub struct DeckBackend;
 
 #[derive(Reflect, Debug, Default, Clone, Copy, AttributeResolvable, Component)]
 pub struct BoardPos {
+    is_player: bool,
     hand_index: i32,
 }
 
 impl BoardPos {
-    pub fn new(hand_index: i32) -> Self {
-        Self { hand_index }
+    pub fn new_on_player(hand_index: i32) -> Self {
+        Self {
+            is_player: true,
+            hand_index,
+        }
+    }
+
+    pub fn new_on_enemy(hand_index: i32) -> Self {
+        Self {
+            is_player: false,
+            hand_index,
+        }
     }
 }
 
-impl SpatialBackend for Grid3DBackend {
+impl SpatialBackend for DeckBackend {
     type Pos = BoardPos;
 
     type Offset = BoardPos;
 
     type Gatherer = BoardGatherer;
 
-    type Filter = Grid3DFilter;
+    type Filter = BoardFilter;
 
     type Context<'w, 's> = BoardContext<'w, 's>;
 
@@ -500,7 +504,7 @@ impl SpatialBackend for Grid3DBackend {
         pos: Self::Pos,
         offset: &Self::Offset,
     ) -> Self::Pos {
-        BoardPos::new(pos.hand_index + offset.hand_index)
+        BoardPos::new_on_player(pos.hand_index + offset.hand_index)
     }
 
     fn distance(a: &Self::Pos, b: &Self::Pos) -> f32 {
@@ -527,7 +531,7 @@ impl SpatialBackend for Grid3DBackend {
             .iter()
             .find(|(_, _, pos)| pos.hand_index == (origin.hand_index + index_offset))
             .map_or(vec![], |(card, _, pos)| {
-                vec![GridTarget::entity(card, *pos)]
+                vec![DeckTarget::entity(card, *pos)]
             })
     }
 
@@ -557,6 +561,6 @@ impl SpatialBackend for Grid3DBackend {
     }
 
     fn plugin() -> impl Plugin {
-        Grid3dDieselPlugin
+        BoardDieselPlugin
     }
 }

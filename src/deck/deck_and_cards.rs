@@ -15,10 +15,8 @@ use bevy::{
 use bevy_gauge::{AttributeComponent, prelude::Attributes};
 
 use crate::{
-    creatures::definitions::CreatureKind,
-    deck::card_builders::{PoolSupplier, gen_and_spawn_default_deck},
-    game_flow::turns::EntityTurnEnd,
-    ui::{CardTextureCamera, CardUiTargetMesh},
+    UiCardMarker, creatures::definitions::CreatureKind, deck::card_builders::PoolSupplier,
+    game_flow::turns::EntityTurnEnd, ui::CardTextureCamera,
 };
 
 pub struct DeckAndCardsPlugin;
@@ -29,8 +27,7 @@ impl Plugin for DeckAndCardsPlugin {
 
         app.register_component_as::<dyn PoolSupplier, CreatureKind>()
             .add_observer(set_hand_cards)
-            .add_observer(handle_entity_turn_end)
-            .add_observer(gen_and_spawn_default_deck);
+            .add_observer(handle_entity_turn_end);
     }
 }
 
@@ -75,7 +72,7 @@ pub fn handle_entity_turn_end(
     _: On<EntityTurnEnd>,
     mut cmd: Commands,
     hand_cards: Query<Entity, (With<Card>, With<HandCard>)>,
-    ui_cards: Query<Entity, With<CardUiTargetMesh>>,
+    ui_cards: Query<Entity, With<UiCardMarker>>,
     ui_card_textures: Query<Entity, With<CardTextureCamera>>,
 ) {
     // TODO: Also remove the Image and Material asset entries for the UI cards and UI card source
@@ -103,23 +100,6 @@ pub fn handle_entity_turn_end(
 #[derive(Component, Clone, Debug)]
 #[require(CardPile, HandDrawData, Attributes)]
 pub struct Deck;
-
-pub struct DeckBuilder;
-
-// impl DeckBuilder {
-//     pub fn spawn_default_deck(cmd: &mut Commands, cards_count: u32) {
-//         let mut cards: Vec<Entity> =
-//             (0..cards_count).map(|_| cmd.spawn(Card::new(ability_name)).id());
-
-//         let deck_entity = cmd
-//             .spawn((
-//                 Deck,
-//                 CardPile::default(),
-//                 HandDrawData::default(),
-//             ))
-//             .id();
-//     }
-// }
 
 #[derive(EntityEvent)]
 pub struct DeckGenerationRequested {

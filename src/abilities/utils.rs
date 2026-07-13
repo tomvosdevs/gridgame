@@ -19,7 +19,10 @@ use bevy_ghx_grid::ghx_grid::cartesian::coordinates::CartesianPosition;
 
 use crate::{
     game_flow::turns::{EntityTurnStart, PlayingEntity},
-    grid_abilities_backend::{GridSpawnConfig, GridStartInvoke, GridTarget, GridTargetGenerator},
+    grid_abilities_backend::{
+        BoardPos, DeckInvokerTarget, DeckSpawnConfig, DeckStartInvoke, DeckTarget,
+        DeckTargetGenerator,
+    },
 };
 
 pub struct AbilityComposingPlugin;
@@ -28,22 +31,20 @@ impl Plugin for AbilityComposingPlugin {
     fn build(&self, app: &mut App) {
         app.add_observer(
             |e: On<EntityTurnStart>,
-             q: Query<(Entity, &CartesianPosition), With<PlayingEntity>>,
-             mut writer: MessageWriter<GridStartInvoke>,
+             q: Query<Entity, With<PlayingEntity>>,
+             mut writer: MessageWriter<DeckStartInvoke>,
              mut cmd: Commands| {
                 let entity = e.entity;
-                let player_grid_pos = q
-                    .get(entity)
-                    .expect("Starting turn player entity should have a CartesianPos")
-                    .1;
 
-                let (target_entity, target_pos) = q
+                let target_entity = q
                     .iter()
-                    .find(|(e, _)| *e != entity)
+                    .find(|e| *e != entity)
                     .expect("should find at least one other player entity");
 
-                cmd.entity(entity)
-                    .insert(InvokerTarget::entity(target_entity, *target_pos));
+                cmd.entity(entity).insert(DeckInvokerTarget::entity(
+                    target_entity,
+                    BoardPos::new_on_player(1),
+                ));
 
                 let ability_entity = create_base_ability_entity(&mut cmd, entity);
 
@@ -52,7 +53,6 @@ impl Plugin for AbilityComposingPlugin {
                 //     ability_entity,
                 //     GridTarget::entity(target_entity, *target_pos),
                 // ));
-                println!("NEWARCH --- {:?}", player_grid_pos);
             },
         );
     }
@@ -79,12 +79,12 @@ pub fn configure_projectile_spawn(
         invoke,
         (
             Name::new("SpawnProjectile"),
-            GridSpawnConfig::invoker(id)
-                .with_target_generator(GridTargetGenerator::at_invoker_target()),
+            DeckSpawnConfig::invoker(id)
+                .with_target_generator(DeckTargetGenerator::at_invoker_target()),
         ),
     );
 
-    parent.spawn_transition::<GridStartInvoke>(ready, invoke);
+    parent.spawn_transition::<DeckStartInvoke>(ready, invoke);
     parent.spawn_transition_always(invoke, ready);
 
     let commands = parent.commands_mut();
@@ -106,12 +106,12 @@ pub fn configure_melee_spawn(parent: &mut ChildSpawnerCommands, entity: Entity, 
         invoke,
         (
             Name::new("SpawnMelee"),
-            GridSpawnConfig::invoker(id)
-                .with_target_generator(GridTargetGenerator::at_invoker_target()),
+            DeckSpawnConfig::invoker(id)
+                .with_target_generator(DeckTargetGenerator::at_invoker_target()),
         ),
     );
 
-    parent.spawn_transition::<GridStartInvoke>(ready, invoke);
+    parent.spawn_transition::<DeckStartInvoke>(ready, invoke);
     parent.spawn_transition_always(invoke, ready);
 
     let commands = parent.commands_mut();

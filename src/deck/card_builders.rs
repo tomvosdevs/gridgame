@@ -21,10 +21,7 @@ use rand::RngExt;
 
 use crate::{
     abilities::abilities_templates::AbilityKind,
-    deck::{
-        card_blueprints::CardBlueprint,
-        deck_and_cards::{Card, Deck, InDeck, SoulLife, StatelessCard},
-    },
+    deck::deck_and_cards::{Card, Deck, InDeck, SoulLife, StatelessCard},
     game_flow::turns::CurrentDeckReference,
 };
 
@@ -194,89 +191,16 @@ impl RandomPoolCardBuilder {
     }
 }
 
-impl CardBuilder for RandomPoolCardBuilder {
-    fn build(
-        self: &Self,
-        rng: &mut WyRand,
-        cmd: &mut Commands,
-        rarity: RarityPicker,
-        blueprints: &Vec<&CardBlueprint>,
-    ) -> impl Bundle {
-        let matching_blueprints: Vec<&CardBlueprint> = blueprints
-            .iter()
-            .filter(|b| b.does_match(&self.pools))
-            .map(|b| *b)
-            .collect();
+#[derive(Component, Clone, Debug)]
+pub struct CardBlueprint {}
 
-        println!("found {:?} matching blueprints", matching_blueprints.len());
-
-        let selected_blueprint = matching_blueprints
-            .get(rng.random_range(0..matching_blueprints.len()))
-            .expect(
-                format!(
-                    "could no select a blueprint in matching, matching list : {:?}",
-                    matching_blueprints,
-                )
-                .as_str(),
-            );
-
-        selected_blueprint.generate(rng, rarity)
+impl CardBlueprint {
+    pub fn does_match(&self, pools: &Vec<(CardPool, CardPoolStatus)>) -> bool {
+        true
     }
 }
 
 #[derive(EntityEvent)]
 pub struct DefaultDeckGenRequested {
     pub entity: Entity,
-}
-
-pub fn gen_and_spawn_default_deck(
-    e: On<DefaultDeckGenRequested>,
-    q: Query<&dyn PoolSupplier>,
-    rng: Single<&mut WyRand, With<GlobalRng>>,
-    blueprint_q: Query<&CardBlueprint>,
-    mut attributes: AttributesMut,
-    mut cmd: Commands,
-) {
-    println!("gen def deck for e : {:?}", e.entity);
-    let blueprints: Vec<&CardBlueprint> = blueprint_q.iter().map(|b| b).collect();
-
-    let creature_entity = e.entity;
-
-    let pools: Vec<(CardPool, CardPoolStatus)> = q
-        .get(creature_entity)
-        .expect("Entity should have the gen component")
-        .iter()
-        .flat_map(|ps| ps.get_pools())
-        .collect();
-
-    let mut rng = rng.into_inner();
-
-    let default_deck_size = 20;
-    let deck_entity = cmd.spawn(Deck).id();
-
-    let card_builder = RandomPoolCardBuilder::new(pools, RarityCond::EqOrBelow(RarityTier::Common));
-
-    for _ in 0..default_deck_size {
-        let card_bundle = card_builder.build(
-            &mut rng,
-            &mut cmd,
-            RarityPicker::Random(RarityCond::EqOrBelow(RarityTier::Rare)),
-            &blueprints,
-        );
-
-        let card_entity = cmd
-            .spawn((card_bundle, StatelessCard::new(), InDeck(deck_entity)))
-            .id();
-        attributes.register_source(card_entity, "Invoker", creature_entity);
-    }
-
-    cmd.entity(deck_entity).insert((SoulLife {
-        current: default_deck_size as f32,
-        max: default_deck_size as f32,
-    },));
-
-    attributes.register_source(deck_entity, "Invoker", creature_entity);
-
-    cmd.entity(creature_entity)
-        .insert(CurrentDeckReference(deck_entity));
 }

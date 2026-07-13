@@ -140,7 +140,7 @@ pub fn request_test_playing_gen(mut cmd: Commands) {
 fn handle_combat_start(
     _: On<CombatStart>,
     mut cmd: Commands,
-    playing_q: Query<(Entity, &Speed), With<PlayingEntity>>,
+    playing_q: Query<Entity, With<PlayingEntity>>,
     deck_pile_q: Query<(Entity, &CardPile), With<Deck>>,
     instance_cards_q: Query<&CardState<UnassignedDeckState>>,
     playing_current_deck_ref_q: Query<&CurrentDeckReference, With<PlayingEntity>>,
@@ -170,17 +170,11 @@ fn handle_combat_start(
         }
     }
 
-    let entities_by_turn_order: Vec<Entity> = playing_q
-        .iter()
-        .sort_by::<&Speed>(|val1, val2| val2.current.cmp(&val1.current))
-        .map(|(ent, _)| ent)
-        .collect();
-
-    cmd.insert_resource(CombatData::init_new_combat(&entities_by_turn_order));
-    for (idx, ent) in entities_by_turn_order.iter().enumerate() {
-        cmd.entity(*ent).insert(TurnOrder(idx as i32));
+    // cmd.insert_resource(CombatData::init_new_combat(&entities_by_turn_order));
+    for (idx, ent) in playing_q.iter().enumerate() {
+        cmd.entity(ent).insert(TurnOrder(idx as i32));
         if idx == 0 {
-            cmd.trigger(EntityTurnStart { entity: *ent });
+            cmd.trigger(EntityTurnStart { entity: ent });
         }
     }
 }

@@ -34,7 +34,7 @@ use crate::{
         deck_and_cards::SoulLife,
     },
     game_flow::turns::{CurrentDeckReference, EntityTurnEnd, PlayingEntity},
-    grid_abilities_backend::{AbilityHitEntity, GridGoOff, GridInvokerTarget, GridStartInvoke},
+    grid_abilities_backend::{AbilityHitEntity, DeckGoOff, DeckInvokerTarget, DeckStartInvoke},
     utils::IntoVec,
 };
 
@@ -58,9 +58,9 @@ impl CasterHitEffect {
 }
 
 pub fn handle_invoke_subability_effect(
-    mut reader: MessageReader<GridGoOff>,
+    mut reader: MessageReader<DeckGoOff>,
     q_effect: Query<&InvokingTriggerEffect>,
-    mut writer: MessageWriter<GridStartInvoke>,
+    mut writer: MessageWriter<DeckStartInvoke>,
 ) {
     for go_off in reader.read() {
         let Ok((template_entity, source_entity)) = q_effect
@@ -72,7 +72,7 @@ pub fn handle_invoke_subability_effect(
 
         println!("One check down");
         let target = go_off.target;
-        writer.write(GridStartInvoke::new(template_entity, target));
+        writer.write(DeckStartInvoke::new(template_entity, target));
     }
 }
 
@@ -92,9 +92,9 @@ impl SpawnEffect {
 }
 
 pub fn handle_spawn_effect(
-    mut reader: MessageReader<GridGoOff>,
+    mut reader: MessageReader<DeckGoOff>,
     q_effect: Query<&SpawnEffect>,
-    mut writer: MessageWriter<GridStartInvoke>,
+    mut writer: MessageWriter<DeckStartInvoke>,
     mut cmd: Commands,
 ) {
     for go_off in reader.read() {
@@ -108,71 +108,9 @@ pub fn handle_spawn_effect(
         println!("target for invoke : {:?}", target);
         cmd.entity(cast.casted).insert((
             InvokedBy(cast.action_root),
-            GridInvokerTarget::entity(target.entity.unwrap(), target.position),
+            DeckInvokerTarget::entity(target.entity.unwrap(), target.position),
         ));
-        writer.write(GridStartInvoke::new(cast.casted, target));
-    }
-}
-
-pub enum PosDirection {
-    East,
-    West,
-    North,
-    South,
-    NorthEast,
-    SouthEast,
-    NorthWest,
-    SouthWest,
-}
-
-pub enum NeighborMatch {
-    OneOf(Vec<PosDirection>),
-    All,
-}
-
-pub enum ContextFilter {
-    All,
-    PlayersOnly,
-    SameTeamOnly,
-    TilesOnly,
-}
-
-pub enum GameContext {
-    Neighboring(NeighborMatch),
-}
-
-// TODO: Implement this, will allow to add auto updated aliases for some context
-// and use these as role in attributes or mod expressions
-#[derive(Component)]
-pub struct ContextRoleAlias {
-    pub applies_to: HashMap<GameContext, Vec<ContextFilter>>,
-    pub to: Entity,
-    pub alias: &'static str,
-}
-
-#[derive(Debug, Clone)]
-pub enum OneShotEffect {
-    Mod(ModifierSet),
-    Instant(InstantModifierSet),
-}
-
-#[derive(Debug, Clone)]
-pub struct StatusSpawnerSysId(pub SystemId);
-
-pub type SpawnFn = Box<dyn Fn(&mut EntityWorldMut) + Send + Sync + 'static>;
-
-#[derive(Clone)]
-pub enum EffectMod {
-    OneShot(OneShotEffect),
-    SpawnTickable(StatusEffectApplier),
-}
-
-impl EffectMod {
-    pub fn flat_damage(damage: f32) -> Self {
-        let damage: &'static str = Box::leak(format!("{}", damage).into_boxed_str());
-        Self::OneShot(OneShotEffect::Instant(
-            instant! {"SoulLife.current" -= damage},
-        ))
+        writer.write(DeckStartInvoke::new(cast.casted, target));
     }
 }
 
@@ -220,12 +158,6 @@ pub struct StatusEffectOf(Entity);
 // }
 //
 
-#[derive(Component, Clone)]
-pub struct TickOn<T: EntityEvent + Clone> {
-    roles: HashMap<&'static str, Entity>,
-    _source: PhantomData<T>,
-}
-
 // pub fn tick_effects(e: On<EntityTurnEnd>, tickers_q: Query<&TickOn<EntityTurnEnd>>) {}
 
 // fn poison(duration: f32) -> impl Bundle {
@@ -242,7 +174,7 @@ pub struct TickOn<T: EntityEvent + Clone> {
 #[derive(EntityEvent, Clone)]
 pub struct Tick {
     #[event_target]
-    status: Entity,
+    pub status: Entity,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -370,7 +302,7 @@ pub struct CasterAbilities(Vec<Entity>);
 pub struct AbilityOfCaster(pub Entity);
 
 //
-#[derive(EntityEvent)]
+#[derive(EntityEvent, Clone)]
 pub struct TriggerEffect<C: EntityEvent + Clone> {
     pub entity: Entity,
     pub cause: C,

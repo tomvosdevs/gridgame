@@ -42,7 +42,7 @@ use rand::RngExt;
 
 use crate::{
     abilities::{
-        effects::{AbilityOfCaster, CasterHitEffect, EffectMod, SpawnEffect},
+        effects::{AbilityOfCaster, CasterHitEffect, SpawnEffect},
         utils::AbilityComposingPlugin,
     },
     deck::deck_and_cards::Card,
@@ -50,9 +50,9 @@ use crate::{
         CurrentDeckReference, CurrentPlayingEntity, EntityTurnStart, PlayingEntity,
     },
     grid_abilities_backend::{
-        AbilityHitEntity, BoardGatherer, CastEnd, EntityGatheringFilter, Grid3DFilter,
-        GridCheckShape, GridGoOff, GridGoOffConfig, GridInvokerTarget, GridSpawnConfig,
-        GridStartInvoke, GridTarget, GridTargetGenerator, GridTargetMutator, NumberType,
+        AbilityHitEntity, BoardFilter, BoardGatherer, CastEnd, DeckGoOff, DeckGoOffConfig,
+        DeckInvokerTarget, DeckSpawnConfig, DeckStartInvoke, DeckTarget, DeckTargetGenerator,
+        DeckTargetMutator, EntityGatheringFilter, GridCheckShape, NumberType,
     },
     stats::players::Speed,
     utils::{CombatGridQ, IntoVec},
