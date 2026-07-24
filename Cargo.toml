@@ -10,6 +10,8 @@ bevy-trait-query = "0.18.0"
 bevy_diesel = { git = "https://github.com/DEMIURGE-studio/bevy_diesel.git", branch="main" }
 bevy_gauge = { git = "https://github.com/DEMIURGE-studio/bevy_gauge.git", branch="main" }
 bevy_gearbox = { git = "https://github.com/DEMIURGE-studio/bevy_gearbox.git", branch="master", features=["gauge"] }
+moonshine-view = {git = "https://github.com/Zeenobit/moonshine_view.git", rev="798bb32"}
+moonshine-kind = {git = "https://github.com/Zeenobit/moonshine_kind.git", rev="b57081a"}
 bevy_ecs_tilemap = "0.18.1"
 bevy_ghx_grid = "0.8.0"
 bevy_ghx_proc_gen = {version = "0.8.0", features = ["bevy_ghx_grid"]}
@@ -29,6 +31,8 @@ serde = "1.0.228"
 bevy_northstar = "0.6.2"
 pyri_state = "0.6.0"
 bevy_immediate = "0.6.1"
+bevy_flair = "0.7.0"
+bevy_mod_opacity = "0.5.0"
 
 [patch."https://github.com/DEMIURGE-studio/bevy_diesel.git"]
 # Fixes bevy_diesel looking for its siblings

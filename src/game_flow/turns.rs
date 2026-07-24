@@ -18,7 +18,7 @@ use bevy::{
         system::{Commands, Query, Res, ResMut, Single},
     },
     input::{ButtonInput, keyboard::KeyCode},
-    log::warn,
+    log::{tracing_subscriber::reload::Handle, warn},
     math::{
         UVec2, UVec3, Vec3,
         primitives::{Capsule3d, Sphere},
@@ -27,8 +27,11 @@ use bevy::{
     pbr::{MeshMaterial3d, StandardMaterial},
     sprite::Text2d,
     transform::components::{GlobalTransform, Transform},
+    ui::Node,
 };
 use bevy_diesel::prelude::Invokes;
+use bevy_ecs::hierarchy::ChildOf;
+use bevy_flair::style::{StyleSheet, components::NodeStyleSheet};
 use bevy_gauge::prelude::AttributesMut;
 use bevy_ghx_grid::ghx_grid::cartesian::{
     coordinates::{Cartesian3D, CartesianPosition},
@@ -50,6 +53,7 @@ use pyri_state::{
 use rand::RngExt;
 
 use crate::{
+    CardDir, CardOf, EnemyHandContainer, MainSceneUiRoot, PlayerHandContainer, Stylesheets,
     abilities::abilities_templates::{Marker, Projectile},
     creatures::{
         definitions::{Creature, CreatureKind},
@@ -59,6 +63,7 @@ use crate::{
         ActiveDeck, CardPile, CardState, Deck, DrawHand, InDrawPile, StatelessCard,
         UnassignedDeckState,
     },
+    magnetic_effect, spawn_card,
     stats::players::{MeleeRange, Speed, Strength},
     utils::AsFlippedUVec3,
 };
@@ -137,46 +142,42 @@ pub fn request_test_playing_gen(mut cmd: Commands) {
     }
 }
 
-fn handle_combat_start(
-    _: On<CombatStart>,
-    mut cmd: Commands,
-    playing_q: Query<Entity, With<PlayingEntity>>,
-    deck_pile_q: Query<(Entity, &CardPile), With<Deck>>,
-    instance_cards_q: Query<&CardState<UnassignedDeckState>>,
-    playing_current_deck_ref_q: Query<&CurrentDeckReference, With<PlayingEntity>>,
-    mut attributes: AttributesMut<(With<Deck>, With<CardPile>)>,
-) {
-    let current_deck_entities: Vec<Entity> =
-        playing_current_deck_ref_q.iter().map(|p| p.0).collect();
+pub fn hand_bundle(styles: NodeStyleSheet) -> impl Bundle {
+    (Node::default(), MainSceneUiRoot, styles)
+}
 
-    for (deck_entity, deck_pile) in deck_pile_q
-        .iter()
-        .filter(|(e, _)| current_deck_entities.contains(e))
-    {
-        let cards_count = deck_pile.iter().count();
-        cmd.entity(deck_entity).insert(ActiveDeck);
+fn handle_combat_start(_: On<EnteredCombat>, mut cmd: Commands, stylesheets: Res<Stylesheets>) {
+    let enemy_hand = cmd
+        .spawn(hand_bundle(NodeStyleSheet::new(stylesheets.hand.clone())))
+        .id();
 
-        for card_entity in deck_pile.iter() {
-            if !instance_cards_q.contains(card_entity) {
-                warn!(
-                    "All card attached to entities with 'CurrentDeck' should have be in the 'StatelessCard' state when CombatStart is triggered"
-                );
-                continue;
-            }
+    let player_hand = cmd
+        .spawn(hand_bundle(NodeStyleSheet::new(stylesheets.hand.clone())))
+        .id();
 
-            let mut card_cmds = cmd.entity(card_entity);
-            card_cmds.remove::<StatelessCard>();
-            card_cmds.insert(CardState::<InDrawPile>::new());
-        }
-    }
+    cmd.insert_resource(PlayerHandContainer(player_hand));
+    cmd.insert_resource(EnemyHandContainer(enemy_hand));
 
-    // cmd.insert_resource(CombatData::init_new_combat(&entities_by_turn_order));
-    for (idx, ent) in playing_q.iter().enumerate() {
-        cmd.entity(ent).insert(TurnOrder(idx as i32));
-        if idx == 0 {
-            cmd.trigger(EntityTurnStart { entity: ent });
-        }
-    }
+    spawn_card(
+        (magnetic_effect(CardDir::Around, 1)),
+        &mut cmd,
+        player_hand,
+        true,
+    );
+
+    spawn_card(
+        (magnetic_effect(CardDir::Around, 1)),
+        &mut cmd,
+        player_hand,
+        true,
+    );
+
+    spawn_card(
+        (magnetic_effect(CardDir::Around, 1)),
+        &mut cmd,
+        enemy_hand,
+        false,
+    );
 }
 
 fn handle_turn_start(
@@ -321,7 +322,7 @@ impl CombatData {
 pub struct CombatInit;
 
 #[derive(Event)]
-pub struct CombatStart;
+pub struct EnteredCombat;
 
 #[derive(EntityEvent, Clone)]
 pub struct EntityTurnStart {

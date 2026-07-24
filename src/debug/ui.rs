@@ -11,7 +11,7 @@ use bevy::{
     utils::default,
 };
 
-use crate::game_flow::turns::{CombatStart, EntityTurnStart, GlobalTurnStart};
+use crate::game_flow::turns::{EnteredCombat, EntityTurnStart, GlobalTurnStart};
 
 pub struct DebugUiPlugin;
 
@@ -19,7 +19,7 @@ impl Plugin for DebugUiPlugin {
     fn build(&self, app: &mut bevy::app::App) {
         app.add_systems(Startup, setup_debug_ui)
             .add_observer(
-                |_: On<CombatStart>, d: Res<DebugUiData>, mut q: Query<&mut Text>| {
+                |_: On<EnteredCombat>, d: Res<DebugUiData>, mut q: Query<&mut Text>| {
                     if let Ok(mut t) = q.get_mut(d.0) {
                         let new_line = match t.0.is_empty() {
                             true => "Combat started",

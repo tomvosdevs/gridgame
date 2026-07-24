@@ -96,9 +96,13 @@ impl Plugin for GameUiPlugin {
             .add_plugins(AnchorUiPlugin::<UiCameraMarker>::new())
             .add_plugins(DefaultTweenPlugins::default())
             .insert_resource(DraggedCard::empty())
-            .add_systems(Startup, |asset_server: Res<AssetServer>| {
-                CardVisualAssets::new(asset_server.load("card_base.png"));
-            })
+            .insert_resource(CardVisualAssets::default())
+            .add_systems(
+                Startup,
+                |mut cmd: Commands, asset_server: Res<AssetServer>| {
+                    cmd.insert_resource(CardVisualAssets::new(asset_server.load("card_base.png")));
+                },
+            )
             .add_systems(Update, tag_active_camera);
     }
 }
@@ -136,14 +140,20 @@ pub struct CardUiRoot;
 
 #[derive(Resource, Clone, Debug)]
 pub struct CardVisualAssets {
-    pub background: Handle<Image>,
+    pub background: Option<Handle<Image>>,
 }
 
 impl CardVisualAssets {
     pub fn new(background: Handle<Image>) -> Self {
         Self {
-            background: background.into(),
+            background: Some(background.into()),
         }
+    }
+}
+
+impl Default for CardVisualAssets {
+    fn default() -> Self {
+        Self { background: None }
     }
 }
 
