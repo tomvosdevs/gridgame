@@ -1,6 +1,9 @@
+use core::f32;
+use std::any::Any;
 use std::collections::HashMap;
 use std::f32::consts::PI;
 use std::fmt::Debug;
+use std::marker::PhantomData;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -11,7 +14,9 @@ use bevy::camera::primitives::Aabb;
 use bevy::camera::visibility::RenderLayers;
 use bevy::camera::{RenderTarget, ScalingMode};
 use bevy::color::palettes::css::{BLUE, GREEN, PALE_TURQUOISE, PURPLE, RED, YELLOW};
-use bevy::color::palettes::tailwind::{GRAY_300, ORANGE_400, RED_300, RED_800};
+use bevy::color::palettes::tailwind::{
+    BLUE_600, BLUE_800, GRAY_300, ORANGE_400, RED_300, RED_800, RED_900, SLATE_600,
+};
 use bevy::core_pipeline::core_3d::graph::Node3d;
 use bevy::core_pipeline::fullscreen_material::{FullscreenMaterial, FullscreenMaterialPlugin};
 use bevy::light::{CascadeShadowConfigBuilder, DirectionalLightShadowMap, NotShadowCaster};
@@ -33,9 +38,11 @@ use bevy_diesel::events::HasDieselTarget;
 use bevy_diesel::invoke::Ability;
 use bevy_diesel::prelude::{ActiveState, SpatialBackend, SpawnDieselSubstate};
 use bevy_diesel::target::Target;
-use bevy_ecs::relationship::Relationship;
+use bevy_ecs::lifecycle::HookContext;
+use bevy_ecs::relationship::{OrderedRelationshipSourceCollection, Relationship};
 use bevy_ecs::schedule::{MultiThreadedExecutor, ScheduleLabel};
-use bevy_ecs::system::SystemParam;
+use bevy_ecs::system::{IntoObserverSystem, SystemParam};
+use bevy_ecs::world::DeferredWorld;
 use bevy_ecs_tilemap::prelude::*;
 use bevy_flair::FlairPlugin;
 use bevy_flair::style::StyleSheet;
@@ -73,10 +80,10 @@ use bevy_tween::tween::{ComponentTween, IntoTarget};
 use bevy_tweening::lens::{
     UiPositionLens, UiTransformRotationLens, UiTransformScaleLens, UiTransformTranslationPxLens,
 };
-use bevy_tweening::{AnimTarget, CycleCompletedEvent, Lens, Tween, TweenAnim};
-use moonshine_kind::GetInstanceCommands;
+use bevy_tweening::{AnimCompletedEvent, AnimTarget, CycleCompletedEvent, Lens, Tween, TweenAnim};
+use moonshine_kind::{GetInstanceCommands, Instance};
 use moonshine_view::{RegisterViewable, Viewable, ViewableKind};
-use pyri_state::setup::StatePlugin;
+
 use rand::RngExt;
 use rand::distr::uniform;
 
@@ -87,13 +94,17 @@ use crate::abilities::effects::{
 use crate::creatures::generation::CreatureGenerationPlugin;
 use crate::debug::ui::DebugUiPlugin;
 
-use crate::deck::deck_and_cards::{Card, Deck, DeckAndCardsPlugin, InDeck, StatelessCard};
+use crate::deck::deck_and_cards::{Card, DeckAndCardsPlugin, InDeck, StatelessCard};
 use crate::effects::{Burning, EffectsPlugin};
 
-use crate::game_flow::turns::{CurrentDeckReference, EnteredCombat, PlayingEntity, TurnsPlugin};
+use crate::game_flow::turns::{
+    BattleData, CurrentDeckReference, EnteredCombat, PlayingEntity, TurnsPlugin,
+};
 use crate::grid_abilities_backend::{BoardPos, DeckBackend};
 
+use crate::network::NetworkPlugin;
 use crate::ui::{CardVisualAssets, GameUiPlugin};
+use crate::utils::IntoVec;
 use crate::visuals::cards::animation::DiegeticCardTweenPlugin;
 
 pub mod abilities;
@@ -106,6 +117,7 @@ pub mod grid_abilities_backend;
 
 pub mod stats;
 
+pub mod network;
 pub mod ui;
 pub mod utils;
 pub mod visuals;
@@ -330,19 +342,72 @@ pub struct UiCardMarker;
 #[derive(Component)]
 pub struct CardHandContainer;
 
-#[derive(Resource)]
-pub struct PlayerHandContainer(pub Entity);
+pub trait DeckDataSupplier: Resource {
+    type CardComponent: Component;
+    fn get_ui_entity(&self) -> Entity;
+    fn get_deck_entity(&self) -> Entity;
+    fn is_player() -> bool;
+}
 
 #[derive(Resource)]
-pub struct EnemyHandContainer(Entity);
+pub struct PlayerData {
+    pub ui_entity: Entity,
+    pub draw_pile_entity: Instance<CardsPile>,
+    pub hand_pile_entity: Instance<CardsPile>,
+}
+
+#[derive(Resource)]
+pub struct EnemyData {
+    pub ui_entity: Entity,
+    pub draw_pile_entity: Instance<CardsPile>,
+    pub hand_pile_entity: Instance<CardsPile>,
+}
+
+impl DeckDataSupplier for PlayerData {
+    type CardComponent = PlayerCard;
+
+    fn get_ui_entity(&self) -> Entity {
+        self.ui_entity
+    }
+
+    fn get_deck_entity(&self) -> Entity {
+        self.draw_pile_entity.entity()
+    }
+
+    fn is_player() -> bool {
+        true
+    }
+}
+
+impl DeckDataSupplier for EnemyData {
+    type CardComponent = EnemyCard;
+
+    fn get_ui_entity(&self) -> Entity {
+        self.ui_entity
+    }
+
+    fn get_deck_entity(&self) -> Entity {
+        self.draw_pile_entity.entity()
+    }
+
+    fn is_player() -> bool {
+        false
+    }
+}
 
 #[derive(Component, Debug, Clone)]
-#[relationship_target(relationship = CardOf, linked_spawn)]
-pub struct DeckOfCards(Vec<Entity>);
+#[relationship_target(relationship = CardInPile, linked_spawn)]
+pub struct CardsPile(Vec<Entity>);
+
+impl CardsPile {
+    pub fn init() -> Self {
+        Self(vec![])
+    }
+}
 
 #[derive(Component, Debug, Clone)]
-#[relationship(relationship_target = DeckOfCards)]
-pub struct CardOf(Entity);
+#[relationship(relationship_target = CardsPile)]
+pub struct CardInPile(Entity);
 
 const CARD_WIDTH: i32 = 121;
 
@@ -364,54 +429,121 @@ pub struct EnemyCard;
 // Styling constants
 pub const CARDS_COL_GAP: i32 = 16;
 
-pub fn handle_card_added(
-    e: On<Add, Card>,
-    player_cards_q: Query<Entity, With<PlayerCard>>,
-    enemy_cards_q: Query<Entity, With<EnemyCard>>,
-    mut cmd: Commands,
-) {
-    let new_index = match player_cards_q.contains(e.entity) {
-        true => player_cards_q.count() - 1,
-        false => enemy_cards_q.count() - 1,
-    };
-
-    cmd.entity(e.entity).insert(CardIndex(new_index as i32));
-}
-
 pub fn handle_cardindex_change(
-    q_cards: Query<(&CardIndex, Ref<CardIndex>, &Viewable<Card>)>,
+    q_cards: Query<(
+        Entity,
+        &CardIndex,
+        Ref<CardIndex>,
+        &Viewable<Card>,
+        Has<InHand>,
+        Has<PlayerCard>,
+    )>,
     q_world_pos: Query<&WorldPos>,
     mut cmd: Commands,
 ) {
-    for (card_idx, _, viewable) in q_cards
-        .iter()
-        .filter(|(_, c_ref, _)| c_ref.is_changed() && !c_ref.is_added())
+    for (card_entity, card_idx, card_idx_ref, viewable, is_in_hand, is_player_card) in
+        q_cards.iter()
     {
         let view = viewable.view().entity();
-        let world_pos = q_world_pos
-            .get(view)
-            .expect("Should find would pos for view");
 
-        let easing = EaseFunction::CubicInOut;
-        let duration = Duration::from_millis(550);
+        if card_idx_ref.is_changed() && !card_idx_ref.is_added() {
+            if !is_in_hand {
+                continue;
+            }
 
-        let tween = Tween::new(
-            easing,
-            duration,
-            WorldPosLens {
-                pos: AnimMode::FromTo {
-                    start: world_pos.position.unwrap(),
-                    end: card_idx.as_pos(),
+            // Only keep entries with a position
+            let world_pos = q_world_pos
+                .get(view)
+                .expect("should have world pos initialized");
+
+            let just_drawn = world_pos.position == Vec2::ZERO;
+            // No need to animate a card when it's position is actually the same
+            if card_idx.as_pos().x == world_pos.position.x {
+                continue;
+            }
+
+            let easing = EaseFunction::CubicInOut;
+            let duration = Duration::from_millis(550);
+
+            let move_dir_multiplier: f32 = if card_idx.as_pos().x > world_pos.position.x {
+                1.0
+            } else {
+                -1.0
+            };
+
+            let tween = Tween::new(
+                easing,
+                duration,
+                WorldPosLens {
+                    pos: AnimMode::FromTo {
+                        start: world_pos.position,
+                        end: card_idx.as_pos(),
+                    },
+                    tf: AnimMode::NoAnim,
+                    translation: AnimMode::NoAnim,
                 },
-                tf: AnimMode::NoAnim,
-                translation: AnimMode::NoAnim,
-            },
-        );
+            );
 
-        cmd.spawn((
-            TweenAnim::new(tween).with_destroy_on_completed(true),
-            AnimTarget::component::<WorldPos>(view),
-        ));
+            let degs_offset = 20.0 * move_dir_multiplier;
+            let start_tf = world_pos.transform.clone();
+
+            let tween_b = Tween::new(
+                EaseFunction::SmoothStepIn,
+                duration / 2,
+                WorldPosLens {
+                    pos: AnimMode::NoAnim,
+                    tf: AnimMode::FromTo {
+                        start: UiTransform::from_rotation(start_tf.rotation),
+                        end: UiTransform::from_rotation(Rot2::degrees(degs_offset)),
+                    },
+                    translation: AnimMode::NoAnim,
+                },
+            )
+            .then(Tween::new(
+                EaseFunction::CubicOut,
+                duration / 2,
+                WorldPosLens {
+                    pos: AnimMode::NoAnim,
+                    tf: AnimMode::FromTo {
+                        start: UiTransform::from_rotation(Rot2::degrees(degs_offset)),
+                        end: UiTransform::from_rotation(Rot2::degrees(0.0)),
+                    },
+                    translation: AnimMode::NoAnim,
+                },
+            ));
+
+            let animator = cmd
+                .spawn((
+                    TweenAnim::new(tween).with_destroy_on_completed(true),
+                    AnimTarget::component::<WorldPos>(view),
+                ))
+                .id();
+
+            if just_drawn {
+                cmd.entity(animator).observe(
+                    move |_: On<AnimCompletedEvent>, mut obs_cmd: Commands| {
+                        obs_cmd.complete_game_event(GameEvent {
+                            target: card_entity,
+                            event: DrawCard {
+                                card: card_entity,
+                                is_player: is_player_card,
+                            },
+                            state: Running,
+                        });
+                    },
+                );
+            }
+
+            cmd.spawn((
+                TweenAnim::new(tween_b).with_destroy_on_completed(true),
+                AnimTarget::component::<WorldPos>(view),
+            ));
+        } else if card_idx_ref.is_added() {
+            cmd.entity(view).insert(WorldPos {
+                position: Vec2::ZERO,
+                transform: UiTransform::default(),
+            });
+        }
     }
 }
 
@@ -424,10 +556,13 @@ pub struct CardWidgetParams<'w, 's> {
     q_card_viewable: Query<'w, 's, &'static Viewable<Card>>,
     q_world_cards: Query<'w, 's, &'static WorldPos>,
     visuals_assets: Res<'w, CardVisualAssets>,
+    q_effects_list: Query<'w, 's, &'static StatusEffects>,
+    // Switch to using auto registered attributes for easier global access ?
+    q_effects: Query<'w, 's, (&'static StatusEffectOf, Option<&'static Magnetic>)>,
 }
 
 #[derive(Component)]
-pub struct ImageOf(Entity);
+pub struct ImageOf(pub Entity);
 
 impl ImmediateAttach<CapsUi> for CardWidgetFor {
     type Params = CardWidgetParams<'static, 'static>;
@@ -436,16 +571,24 @@ impl ImmediateAttach<CapsUi> for CardWidgetFor {
         let entity = ui.current_entity().unwrap();
         let (widget_entity, widget_for) = params.query.get_mut(entity).unwrap();
         let source_entity = widget_for.0;
-        let view = params
-            .q_card_viewable
-            .get_mut(source_entity)
-            .unwrap()
-            .view()
-            .entity();
-        let world_card = params
-            .q_world_cards
-            .get(view)
-            .expect("world card should exist");
+        let Ok(viewable) = params.q_card_viewable.get_mut(source_entity) else {
+            return;
+        };
+
+        let view = viewable.view().entity();
+
+        let effects: Vec<_> =
+            params
+                .q_effects_list
+                .get(source_entity)
+                .map_or(vec![], |card_effects_list| {
+                    let descendant_effects: Vec<Entity> = card_effects_list.iter().collect();
+                    params
+                        .q_effects
+                        .iter_many(descendant_effects)
+                        .collect::<Vec<_>>()
+                });
+        let maybe_world_card = params.q_world_cards.get(view);
 
         ui.ch()
             .on_spawn_insert(|| {
@@ -462,6 +605,7 @@ impl ImmediateAttach<CapsUi> for CardWidgetFor {
                         align_content: AlignContent::Center,
                         ..default()
                     },
+                    UiTransform::default(),
                     ClassList::new("card"),
                     InheritedVisibility::VISIBLE,
                     Hovered::default(),
@@ -483,44 +627,77 @@ impl ImmediateAttach<CapsUi> for CardWidgetFor {
                 )
             })
             .node_mut(|n| {
-                if let Some(pos) = world_card.position {
-                    n.left = px(pos.x);
-                    n.bottom = px(pos.y);
+                if let Ok(world_card) = maybe_world_card {
+                    n.left = px(world_card.position.x);
+                    n.bottom = px(world_card.position.y);
                 };
+            })
+            .at_this_moment_apply_commands(|cmds| {
+                if let Ok(world_card) = maybe_world_card {
+                    cmds.insert(world_card.transform.clone());
+                };
+            })
+            .add(move |ui| {
+                for effect in effects.iter() {
+                    let (color, text_content): (Color, String) = match effect.1 {
+                        Some(magnetic) => (SLATE_600.into(), magnetic.strength.to_string()),
+                        None => (RED_900.into(), "".to_string()),
+                    };
+                    ui.ch().on_spawn_insert(|| {
+                        (
+                            Node {
+                                width: px(42),
+                                height: px(42),
+                                top: px(0),
+                                left: px(0),
+                                display: Display::Flex,
+                                justify_content: JustifyContent::Center,
+                                align_items: AlignItems::Center,
+                                position_type: PositionType::Absolute,
+                                border_radius: BorderRadius::all(px(200)),
+                                ..default()
+                            },
+                            UiTransform {
+                                translation: Val2 {
+                                    x: percent(-25.0),
+                                    y: percent(-25.0),
+                                },
+                                ..default()
+                            },
+                            BackgroundColor(color),
+                            children![Text::new(text_content)],
+                        )
+                    });
+                }
             });
     }
 }
 
 #[derive(Component, Debug, Reflect, Clone)]
-pub struct WorldPos {
-    position: Option<Vec2>,
-    transform: Option<UiTransform>,
-}
+pub struct CardDataView;
 
-impl WorldPos {
-    pub fn hidden() -> Self {
-        Self {
-            position: None,
-            transform: None,
-        }
-    }
+#[derive(Component, Debug, Reflect, Clone)]
+pub struct WorldPos {
+    position: Vec2,
+    transform: UiTransform,
 }
 
 impl ViewableKind for Card {
     fn view_bundle() -> impl Bundle {
-        WorldPos::hidden()
+        ()
     }
 }
 
 fn build_card_view(
     event: On<Add, Viewable<Card>>,
     query: Query<&Viewable<Card>>,
-    mut commands: Commands,
+    mut cmd: Commands,
 ) {
     let viewable = query.get(event.entity).unwrap();
     let view = viewable.view();
     println!("built view");
-    commands.entity(*view).insert(WorldPos::hidden());
+
+    cmd.entity(*view).insert(CardDataView);
 }
 
 pub enum AnimMode<T: Clone + Send + 'static> {
@@ -546,61 +723,31 @@ impl WorldPosLens {
 
 impl Lens<WorldPos> for WorldPosLens {
     fn lerp(&mut self, mut target: Mut<WorldPos>, ratio: f32) {
-        if target.position.is_some() {
-            match self.pos {
-                AnimMode::FromTo { start, end } => {
-                    target.position = Some(start.lerp(end, ratio));
-                }
-                AnimMode::NoAnim => {}
+        match self.pos {
+            AnimMode::FromTo { start, end } => {
+                target.position = start.lerp(end, ratio);
             }
+            AnimMode::NoAnim => {}
         }
-        if target.transform.is_some() {
-            match self.tf {
-                AnimMode::FromTo { start, end } => {
-                    let new_translation = match self.translation {
-                        AnimMode::FromTo { start, end } => {
-                            let lerped = start.lerp(end, ratio);
-                            Val2::px(lerped.x, lerped.y)
-                        }
-                        AnimMode::NoAnim => target.transform.unwrap().translation,
-                    };
+        match self.tf {
+            AnimMode::FromTo { start, end } => {
+                let new_translation = match self.translation {
+                    AnimMode::FromTo { start, end } => {
+                        let lerped = start.lerp(end, ratio);
+                        Val2::px(lerped.x, lerped.y)
+                    }
+                    AnimMode::NoAnim => target.transform.translation,
+                };
 
-                    target.transform = Some(UiTransform {
-                        translation: new_translation,
-                        scale: start.scale.lerp(end.scale, ratio),
-                        rotation: start.rotation.slerp(end.rotation, ratio),
-                    });
-                }
-                AnimMode::NoAnim => {}
+                target.transform = UiTransform {
+                    translation: new_translation,
+                    scale: start.scale.lerp(end.scale, ratio),
+                    rotation: start.rotation.slerp(end.rotation, ratio),
+                };
             }
+            AnimMode::NoAnim => {}
         }
     }
-}
-
-fn handle_card_added_to_hand(
-    event: On<Add, InHand>,
-    query: Query<(&Viewable<Card>, &CardIndex)>,
-    mut commands: Commands,
-) {
-    let (viewable, card_index) = query.get(event.entity).unwrap();
-    let view = viewable.view().entity();
-    println!("built view");
-
-    commands.entity(view).insert(WorldPos {
-        position: Some(Vec2::ZERO),
-        transform: Some(UiTransform::default()),
-    });
-
-    let tween = Tween::new(
-        EaseFunction::CubicOut,
-        Duration::from_millis(400),
-        WorldPosLens::position(Vec2::ZERO, card_index.as_pos()),
-    );
-
-    commands.spawn_empty().insert((
-        AnimTarget::component::<WorldPos>(view),
-        TweenAnim::new(tween).with_destroy_on_completed(true),
-    ));
 }
 
 pub fn relay_event_as_message<T: EntityEvent + GearboxMessage>(
@@ -615,30 +762,35 @@ pub struct CardUiDrawn {
     entity: Entity,
 }
 
-fn test_pos_tr(keyboard_input: Res<ButtonInput<KeyCode>>, mut q: Query<&mut CardIndex>) {
+fn invert_indexes(mut cards: Vec<Mut<CardIndex>>) {
+    let count = cards.len();
+    if count <= 1 {
+        return;
+    }
+
+    // sort the Vec in place by CardIndex value
+    cards.sort_by_key(|val| val.0);
+
+    let ordered_indexes: Vec<i32> = cards.iter().map(|val| val.0).collect();
+
+    for (i, card_idx) in cards.iter_mut().enumerate() {
+        let new = *ordered_indexes.get((count - 1) - i).unwrap();
+        println!("invert from {:?} to {:?}", card_idx.0, new);
+        card_idx.0 = new;
+    }
+}
+
+fn test_pos_tr(
+    keyboard_input: Res<ButtonInput<KeyCode>>,
+    mut player_cards_q: Query<&mut CardIndex, (With<PlayerCard>, With<InHand>, Without<EnemyCard>)>,
+    mut enemy_cards_q: Query<&mut CardIndex, (With<EnemyCard>, With<InHand>, Without<PlayerCard>)>,
+) {
     if !keyboard_input.just_pressed(KeyCode::KeyI) {
         return;
     }
 
-    let count = q.count();
-    if count == 0 {
-        return;
-    }
-
-    let max_index = count - 1;
-
-    for (i, mut card_idx) in q
-        .iter_mut()
-        .sort_by_key::<&CardIndex, _>(|val| val.0)
-        .enumerate()
-    {
-        println!(
-            "INVERTING INDEX from {:?} to {:?}",
-            card_idx.0,
-            (max_index - i)
-        );
-        card_idx.0 = (max_index - i) as i32;
-    }
+    invert_indexes(player_cards_q.iter_mut().collect::<Vec<Mut<CardIndex>>>());
+    invert_indexes(enemy_cards_q.iter_mut().collect::<Vec<Mut<CardIndex>>>());
 }
 
 #[derive(Clone, Component)]
@@ -647,14 +799,27 @@ pub struct TestMark;
 fn spawn_card(
     components: impl Bundle,
     cmd: &mut Commands,
-    parent: Entity,
+    draw_pile: Instance<CardsPile>,
+    hand_pile: Instance<CardsPile>,
     is_on_player: bool,
 ) -> Entity {
+    let draw_pile_entity = draw_pile.entity();
+    let hand_pile_entity = hand_pile.entity();
     let card = match is_on_player {
         true => cmd
-            .spawn((PlayerCard, CardOf(parent), ChildOf(parent)))
+            .spawn((
+                PlayerCard,
+                CardInPile(draw_pile_entity),
+                ChildOf(draw_pile_entity),
+            ))
             .id(),
-        false => cmd.spawn((EnemyCard, CardOf(parent), ChildOf(parent))).id(),
+        false => cmd
+            .spawn((
+                EnemyCard,
+                CardInPile(draw_pile_entity),
+                ChildOf(draw_pile_entity),
+            ))
+            .id(),
     };
 
     cmd.entity(card)
@@ -662,16 +827,23 @@ fn spawn_card(
 
     cmd.entity(card).with_children(|parent| {
         let in_draw = parent
-            .spawn_substate(card, (StateComponent(InDrawPile), StateComponent(TestMark)))
-            .id();
-        let in_hand = parent
-            .spawn_substate(card, (StateComponent(InHand), StateComponent(TestMark)))
+            .spawn_substate(card, (StateComponent(InDrawPile)))
             .id();
 
-        parent.spawn_transition::<GameEvent<DrawCard, Requested>>(in_draw, in_hand);
+        let in_hand = parent.spawn_substate(card, (StateComponent(InHand))).id();
+
+        parent.spawn_transition::<GameEvent<DrawCard, Init>>(in_draw, in_hand);
 
         let cmds = parent.commands_mut();
         cmds.entity(card).init_state_machine(in_draw);
+        cmds.entity(card)
+            .observe(move |_: On<Add, InHand>, mut obs_cmd: Commands| {
+                obs_cmd.entity(card).insert(CardInPile(hand_pile_entity));
+            });
+        cmds.entity(card)
+            .observe(move |_: On<Add, InDrawPile>, mut obs_cmd: Commands| {
+                obs_cmd.entity(card).insert(CardInPile(draw_pile_entity));
+            });
     });
 
     card
@@ -682,6 +854,10 @@ pub trait GameEvtState: Clone + Debug + Sync + Send + Reflect + 'static {}
 #[derive(Clone, Debug, Reflect)]
 pub struct Requested;
 impl GameEvtState for Requested {}
+
+#[derive(Clone, Debug, Reflect)]
+pub struct Init;
+impl GameEvtState for Init {}
 
 #[derive(Clone, Debug, Reflect)]
 pub struct Running;
@@ -710,11 +886,30 @@ impl<E: EntityEvent + Clone + Reflect + TypePath, S: GameEvtState + TypePath> Ge
 }
 
 pub trait BoardUtilsCommandsExt {
-    fn request_game_event<E: EntityEvent + Clone>(&mut self, event: E);
+    fn request_event<E>(&mut self, event: E)
+    where
+        E: EntityEvent + Message + Clone,
+        for<'a> E::Trigger<'a>: Default;
 
-    fn run_game_event<E: EntityEvent + Clone>(&mut self, event: &GameEvent<E, Requested>);
+    fn request_game_event<E>(&mut self, event: E)
+    where
+        E: EntityEvent + Message + Clone,
+        for<'a> E::Trigger<'a>: Default;
 
-    fn complete_game_event<E: EntityEvent + Clone>(&mut self, event: GameEvent<E, Running>);
+    fn init_game_event<E>(&mut self, event: E)
+    where
+        E: EntityEvent + Message + Clone,
+        for<'a> E::Trigger<'a>: Default;
+
+    fn run_game_event<E>(&mut self, event: &GameEvent<E, Init>)
+    where
+        E: EntityEvent + Message + Clone,
+        for<'a> E::Trigger<'a>: Default;
+
+    fn complete_game_event<E>(&mut self, event: GameEvent<E, Running>)
+    where
+        E: EntityEvent + Message + Clone,
+        for<'a> E::Trigger<'a>: Default;
 
     fn send_and_trigger<E>(&mut self, event: E)
     where
@@ -722,16 +917,146 @@ pub trait BoardUtilsCommandsExt {
         for<'a> E::Trigger<'a>: Default;
 }
 
+pub trait DynEntityEvent: Send + Sync + 'static {
+    fn target(&self) -> Entity;
+    fn as_any(&self) -> &dyn Any;
+    fn clone_box(&self) -> Box<dyn DynEntityEvent>;
+    fn trigger(&self, commands: &mut Commands, mode: EventHandleMode);
+}
+
+impl<E> DynEntityEvent for E
+where
+    E: EntityEvent + Send + Sync + Clone + Message + 'static,
+    for<'a> E::Trigger<'a>: Default,
+{
+    fn target(&self) -> Entity {
+        self.event_target()
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn clone_box(&self) -> Box<dyn DynEntityEvent> {
+        Box::new(self.clone())
+    }
+    fn trigger(&self, commands: &mut Commands, mode: EventHandleMode) {
+        match mode {
+            EventHandleMode::AsGameEvent => commands.init_game_event(self.clone()),
+            EventHandleMode::AsEvent => commands.trigger(self.clone()),
+        }
+    }
+}
+
+impl Clone for Box<dyn DynEntityEvent> {
+    fn clone(&self) -> Self {
+        self.clone_box()
+    }
+}
+
+#[derive(Event)]
+pub struct CurrentGameEventComplete;
+
+#[derive(Event)]
+pub struct ReceivedGameEventReq {
+    pub game_evt: Box<dyn DynEntityEvent>,
+    pub mode: EventHandleMode,
+}
+
+#[derive(Debug, Clone)]
+pub enum EventHandleMode {
+    AsGameEvent,
+    AsEvent,
+}
+
+#[derive(Resource)]
+pub struct PendingEventRequests {
+    pub requests: Vec<(Box<dyn DynEntityEvent>, EventHandleMode)>,
+    pub running: bool,
+}
+
+impl PendingEventRequests {
+    pub fn empty() -> Self {
+        Self {
+            requests: vec![],
+            running: false,
+        }
+    }
+}
+
+pub fn handle_game_event_request(
+    e: On<ReceivedGameEventReq>,
+    mut pending_reqs: ResMut<PendingEventRequests>,
+) {
+    println!("a game event was requested");
+    pending_reqs
+        .requests
+        .push((e.game_evt.clone(), e.mode.clone()));
+}
+
+pub fn check_pending_game_evt_req_changed(
+    mut pending_reqs: ResMut<PendingEventRequests>,
+    mut cmd: Commands,
+) {
+    if !pending_reqs.is_changed() || pending_reqs.running {
+        return;
+    }
+
+    let Some((req, mode)) = pending_reqs.requests.first() else {
+        return;
+    };
+    req.trigger(&mut cmd, mode.clone());
+    pending_reqs.running = true;
+}
+
+pub fn handle_current_game_event_completed(
+    _: On<CurrentGameEventComplete>,
+    mut pending_reqs: ResMut<PendingEventRequests>,
+) {
+    println!("a game event was COMPLETED");
+    pending_reqs.running = false;
+    pending_reqs.requests.remove(0);
+}
+
 impl<'w, 's> BoardUtilsCommandsExt for Commands<'w, 's> {
-    fn request_game_event<E: EntityEvent + Clone>(&mut self, event: E) {
-        self.send_and_trigger(GameEvent {
-            target: event.event_target(),
-            event,
-            state: Requested,
+    fn request_event<E>(&mut self, event: E)
+    where
+        E: EntityEvent + Message + Clone,
+        for<'a> E::Trigger<'a>: Default,
+    {
+        self.trigger(ReceivedGameEventReq {
+            game_evt: Box::new(event),
+            mode: EventHandleMode::AsEvent,
         });
     }
 
-    fn run_game_event<E: EntityEvent + Clone>(&mut self, event: &GameEvent<E, Requested>) {
+    fn request_game_event<E>(&mut self, event: E)
+    where
+        E: EntityEvent + Message + Clone,
+        for<'a> E::Trigger<'a>: Default,
+    {
+        self.trigger(ReceivedGameEventReq {
+            game_evt: Box::new(event),
+            mode: EventHandleMode::AsGameEvent,
+        });
+    }
+
+    fn init_game_event<E>(&mut self, event: E)
+    where
+        E: EntityEvent + Message + Clone,
+        for<'a> E::Trigger<'a>: Default,
+    {
+        println!("a game event was initiliazed");
+        self.send_and_trigger(GameEvent {
+            target: event.event_target(),
+            event,
+            state: Init,
+        });
+    }
+
+    fn run_game_event<E>(&mut self, event: &GameEvent<E, Init>)
+    where
+        E: EntityEvent + Message + Clone,
+        for<'a> E::Trigger<'a>: Default,
+    {
         let event = GameEvent {
             target: event.target,
             event: event.event.clone(),
@@ -741,12 +1066,18 @@ impl<'w, 's> BoardUtilsCommandsExt for Commands<'w, 's> {
         self.send_and_trigger(event);
     }
 
-    fn complete_game_event<E: EntityEvent + Clone>(&mut self, event: GameEvent<E, Running>) {
+    fn complete_game_event<E>(&mut self, event: GameEvent<E, Running>)
+    where
+        E: EntityEvent + Message + Clone,
+        for<'a> E::Trigger<'a>: Default,
+    {
         let event = GameEvent {
             target: event.target,
             event: event.event.clone(),
             state: Completed,
         };
+
+        self.trigger(CurrentGameEventComplete);
 
         self.send_and_trigger(event);
     }
@@ -852,11 +1183,12 @@ impl Default for CardTargeting {
 }
 
 pub trait GeneratesCardTargeting {
-    fn get_valid_targets(
+    fn apply_effect(
         &self,
         source: &CardIndex,
         cards: &mut Vec<(Entity, &Card, &CardIndex)>,
-    ) -> Vec<Entity>;
+        collection: &mut CardsPile,
+    );
 }
 
 #[derive(Component, Clone)]
@@ -876,66 +1208,83 @@ impl Magnetic {
 }
 
 impl GeneratesCardTargeting for Magnetic {
-    fn get_valid_targets(
+    fn apply_effect(
         &self,
         source: &CardIndex,
         cards: &mut Vec<(Entity, &Card, &CardIndex)>,
-    ) -> Vec<Entity> {
+        collection: &mut CardsPile,
+    ) {
         if cards.len() < 2 {
-            return vec![];
+            return;
         }
 
-        println!("cards : {:?}", cards.len());
-
         cards.sort_by_key(|(_, _, card_idx)| card_idx.0);
-        let index_values: Vec<i32> = cards.iter().map(|(_, _, idx)| idx.0).collect();
+
         let curr = source.0;
-        let next_i = curr + 1;
-        let prev_i = curr - 1;
-        let max_i = *index_values.iter().max().unwrap();
-        let min_i = *index_values.iter().min().unwrap();
+        // Position of the source *within the `cards` slice* — NOT `curr` itself.
+        let Some(curr_pos) = cards.iter().position(|(_, _, idx)| idx.0 == curr) else {
+            return;
+        };
+        let curr_pos = curr_pos as i32;
+        let len = cards.len() as i32;
 
-        let right_offset = (max_i - curr).min(self.strength);
-        let left_offset = (curr - min_i).min(self.strength);
+        let right_count = (len - 1 - curr_pos).min(self.strength);
+        let left_count = curr_pos.min(self.strength);
 
-        println!("min i {:?}, max i {:?}", min_i, max_i);
-        println!("right off {:?}, left off {:?}", right_offset, left_offset);
+        let col_indexes: HashMap<Entity, i32> = collection
+            .0
+            .iter()
+            .enumerate()
+            .map(|(i, e)| (*e, i as i32))
+            .collect();
 
-        let valid = match self.direction {
+        let modified: Vec<(Entity, i32)> = match self.direction {
             CardDir::Right => {
-                if curr == max_i || right_offset <= 0 {
+                if right_count <= 0 {
                     vec![]
                 } else {
-                    cards[(next_i) as usize..(next_i + right_offset) as usize].to_vec()
+                    let start = (curr_pos + 1) as usize;
+                    let end = (curr_pos + 1 + right_count) as usize;
+                    cards[start..end]
+                        .iter()
+                        .map(|(e, _, i)| (*e, i.0 - right_count))
+                        .collect()
                 }
             }
             CardDir::Left => {
-                if curr == min_i || left_offset <= 0 {
+                if left_count <= 0 {
                     vec![]
                 } else {
-                    cards[(curr) as usize..(prev_i - left_offset) as usize].to_vec()
+                    let start = (curr_pos - left_count) as usize;
+                    let end = curr_pos as usize;
+                    cards[start..end]
+                        .iter()
+                        // moving *toward* curr means increasing index, not decreasing
+                        .map(|(e, _, i)| (*e, i.0 + left_count))
+                        .collect()
                 }
             }
             CardDir::Around => {
-                println!("curr and max : {:?}, {:?}", curr, max_i);
-                let mut right = match (curr == max_i || right_offset <= 0) {
-                    true => vec![],
-                    false => cards[(curr) as usize..]
+                let mut right: Vec<(Entity, i32)> = if right_count <= 0 {
+                    vec![]
+                } else {
+                    let start = (curr_pos + 1) as usize;
+                    let end = (curr_pos + 1 + right_count) as usize;
+                    cards[start..end]
                         .iter()
-                        .take(right_offset as usize)
-                        .map(|v| *v)
-                        .collect::<Vec<_>>(),
+                        .map(|(e, _, _)| (*e, col_indexes.get(e).unwrap() - right_count))
+                        .collect()
                 };
 
-                println!("curr is : {:?}", curr);
-
-                let mut left = match (curr == min_i || left_offset <= 0) {
-                    true => vec![],
-                    false => cards[..(curr) as usize]
+                let mut left: Vec<(Entity, i32)> = if left_count <= 0 {
+                    vec![]
+                } else {
+                    let start = (curr_pos - left_count) as usize;
+                    let end = curr_pos as usize;
+                    cards[start..end]
                         .iter()
-                        .take(left_offset as usize)
-                        .map(|v| *v)
-                        .collect::<Vec<_>>(),
+                        .map(|(e, _, _)| (*e, col_indexes.get(e).unwrap() - left_count))
+                        .collect()
                 };
 
                 right.append(&mut left);
@@ -943,30 +1292,29 @@ impl GeneratesCardTargeting for Magnetic {
             }
         };
 
-        let targets = valid.iter().map(|(e, _, _)| *e).collect::<Vec<Entity>>();
-
-        let dir = match self.direction {
-            CardDir::Right => "right",
-            CardDir::Left => "left",
-            CardDir::Around => "around",
-        };
-        println!(
-            "selecting {:?} targets for i {:?} with strength {:?} and direction : {:?}",
-            targets.len(),
-            curr,
-            self.strength,
-            dir
-        );
-
-        targets
+        for (e, new_i) in modified.into_iter() {
+            let old_idx = cards.iter().find(|v| v.0 == e).unwrap().2.0;
+            println!("switching card from {:?} to {:?}", old_idx, new_i.max(0));
+            collection.0.place(e, new_i.max(0) as usize);
+        }
     }
 }
 
 pub fn status_effect<E: EntityEvent + Clone, T: Component + Clone>(effect: T) -> impl Bundle {
-    related!(StatusEffects[(TriggerOn::<E>::new(), effect, observe(tick_on::<E>))])
+    related!(
+        StatusEffects[(
+            TriggerOn::<GameEvent<E, Completed>>::new(),
+            effect,
+            observe(tick_on::<GameEvent<E, Completed>>)
+        )]
+    )
 }
 
 pub fn magnetic_effect(direction: CardDir, strength: i32) -> impl Bundle {
+    status_effect::<DrawCard, Magnetic>(Magnetic::new(direction, strength))
+}
+
+pub fn burn_effect(direction: CardDir, strength: i32) -> impl Bundle {
     status_effect::<DrawCard, Magnetic>(Magnetic::new(direction, strength))
 }
 
@@ -986,39 +1334,48 @@ pub fn tick_on<T: EntityEvent + Clone>(
 pub fn tick_effects(
     e: On<Tick>,
     q: Query<(Entity, &StatusEffectOf)>,
-    cards_q: Query<(Entity, &Card, &CardIndex)>,
+    mut q_decks: Query<&mut CardsPile>,
+    q_card_of: Query<&CardInPile>,
+    hand_cards_q: Query<(Entity, &Card, &CardIndex), With<InHand>>,
     magnetic_effects: Query<&Magnetic>,
 ) {
     let Ok((effect_entity, effect_of)) = q.get(e.status) else {
         return;
     };
 
-    let card_index = cards_q
+    let target_card = q_card_of.get(effect_of.get()).unwrap().0;
+    let target_deck = q_decks
+        .get_mut(target_card)
+        .expect("should find associated deck for effect card parent")
+        .into_inner();
+
+    println!("ticking effects");
+
+    let applier_index_c = hand_cards_q
         .get(effect_of.get())
         .expect("status parent should have a card index")
         .2;
 
-    let mut cards: Vec<(Entity, &Card, &CardIndex)> = cards_q.iter().collect();
+    let mut cards: Vec<(Entity, &Card, &CardIndex)> =
+        hand_cards_q.iter_many(&target_deck.0).collect();
 
     let Ok(magnetic) = magnetic_effects.get(effect_entity) else {
         return;
     };
 
-    for target_entity in magnetic.get_valid_targets(&card_index, &mut cards) {
-        println!("affecting magnetic to an entity");
-    }
+    magnetic.apply_effect(&applier_index_c, &mut cards, target_deck);
 }
 
-pub fn handle_draw(
-    e: On<GameEvent<DrawCard, Requested>>,
+pub fn handle_draw_card(
+    e: On<GameEvent<DrawCard, Init>>,
     q_widgets: Query<(Entity, &CardWidgetFor), With<Node>>,
-    player_hand: Res<PlayerHandContainer>,
-    enemy_hand: Res<EnemyHandContainer>,
+    player_deck: Res<PlayerData>,
+    enemy_deck: Res<EnemyData>,
     mut cmd: Commands,
 ) {
     let target_container = match e.event().event.is_player {
-        true => player_hand.0,
-        false => enemy_hand.0,
+        true => player_deck.ui_entity,
+        false => enemy_deck.ui_entity,
     };
 
     let ui_card = q_widgets
@@ -1050,64 +1407,66 @@ fn setup_base_scene(
         MeshMaterial2d(materials.add(Color::srgb(0.2, 0.2, 0.3))),
     ));
 
-    cmd.trigger(EnteredCombat);
-
-    // let player_hand = cmd.spawn((Node::default(), MainSceneUiRoot)).id();
-    // cmd.insert_resource(PlayerHandContainer(player_hand));
+    // let player_deck = cmd.spawn((Node::default(), MainSceneUiRoot)).id();
+    // cmd.insert_resource(PlayerHandContainer(player_deck));
 
     // let card_one = spawn_card(
-    //     (magnetic_effect(CardDir::Around, 1), CardOf(player_hand)),
+    //     (magnetic_effect(CardDir::Around, 1), CardOf(player_deck)),
     //     &mut cmd,
     //     true,
     // );
 
-    // cmd.entity(player_hand).add_child(card_one);
+    // cmd.entity(player_deck).add_child(card_one);
 
     // let new_card = spawn_card(
-    //     (magnetic_effect(CardDir::Around, 1), CardOf(player_hand)),
+    //     (magnetic_effect(CardDir::Around, 1), CardOf(player_deck)),
     //     &mut cmd,
     //     true,
     // );
 
-    // cmd.entity(player_hand).add_child(new_card);
+    // cmd.entity(player_deck).add_child(new_card);
 
     // let new_card_b = spawn_card(
-    //     (magnetic_effect(CardDir::Around, 1), CardOf(player_hand)),
+    //     (magnetic_effect(CardDir::Around, 1), CardOf(player_deck)),
     //     &mut cmd,
     //     true,
     // );
 
-    // cmd.entity(player_hand).add_child(new_card_b);
+    // cmd.entity(player_deck).add_child(new_card_b);
 }
 
-pub fn start_combat_test(
+pub fn input_linked_tests(
     mut cmd: Commands,
     keys: Res<ButtonInput<KeyCode>>,
     q_deck_card: Query<
-        Entity,
-        (
-            With<Card>,
-            With<CardIndex>,
-            Without<InHand>,
-            With<PlayerCard>,
-        ),
+        (Entity, Option<&PlayerCard>, Option<&EnemyCard>),
+        (With<Card>, With<CardIndex>, Without<InHand>),
     >,
+    maybe_battle_data: Option<Res<BattleData>>,
 ) {
-    if !keys.just_pressed(KeyCode::Space) {
-        return;
+    for key in keys.get_just_pressed() {
+        match key {
+            KeyCode::Space => {
+                if maybe_battle_data.is_some() {
+                    return;
+                }
+                cmd.insert_resource(BattleData::new());
+            }
+            // KeyCode::KeyP => {
+            //     let Some(card) = q_deck_card
+            //         .iter()
+            //         .find_map(|(ent, _, maybe_enemy)| maybe_enemy.map(|_| ent))
+            //     else {
+            //         return;
+            //     };
+            //     cmd.request_game_event(DrawCard {
+            //         card,
+            //         is_player: false,
+            //     });
+            // }
+            _ => {}
+        }
     }
-
-    let Some(card) = q_deck_card.iter().next() else {
-        return;
-    };
-
-    println!("drawing this shii");
-    cmd.entity(card).log_components();
-
-    cmd.request_game_event(DrawCard {
-        card,
-        is_player: true,
-    });
 }
 
 pub struct ImmeditateUiPlugin;
@@ -1115,7 +1474,8 @@ pub struct ImmeditateUiPlugin;
 impl Plugin for ImmeditateUiPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins((
-            BevyImmediateAttachPlugin::<CapsUi, MainSceneUiRoot>::new(),
+            BevyImmediateAttachPlugin::<CapsUi, MainSceneUiRoot<PlayerData>>::new(),
+            BevyImmediateAttachPlugin::<CapsUi, MainSceneUiRoot<EnemyData>>::new(),
             BevyImmediateAttachPlugin::<CapsUi, CardWidgetFor>::new(),
             FlairPlugin,
         ));
@@ -1123,59 +1483,53 @@ impl Plugin for ImmeditateUiPlugin {
 }
 
 #[derive(Component)]
-pub struct MainSceneUiRoot;
+pub struct MainSceneUiRoot<D: DeckDataSupplier> {
+    _phantom: PhantomData<D>,
+}
+
+impl<D: DeckDataSupplier> MainSceneUiRoot<D> {
+    pub fn new() -> Self {
+        Self {
+            _phantom: PhantomData,
+        }
+    }
+}
 
 #[derive(SystemParam)]
-pub struct HandUiParams<'w, 's> {
+pub struct HandUiParams<'w, 's, D: DeckDataSupplier> {
     pub q_cards: Query<
         'w,
         's,
         (
             Entity,
             &'static CardIndex,
-            Option<&'static PlayerCard>,
-            Option<&'static EnemyCard>,
+            &'static <D as DeckDataSupplier>::CardComponent,
         ),
     >,
-    player_hand: Option<Res<'w, PlayerHandContainer>>,
-    _enemy_hand: Option<Res<'w, EnemyHandContainer>>,
+    target_deck: Res<'w, D>,
 }
 
-impl ImmediateAttach<CapsUi> for MainSceneUiRoot {
-    type Params = HandUiParams<'static, 'static>;
+impl<'w, 's, D: DeckDataSupplier> HandUiParams<'w, 's, D> {
+    pub fn is_player(&self) -> bool {
+        D::is_player()
+    }
+}
 
-    fn construct(ui: &mut Imm<CapsUi>, params: &mut HandUiParams) {
+impl<D: DeckDataSupplier> ImmediateAttach<CapsUi> for MainSceneUiRoot<D> {
+    type Params = HandUiParams<'static, 'static, D>;
+
+    fn construct(ui: &mut Imm<CapsUi>, params: &mut HandUiParams<D>) {
         // Grab this once, up front — don't call ui.current_entity() again later.
         let current_entity = ui.current_entity();
 
         // Collect just the Entity ids you need (Copy), not the borrowed tuples.
         let cards: Vec<Entity> = match current_entity {
-            Some(entity) => match &params.player_hand {
-                Some(player_hand) => {
-                    let want_player = player_hand.0 == entity;
-                    params
-                        .q_cards
-                        .iter()
-                        .filter(|(_, _, maybe_player_card, maybe_enemy_card)| {
-                            if want_player {
-                                maybe_player_card.is_some()
-                            } else {
-                                maybe_enemy_card.is_some()
-                            }
-                        })
-                        .map(|(e, _, _, _)| e)
-                        .collect()
-                }
-                None => vec![],
-            },
+            Some(entity) => params.q_cards.iter().map(|vals| vals.0).collect(),
             None => vec![],
         };
 
         // Precompute the boolean the node_mut closure needs, so it doesn't touch params/ui.
-        let is_enemy_hand = current_entity
-            .zip(params._enemy_hand.as_ref())
-            .map(|(e, res)| res.0 == e)
-            .unwrap_or(false);
+        let is_enemy_deck = !params.is_player();
 
         ui.ch()
             .on_spawn_insert(|| {
@@ -1193,7 +1547,7 @@ impl ImmediateAttach<CapsUi> for MainSceneUiRoot {
                 )
             })
             .node_mut(move |n| {
-                if is_enemy_hand {
+                if is_enemy_deck {
                     n.bottom = Val::Vh(50.0);
                 }
             })
@@ -1213,11 +1567,6 @@ struct TurnTick;
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 struct TurnTickSet;
 
-#[derive(Resource)]
-pub struct Stylesheets {
-    pub hand: Handle<StyleSheet>,
-}
-
 fn main() {
     let mut app = App::new();
 
@@ -1235,12 +1584,12 @@ fn main() {
             })
             .set(ImagePlugin::default_nearest())
             .set(LogPlugin {
-                filter: "info,wgpu_core=error,wgpu_hal=error,ghx_proc_gen=debug".into(),
+                filter:
+                    "info,wgpu_core=error,wgpu_hal=error,ghx_proc_gen=debug,bevy_replicon=debug,renet=debug,bevy_renet=debug,bevy_replicon_renet=debug"
+                        .into(),
                 level: bevy::log::Level::DEBUG,
                 ..default()
-            })
-            .disable::<StatesPlugin>(),
-        StatePlugin,
+            }),
     ))
     .add_plugins(TilemapPlugin)
     .add_plugins((
@@ -1253,38 +1602,49 @@ fn main() {
         GameUiPlugin,
         TurnsPlugin,
         DeckAndCardsPlugin,
-        DebugUiPlugin,
         (CreatureGenerationPlugin, StatusEffectsPlugin),
     ))
     .add_plugins(ImmeditateUiPlugin)
     .add_plugins(AbilitiesTemplatePlugin)
     .add_plugins(DeckBackend::plugin())
     .add_plugins(OpacityPlugin)
+    .add_plugins(NetworkPlugin)
     // Resources
     .insert_resource(DirectionalLightShadowMap { size: 4096 })
+    .insert_resource(PendingEventRequests::empty())
     // Startup
     .add_systems(Startup, setup_base_scene.after(GearboxSet))
-    .add_systems(
-        Startup,
-        |mut cmd: Commands, asset_server: Res<AssetServer>| {
-            cmd.insert_resource(Stylesheets {
-                hand: asset_server.load("styles/main.css"),
-            });
-        },
-    )
-    // Update
-    .add_systems(Update, start_combat_test)
+    .add_systems(Update, input_linked_tests)
     .add_systems(Update, test_pos_tr)
     .add_systems(Update, handle_cardindex_change.after(test_pos_tr))
+    .add_systems(Update, check_pending_game_evt_req_changed)
     // Observers
-    .add_observer(handle_draw)
+    .add_observer(handle_draw_card)
     .add_observer(propagate_effect_statuses::<DrawCard>)
+    .add_observer(propagate_effect_statuses::<GameEvent<DrawCard, Init>>)
+    .add_observer(propagate_effect_statuses::<GameEvent<DrawCard, Running>>)
+    .add_observer(propagate_effect_statuses::<GameEvent<DrawCard, Completed>>)
+    .add_observer(handle_game_event_request)
+    .add_observer(handle_current_game_event_completed)
     .add_observer(tick_effects)
-    .add_observer(handle_card_added)
     // .add_observer(handle_card_widget_added)
-    .add_observer(relay_event_as_message::<DrawCard>)
+    // .add_observer(relay_event_as_message::<DrawCard>)
     .register_viewable::<Card>()
     .add_observer(build_card_view)
-    .add_observer(handle_card_added_to_hand)
+    // .add_observer(handle_card_added_to_hand)
+    .add_systems(
+        Update,
+        |q_decks: Query<&CardsPile, Changed<CardsPile>>, mut cmd: Commands| {
+            if q_decks.count() == 0 {
+                return;
+            }
+
+            for deck in q_decks.iter() {
+                for (i, card) in deck.iter().enumerate() {
+                    cmd.entity(card).insert(CardIndex(i as i32));
+                }
+            }
+        },
+    )
     .run();
 }

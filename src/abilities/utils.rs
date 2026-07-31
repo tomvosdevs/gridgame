@@ -29,32 +29,33 @@ pub struct AbilityComposingPlugin;
 
 impl Plugin for AbilityComposingPlugin {
     fn build(&self, app: &mut App) {
-        app.add_observer(
-            |e: On<EntityTurnStart>,
-             q: Query<Entity, With<PlayingEntity>>,
-             mut writer: MessageWriter<DeckStartInvoke>,
-             mut cmd: Commands| {
-                let entity = e.entity;
+        println!("uh");
+        // app.add_observer(
+        //     |e: On<EntityTurnStart>,
+        //      q: Query<Entity, With<PlayingEntity>>,
+        //      mut writer: MessageWriter<DeckStartInvoke>,
+        //      mut cmd: Commands| {
+        //         let entity = e.entity;
 
-                let target_entity = q
-                    .iter()
-                    .find(|e| *e != entity)
-                    .expect("should find at least one other player entity");
+        //         let target_entity = q
+        //             .iter()
+        //             .find(|e| *e != entity)
+        //             .expect("should find at least one other player entity");
 
-                cmd.entity(entity).insert(DeckInvokerTarget::entity(
-                    target_entity,
-                    BoardPos::new_on_player(1),
-                ));
+        //         cmd.entity(entity).insert(DeckInvokerTarget::entity(
+        //             target_entity,
+        //             BoardPos::new_on_player(1),
+        //         ));
 
-                let ability_entity = create_base_ability_entity(&mut cmd, entity);
+        //         let ability_entity = create_base_ability_entity(&mut cmd, entity);
 
-                // basic_projectile_card(&mut cmd, ability_entity);
-                // writer.write(GridStartInvoke::new(
-                //     ability_entity,
-                //     GridTarget::entity(target_entity, *target_pos),
-                // ));
-            },
-        );
+        //         // basic_projectile_card(&mut cmd, ability_entity);
+        //         // writer.write(GridStartInvoke::new(
+        //         //     ability_entity,
+        //         //     GridTarget::entity(target_entity, *target_pos),
+        //         // ));
+        //     },
+        // );
     }
 }
 

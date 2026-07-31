@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use bevy::{
     app::{App, Plugin, Startup, Update},
-    asset::Assets,
+    asset::{AssetServer, Assets},
     color::{Srgba, palettes::css::RED},
     ecs::{
         bundle::Bundle,
@@ -30,7 +30,7 @@ use bevy::{
     ui::Node,
 };
 use bevy_diesel::prelude::Invokes;
-use bevy_ecs::hierarchy::ChildOf;
+use bevy_ecs::{hierarchy::ChildOf, message::Message};
 use bevy_flair::style::{StyleSheet, components::NodeStyleSheet};
 use bevy_gauge::prelude::AttributesMut;
 use bevy_ghx_grid::ghx_grid::cartesian::{
@@ -44,16 +44,13 @@ use bevy_northstar::{
 };
 use bevy_prng::WyRand;
 use bevy_rand::global::GlobalRng;
-use pyri_state::{
-    access::NextMut,
-    pattern::StatePattern,
-    prelude::{State, StateFlush},
-    setup::AppExtState,
-};
+use moonshine_kind::{Instance, SpawnInstance};
+
 use rand::RngExt;
 
 use crate::{
-    CardDir, CardOf, EnemyHandContainer, MainSceneUiRoot, PlayerHandContainer, Stylesheets,
+    BoardUtilsCommandsExt, CardDir, CardInPile, CardsPile, DeckDataSupplier, DrawCard, EnemyData,
+    MainSceneUiRoot, PlayerData,
     abilities::abilities_templates::{Marker, Projectile},
     creatures::{
         definitions::{Creature, CreatureKind},
@@ -72,23 +69,55 @@ pub struct TurnsPlugin;
 
 impl Plugin for TurnsPlugin {
     fn build(&self, app: &mut App) {
-        app.init_state::<GameState>()
-            .init_state::<CombatState>()
+        app.insert_resource(RunData::init())
+            .add_systems(
+                Startup,
+                |mut cmd: Commands, asset_server: Res<AssetServer>| {
+                    println!("setting up ui");
+                    let ui_styles = asset_server.load("styles/main.css");
+
+                    // Draw piles
+                    let player_draw_pile = cmd.spawn_instance(CardsPile::init()).instance();
+                    let enemy_draw_pile = cmd.spawn_instance(CardsPile::init()).instance();
+                    // Hand piles
+                    let player_hand_pile = cmd.spawn_instance(CardsPile::init()).instance();
+                    let enemy_hand_pile = cmd.spawn_instance(CardsPile::init()).instance();
+                    // Ui boards
+                    let player_board_ui = cmd.spawn_empty().id();
+                    let enemy_board_ui = cmd.spawn_empty().id();
+
+                    cmd.insert_resource(PlayerData {
+                        ui_entity: player_board_ui,
+                        draw_pile_entity: player_draw_pile,
+                        hand_pile_entity: player_hand_pile,
+                    });
+                    cmd.insert_resource(EnemyData {
+                        ui_entity: enemy_board_ui,
+                        draw_pile_entity: enemy_draw_pile,
+                        hand_pile_entity: enemy_hand_pile,
+                    });
+
+                    cmd.entity(player_board_ui)
+                        .insert(board_ui_bundle::<PlayerData>(NodeStyleSheet::new(
+                            ui_styles.clone(),
+                        )));
+                    cmd.entity(enemy_board_ui)
+                        .insert(board_ui_bundle::<EnemyData>(NodeStyleSheet::new(
+                            ui_styles.clone(),
+                        )));
+
+                    cmd.trigger(EnteredCombat);
+                },
+            )
             .add_observer(handle_playing_gen_req)
             // .add_observer(spawn_combat_playing_entities)
             .add_observer(handle_combat_start)
             .add_observer(handle_turn_start)
+            .add_observer(handle_fill_hand)
             .add_observer(handle_turn_end)
-            .add_systems(
-                StateFlush,
-                GameState::InCombat.on_enter(request_test_playing_gen),
-            )
+            .add_systems(Update, handle_battle_init)
             .add_systems(Startup, spawn_dev_text)
-            .add_systems(Update, draw_dev_text)
-            .add_systems(
-                Update,
-                GameState::InCombat.on_update((keyboard_update_turn_test, start_combat_test)),
-            );
+            .add_systems(Update, draw_dev_text);
     }
 }
 
@@ -142,72 +171,247 @@ pub fn request_test_playing_gen(mut cmd: Commands) {
     }
 }
 
-pub fn hand_bundle(styles: NodeStyleSheet) -> impl Bundle {
-    (Node::default(), MainSceneUiRoot, styles)
+pub fn board_ui_bundle<D: DeckDataSupplier>(styles: NodeStyleSheet) -> impl Bundle {
+    (Node::default(), MainSceneUiRoot::<D>::new(), styles)
 }
 
-fn handle_combat_start(_: On<EnteredCombat>, mut cmd: Commands, stylesheets: Res<Stylesheets>) {
-    let enemy_hand = cmd
-        .spawn(hand_bundle(NodeStyleSheet::new(stylesheets.hand.clone())))
-        .id();
+#[derive(Resource)]
+pub struct BattleData {
+    pub is_player_turn: bool,
+}
 
-    let player_hand = cmd
-        .spawn(hand_bundle(NodeStyleSheet::new(stylesheets.hand.clone())))
-        .id();
+impl BattleData {
+    pub fn new() -> Self {
+        Self {
+            is_player_turn: true,
+        }
+    }
 
-    cmd.insert_resource(PlayerHandContainer(player_hand));
-    cmd.insert_resource(EnemyHandContainer(enemy_hand));
+    pub fn get_current_turn_kind(&self) -> TurnKind {
+        match self.is_player_turn {
+            true => TurnKind::Player,
+            false => TurnKind::Enemy,
+        }
+    }
+
+    pub fn get_trigger_next_turn_kind(&mut self) -> TurnKind {
+        self.is_player_turn = !self.is_player_turn;
+        match self.is_player_turn {
+            true => TurnKind::Player,
+            false => TurnKind::Enemy,
+        }
+    }
+}
+
+#[derive(Resource)]
+pub struct RunData {
+    pub current_day: i32,
+    pub current_hour: i32,
+    pub wins: i32,
+    pub loses: i32,
+}
+
+impl RunData {
+    pub fn init() -> Self {
+        Self {
+            current_day: 0,
+            current_hour: 0,
+            wins: 0,
+            loses: 0,
+        }
+    }
+}
+
+#[derive(Component, Debug, Clone)]
+#[relationship_target(relationship = RequirementOfPathOpt, linked_spawn)]
+pub struct PathOption {
+    requirements: Vec<Entity>,
+}
+
+#[derive(Component, Debug, Clone)]
+#[relationship(relationship_target = PathOption)]
+pub struct RequirementOfPathOpt(Entity);
+
+fn handle_combat_start(
+    _: On<EnteredCombat>,
+    mut cmd: Commands,
+    player_deck: Res<PlayerData>,
+    enemy_deck: Res<EnemyData>,
+) {
+    let player_draw_pile = player_deck.draw_pile_entity;
+    let player_hand_pile = player_deck.hand_pile_entity;
+    let enemy_draw_pile = enemy_deck.draw_pile_entity;
+    let enemy_hand_pile = enemy_deck.hand_pile_entity;
 
     spawn_card(
         (magnetic_effect(CardDir::Around, 1)),
         &mut cmd,
-        player_hand,
+        player_draw_pile,
+        player_hand_pile,
         true,
     );
 
     spawn_card(
         (magnetic_effect(CardDir::Around, 1)),
         &mut cmd,
-        player_hand,
+        player_draw_pile,
+        player_hand_pile,
         true,
     );
 
     spawn_card(
         (magnetic_effect(CardDir::Around, 1)),
         &mut cmd,
-        enemy_hand,
+        player_draw_pile,
+        player_hand_pile,
+        true,
+    );
+
+    spawn_card(
+        (magnetic_effect(CardDir::Around, 1)),
+        &mut cmd,
+        player_draw_pile,
+        player_hand_pile,
+        true,
+    );
+
+    spawn_card(
+        (magnetic_effect(CardDir::Around, 1)),
+        &mut cmd,
+        player_draw_pile,
+        player_hand_pile,
+        true,
+    );
+
+    spawn_card(
+        (magnetic_effect(CardDir::Around, 1)),
+        &mut cmd,
+        enemy_draw_pile,
+        enemy_hand_pile,
+        false,
+    );
+
+    spawn_card(
+        (magnetic_effect(CardDir::Around, 1)),
+        &mut cmd,
+        enemy_draw_pile,
+        enemy_hand_pile,
+        false,
+    );
+
+    spawn_card(
+        (magnetic_effect(CardDir::Around, 1)),
+        &mut cmd,
+        enemy_draw_pile,
+        enemy_hand_pile,
+        false,
+    );
+
+    spawn_card(
+        (magnetic_effect(CardDir::Around, 1)),
+        &mut cmd,
+        enemy_draw_pile,
+        enemy_hand_pile,
         false,
     );
 }
 
-fn handle_turn_start(
-    e: On<EntityTurnStart>,
-    mut cmd: Commands,
-    q: Query<&CurrentDeckReference>,
-    q_decks: Query<Entity, With<ActiveDeck>>,
-) {
-    let entity_current_deck = q.get(e.entity).expect("entity doesn have a deck");
-    let deck_entity = q_decks
-        .get(entity_current_deck.0)
-        .expect("deck doesn't exist");
+pub fn handle_battle_init(battle_data: Option<Res<BattleData>>, mut cmd: Commands) {
+    let Some(battle_data) = battle_data else {
+        return;
+    };
 
-    cmd.trigger(DrawHand::from_deck_entity(deck_entity));
-    cmd.insert_resource(CurrentPlayingEntity(e.entity));
+    if battle_data.is_added() {
+        match battle_data.get_current_turn_kind() {
+            TurnKind::Player => cmd.trigger(EntityTurnStart::player()),
+            TurnKind::Enemy => cmd.trigger(EntityTurnStart::enemy()),
+        }
+    }
 }
 
-fn handle_turn_end(e: On<EntityTurnEnd>, mut cmd: Commands, mut combat_data: ResMut<CombatData>) {
-    combat_data.end_entity_turn(e.entity);
+#[derive(EntityEvent, Clone, Debug)]
+pub struct DrawFillHand {
+    #[event_target]
+    hand_pile: Entity,
+    draw_pile: Entity,
+    is_player: bool,
+}
 
-    let next_playing_entity = combat_data.get_next_playing_entity();
+impl DrawFillHand {
+    pub fn new(
+        hand_pile: Instance<CardsPile>,
+        draw_pile: Instance<CardsPile>,
+        is_player: bool,
+    ) -> Self {
+        Self {
+            hand_pile: hand_pile.entity(),
+            draw_pile: draw_pile.entity(),
+            is_player,
+        }
+    }
+}
 
-    // Add back if the end of a GLOBAL turn should do something
-    // if combat_data.turn_just_ended() {
+fn handle_turn_start(
+    e: On<EntityTurnStart>,
+    player_data: Res<PlayerData>,
+    enemy_data: Res<EnemyData>,
+    mut cmd: Commands,
+) {
+    let (hand_pile, draw_pile, is_player) = match e.turn_kind {
+        TurnKind::Player => (
+            player_data.hand_pile_entity,
+            player_data.draw_pile_entity,
+            true,
+        ),
+        TurnKind::Enemy => (
+            enemy_data.hand_pile_entity,
+            enemy_data.draw_pile_entity,
+            false,
+        ),
+    };
 
-    // }
+    println!("COMPS LOG on CURR draw pile : ");
+    cmd.entity(draw_pile.entity()).log_components();
 
-    cmd.trigger(EntityTurnStart {
-        entity: next_playing_entity,
-    });
+    cmd.trigger(DrawFillHand::new(hand_pile, draw_pile, is_player));
+}
+
+pub fn handle_fill_hand(e: On<DrawFillHand>, q: Query<&CardsPile>, mut cmd: Commands) {
+    let draw_pile = q
+        .get(e.draw_pile)
+        .expect("Should find 'CardsPile' Comp on pile to draw from entity");
+    let hand_pile = q
+        .get(e.hand_pile)
+        .expect("Should find 'CardsPile' Comp on pile to draw from entity");
+
+    let max_hand_size: usize = 3;
+
+    if hand_pile.len() >= max_hand_size {
+        return;
+    }
+
+    let left_to_draw_count = max_hand_size - hand_pile.len();
+
+    for i in 0..left_to_draw_count {
+        let Some(card) = draw_pile.0.get(i) else {
+            return;
+        };
+
+        cmd.request_game_event(DrawCard {
+            card: *card,
+            is_player: e.is_player,
+        });
+    }
+
+    cmd.request_event(EntityTurnEnd(e.hand_pile));
+}
+
+fn handle_turn_end(_: On<EntityTurnEnd>, mut battle_data: ResMut<BattleData>, mut cmd: Commands) {
+    println!("TURN ENDED");
+    match battle_data.get_trigger_next_turn_kind() {
+        TurnKind::Player => cmd.trigger(EntityTurnStart::player()),
+        TurnKind::Enemy => cmd.trigger(EntityTurnStart::enemy()),
+    }
 }
 
 pub fn start_combat_test(mut cmd: Commands, keyboard_input: Res<ButtonInput<KeyCode>>) {
@@ -237,22 +441,6 @@ pub fn draw_dev_text(mut q: Query<&mut Text2d, With<DevTextTarget>>, text: Res<D
     };
 }
 
-pub fn keyboard_update_turn_test(
-    keys: Res<ButtonInput<KeyCode>>,
-    mut cmd: Commands,
-    curr_ent: Option<Res<CurrentPlayingEntity>>,
-) {
-    if !keys.just_pressed(KeyCode::ArrowRight) {
-        return;
-    }
-    let Some(curr_ent) = curr_ent else {
-        return;
-    };
-
-    println!("ici man");
-    cmd.trigger(EntityTurnEnd { entity: curr_ent.0 });
-}
-
 #[derive(Resource)]
 pub struct DevText(String);
 
@@ -263,13 +451,13 @@ pub struct DevTextTarget;
 pub struct CurrentPlayingEntity(pub Entity);
 
 #[derive(Resource)]
-pub struct CombatData {
+pub struct _CombatData {
     pub current_turn: u16,
     pub entities_next_turn: HashMap<Entity, u16>,
     turn_ended: bool,
 }
 
-impl CombatData {
+impl _CombatData {
     pub fn init_new_combat(entities_in_order: &Vec<Entity>) -> Self {
         let entities_next_turn: HashMap<Entity, u16> =
             entities_in_order.iter().map(|e| (*e, 0)).collect();
@@ -324,42 +512,39 @@ pub struct CombatInit;
 #[derive(Event)]
 pub struct EnteredCombat;
 
-#[derive(EntityEvent, Clone)]
-pub struct EntityTurnStart {
-    pub entity: Entity,
+#[derive(Debug, Clone, PartialEq)]
+pub enum TurnKind {
+    Player,
+    Enemy,
 }
 
-#[derive(EntityEvent, Clone)]
-pub struct EntityTurnEnd {
-    pub entity: Entity,
+#[derive(Clone, Event)]
+pub struct EntityTurnStart {
+    pub turn_kind: TurnKind,
 }
+
+impl EntityTurnStart {
+    pub fn player() -> Self {
+        Self {
+            turn_kind: TurnKind::Player,
+        }
+    }
+
+    pub fn enemy() -> Self {
+        Self {
+            turn_kind: TurnKind::Enemy,
+        }
+    }
+}
+
+#[derive(EntityEvent, Clone, Message)]
+pub struct EntityTurnEnd(Entity);
 
 #[derive(Event)]
 pub struct GlobalTurnStart;
 
 #[derive(Event)]
 pub struct GlobalTurnEnd;
-
-#[derive(EntityEvent)]
-pub struct DrawCard {
-    entity: Entity,
-}
-
-#[derive(State, Debug, Clone, PartialEq, Eq, Hash, Default)]
-pub enum GameState {
-    #[default]
-    LoadingGrid,
-    InCombat,
-}
-
-#[derive(State, Debug, Clone, PartialEq, Eq, Hash, Default)]
-pub enum CombatState {
-    #[default]
-    DeterminePlayOrder,
-    PlayerTurn(i32),
-    EnemyTurn(i32),
-    EnvironmentTurn(i32),
-}
 
 #[derive(Component)]
 pub struct MemberOf<const ID: i32>;
