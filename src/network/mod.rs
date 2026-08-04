@@ -12,11 +12,15 @@ use bevy::{
         condition::in_state,
         state::{OnEnter, OnExit, State, States},
     },
+    ui::Node,
     utils::default,
 };
 use bevy_ecs::{
+    change_detection::DetectChanges,
     component::Component,
-    event::Event,
+    entity::Entity,
+    event::{EntityEvent, Event},
+    hierarchy::ChildOf,
     lifecycle::{Add, Remove},
     message::MessageWriter,
     observer::On,
@@ -25,6 +29,7 @@ use bevy_ecs::{
     system::{Commands, Query, Res, ResMut},
 };
 
+use bevy_flair::style::components::NodeStyleSheet;
 use bevy_renet::{
     RenetClient, RenetServer,
     netcode::{
@@ -36,15 +41,27 @@ use bevy_renet::{
 use bevy_replicon::{
     RepliconPlugins,
     prelude::{
-        AppRuleExt, Channel, ClientEventAppExt, ClientState, ClientTriggerExt, ConnectedClient,
-        DisconnectRequest, FromClient, ProtocolHash, ProtocolMismatch, Replicated,
-        RepliconChannels, SendTargets, ServerEventAppExt, ServerTriggerExt, Signature, ToClients,
+        AppRuleExt, Channel, ClientEventAppExt, ClientId, ClientState, ClientTriggerExt,
+        ConnectedClient, DisconnectRequest, FromClient, ProtocolHash, ProtocolMismatch, Replicated,
+        RepliconChannels, SendTargets, ServerEventAppExt, ServerState, ServerTriggerExt, Signature,
+        SyncRelatedAppExt, ToClients,
     },
     server::AuthorizedClient,
     shared::{AuthMethod, RepliconSharedPlugin},
 };
 use bevy_replicon_renet::{RenetChannelsExt, RepliconRenetPlugins};
 use serde::{Deserialize, Serialize};
+
+use crate::{
+    BeingDrawn, CardInPile, CardIndex, CardWidgetFor, DrawPile, EnemyCard, EnemyData, HandPile,
+    InDiscard, InDrawPile, InHand, Magnetic, MainSceneUiRoot, PlayerCard, PlayerData, UiCardMarker,
+    abilities::effects::{StatusEffectOf, StatusEffects},
+    deck::deck_and_cards::{Card, CardPile},
+    game_flow::turns::{
+        BattleData, BattleTriggered, CheckClientBattleReady, ConfirmBattleReady, EnemyBoardMarker,
+        PlayerBoardMarker, confirm_server_battle_ready, handle_client_confirm_battle_start,
+    },
+};
 
 pub struct NetworkPlugin;
 
@@ -59,7 +76,33 @@ impl Plugin for NetworkPlugin {
         .init_resource::<Cli>()
         .init_state::<GameState>()
         .replicate::<SharedVal>()
+        .replicate::<Card>()
+        .replicate::<CardPile>()
+        .replicate::<CardInPile>()
+        .replicate::<Magnetic>()
+        .replicate::<UiCardMarker>()
+        .replicate::<InHand>()
+        .replicate::<BeingDrawn>()
+        .replicate::<InDrawPile>()
+        .replicate::<InDiscard>()
+        .replicate::<CardIndex>()
+        .replicate::<PlayerBoardMarker>()
+        .replicate::<EnemyBoardMarker>()
+        .replicate_once::<Node>()
+        .replicate_once::<MainSceneUiRoot<PlayerData>>()
+        .replicate_once::<MainSceneUiRoot<EnemyData>>()
+        .sync_related_entities::<CardInPile>()
+        .replicate::<StatusEffects>()
+        .replicate::<StatusEffectOf>()
+        .sync_related_entities::<StatusEffectOf>()
+        .replicate::<DrawPile>()
+        .replicate::<HandPile>()
+        .replicate::<PlayerCard>()
+        .replicate::<EnemyCard>()
+        .sync_related_entities::<ChildOf>()
         .add_client_event::<ShareClientProtocol>(Channel::Ordered)
+        .add_client_event::<ConfirmBattleReady>(Channel::Ordered)
+        .add_server_event::<CheckClientBattleReady>(Channel::Ordered)
         .add_server_event::<ProtocolMismatch>(Channel::Unreliable)
         .make_event_independent::<ProtocolMismatch>()
         .add_observer(handle_sent_client_protocol)
@@ -74,6 +117,8 @@ impl Plugin for NetworkPlugin {
         .add_observer(disconnect_by_client)
         .add_observer(init_client)
         .add_observer(apply_increment_req)
+        .add_observer(handle_client_confirm_battle_start)
+        .add_observer(confirm_server_battle_ready)
         .add_systems(Startup, setup_networking)
         .add_systems(
             Update,
@@ -324,5 +369,5 @@ fn init_client(add: On<Add, AuthorizedClient>, mut cmd: Commands) {
     cmd.entity(add.entity)
         .insert((ClientPlayer, Signature::of::<ClientPlayer>(), Replicated));
 
-    cmd.set_state(GameState::InGame);
+    cmd.trigger(BattleTriggered);
 }

@@ -13,6 +13,8 @@ use bevy::{
     },
 };
 use bevy_gauge::{AttributeComponent, prelude::Attributes};
+use bevy_replicon::prelude::Replicated;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     UiCardMarker, creatures::definitions::CreatureKind, deck::card_builders::PoolSupplier,
@@ -155,10 +157,11 @@ impl DrawHand {
     }
 }
 
-#[derive(Component)]
+#[derive(Component, Clone, Debug, Serialize, Deserialize)]
 #[relationship_target(relationship = InDeck, linked_spawn)]
 pub struct CardPile {
     #[relationship_target]
+    #[entities]
     cards: Vec<Entity>,
 }
 
@@ -183,7 +186,8 @@ impl Default for CardPile {
 #[relationship(relationship_target = CardPile)]
 pub struct InDeck(pub Entity);
 
-#[derive(Component, Clone)]
+#[derive(Component, Clone, Serialize, Deserialize)]
+#[require(Replicated)]
 pub struct Card {}
 
 impl Card {

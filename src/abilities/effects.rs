@@ -26,6 +26,7 @@ use bevy_gauge::{
     },
 };
 use bevy_ghx_grid::ghx_grid::cartesian::coordinates::CartesianPosition;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     abilities::abilities_templates::InvokingTriggerEffect,
@@ -124,13 +125,14 @@ pub fn handle_spawn_effect(
 // pub struct HitTrigger {}
 // impl EffectTrigger for HitTrigger {}
 
-#[derive(Component, Debug, Clone)]
+#[derive(Component, Debug, Clone, Serialize, Deserialize)]
 #[relationship_target(relationship = StatusEffectOf, linked_spawn)]
+#[entities]
 pub struct StatusEffects(Vec<Entity>);
 
-#[derive(Component, Debug, Clone)]
+#[derive(Component, Debug, Clone, Serialize, Deserialize)]
 #[relationship(relationship_target = StatusEffects)]
-pub struct StatusEffectOf(Entity);
+pub struct StatusEffectOf(#[entities] Entity);
 
 // pub trait Applicable {}
 

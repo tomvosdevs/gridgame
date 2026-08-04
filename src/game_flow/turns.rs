@@ -26,11 +26,15 @@ use bevy::{
     mesh::{Mesh, Mesh3d},
     pbr::{MeshMaterial3d, StandardMaterial},
     sprite::Text2d,
+    state::state::State,
     transform::components::{GlobalTransform, Transform},
     ui::Node,
 };
 use bevy_diesel::prelude::Invokes;
-use bevy_ecs::{hierarchy::ChildOf, message::Message};
+use bevy_ecs::{
+    hierarchy::ChildOf, lifecycle::Add, message::Message,
+    relationship::OrderedRelationshipSourceCollection,
+};
 use bevy_flair::style::{StyleSheet, components::NodeStyleSheet};
 use bevy_gauge::prelude::AttributesMut;
 use bevy_ghx_grid::ghx_grid::cartesian::{
@@ -44,13 +48,21 @@ use bevy_northstar::{
 };
 use bevy_prng::WyRand;
 use bevy_rand::global::GlobalRng;
-use moonshine_kind::{Instance, SpawnInstance};
+use bevy_replicon::{
+    client::Remote,
+    prelude::{
+        ClientState, ClientTriggerExt, FromClient, Replicated, SendTargets, ServerTriggerExt,
+        ToClients,
+    },
+};
+use moonshine_kind::{InsertInstance, Instance, SpawnInstance};
 
 use rand::RngExt;
+use serde::{Deserialize, Serialize};
 
 use crate::{
-    BoardUtilsCommandsExt, CardDir, CardInPile, CardsPile, DeckDataSupplier, DrawCard, EnemyData,
-    MainSceneUiRoot, PlayerData,
+    BoardUtilsCommandsExt, CardDir, CardInPile, CardsPile, DeckDataSupplier, DrawCard, DrawPile,
+    EnemyData, HandPile, InHand, MainSceneUiRoot, PlayerData,
     abilities::abilities_templates::{Marker, Projectile},
     creatures::{
         definitions::{Creature, CreatureKind},
@@ -70,55 +82,96 @@ pub struct TurnsPlugin;
 impl Plugin for TurnsPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(RunData::init())
-            .add_systems(
-                Startup,
-                |mut cmd: Commands, asset_server: Res<AssetServer>| {
-                    println!("setting up ui");
-                    let ui_styles = asset_server.load("styles/main.css");
-
-                    // Draw piles
-                    let player_draw_pile = cmd.spawn_instance(CardsPile::init()).instance();
-                    let enemy_draw_pile = cmd.spawn_instance(CardsPile::init()).instance();
-                    // Hand piles
-                    let player_hand_pile = cmd.spawn_instance(CardsPile::init()).instance();
-                    let enemy_hand_pile = cmd.spawn_instance(CardsPile::init()).instance();
-                    // Ui boards
-                    let player_board_ui = cmd.spawn_empty().id();
-                    let enemy_board_ui = cmd.spawn_empty().id();
-
-                    cmd.insert_resource(PlayerData {
-                        ui_entity: player_board_ui,
-                        draw_pile_entity: player_draw_pile,
-                        hand_pile_entity: player_hand_pile,
-                    });
-                    cmd.insert_resource(EnemyData {
-                        ui_entity: enemy_board_ui,
-                        draw_pile_entity: enemy_draw_pile,
-                        hand_pile_entity: enemy_hand_pile,
-                    });
-
-                    cmd.entity(player_board_ui)
-                        .insert(board_ui_bundle::<PlayerData>(NodeStyleSheet::new(
-                            ui_styles.clone(),
-                        )));
-                    cmd.entity(enemy_board_ui)
-                        .insert(board_ui_bundle::<EnemyData>(NodeStyleSheet::new(
-                            ui_styles.clone(),
-                        )));
-
-                    cmd.trigger(EnteredCombat);
-                },
-            )
             .add_observer(handle_playing_gen_req)
-            // .add_observer(spawn_combat_playing_entities)
-            .add_observer(handle_combat_start)
+            .add_observer(handle_combat_init)
             .add_observer(handle_turn_start)
-            .add_observer(handle_fill_hand)
+            .add_observer(handle_draw_from_pile)
             .add_observer(handle_turn_end)
-            .add_systems(Update, handle_battle_init)
+            .add_observer(setup_battle_context)
+            .add_observer(handle_player_board_spawned)
+            .add_observer(handle_enemy_board_spawned)
             .add_systems(Startup, spawn_dev_text)
             .add_systems(Update, draw_dev_text);
     }
+}
+
+#[derive(Event, Clone, Debug)]
+pub struct BattleTriggered;
+
+#[derive(Component, Debug, Serialize, Deserialize)]
+#[require(Replicated)]
+pub struct PlayerBoardMarker;
+
+#[derive(Component, Debug, Serialize, Deserialize)]
+#[require(Replicated)]
+pub struct EnemyBoardMarker;
+
+pub fn handle_player_board_spawned(
+    e: On<Add, PlayerBoardMarker>,
+    asset_server: Res<AssetServer>,
+    client_state: Res<State<ClientState>>,
+    mut cmd: Commands,
+) {
+    match client_state.get() {
+        ClientState::Connected => {}
+        _ => {
+            return;
+        }
+    }
+    let hand_board_stylesheet = asset_server.load("styles/main.css");
+    cmd.entity(e.entity)
+        .insert(board_ui_bundle::<PlayerData>(NodeStyleSheet::new(
+            hand_board_stylesheet.clone(),
+        )));
+}
+
+pub fn handle_enemy_board_spawned(
+    e: On<Add, EnemyBoardMarker>,
+    asset_server: Res<AssetServer>,
+    client_state: Res<State<ClientState>>,
+    mut cmd: Commands,
+) {
+    match client_state.get() {
+        ClientState::Connected => {}
+        _ => {
+            return;
+        }
+    }
+    let hand_board_stylesheet = asset_server.load("styles/main.css");
+    cmd.entity(e.entity)
+        .insert(board_ui_bundle::<EnemyData>(NodeStyleSheet::new(
+            hand_board_stylesheet.clone(),
+        )));
+}
+
+fn setup_battle_context(_: On<BattleTriggered>, mut cmd: Commands) {
+    println!("setting up ui");
+
+    // Draw piles
+    let player_draw_pile = cmd.spawn_instance(DrawPile).insert(Replicated).instance();
+    let enemy_draw_pile = cmd.spawn_instance(DrawPile).insert(Replicated).instance();
+    // Hand piles
+    let player_hand_pile = cmd.spawn_instance(HandPile).insert(Replicated).instance();
+    let enemy_hand_pile = cmd.spawn_instance(HandPile).insert(Replicated).instance();
+    // Ui boards
+    let player_board_ui = cmd.spawn((PlayerBoardMarker, Replicated)).id();
+    let enemy_board_ui = cmd.spawn((EnemyBoardMarker, Replicated)).id();
+
+    cmd.insert_resource(PlayerData {
+        ui_entity: player_board_ui,
+        draw_pile_entity: player_draw_pile,
+        hand_pile_entity: player_hand_pile,
+    });
+
+    cmd.insert_resource(EnemyData {
+        ui_entity: enemy_board_ui,
+        draw_pile_entity: enemy_draw_pile,
+        hand_pile_entity: enemy_hand_pile,
+    });
+
+    cmd.insert_resource(BattleData::new());
+
+    cmd.trigger(EnteredCombat);
 }
 
 #[derive(Event)]
@@ -172,18 +225,33 @@ pub fn request_test_playing_gen(mut cmd: Commands) {
 }
 
 pub fn board_ui_bundle<D: DeckDataSupplier>(styles: NodeStyleSheet) -> impl Bundle {
-    (Node::default(), MainSceneUiRoot::<D>::new(), styles)
+    (
+        Node::default(),
+        MainSceneUiRoot::<D>::new(),
+        Replicated,
+        styles,
+    )
 }
 
-#[derive(Resource)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum BattleState {
+    Init,
+    AwaitingClient,
+    Running,
+    Ended,
+}
+
+#[derive(Resource, Clone, Debug, Serialize, Deserialize)]
 pub struct BattleData {
     pub is_player_turn: bool,
+    pub state: BattleState,
 }
 
 impl BattleData {
     pub fn new() -> Self {
         Self {
             is_player_turn: true,
+            state: BattleState::Init,
         }
     }
 
@@ -232,11 +300,18 @@ pub struct PathOption {
 #[relationship(relationship_target = PathOption)]
 pub struct RequirementOfPathOpt(Entity);
 
-fn handle_combat_start(
+#[derive(Event, Debug, Clone, Serialize, Deserialize)]
+pub struct CheckClientBattleReady;
+
+#[derive(Event, Debug, Clone, Serialize, Deserialize)]
+pub struct ConfirmBattleReady;
+
+fn handle_combat_init(
     _: On<EnteredCombat>,
-    mut cmd: Commands,
     player_deck: Res<PlayerData>,
     enemy_deck: Res<EnemyData>,
+    mut data: ResMut<BattleData>,
+    mut cmd: Commands,
 ) {
     let player_draw_pile = player_deck.draw_pile_entity;
     let player_hand_pile = player_deck.hand_pile_entity;
@@ -314,39 +389,67 @@ fn handle_combat_start(
         enemy_hand_pile,
         false,
     );
+    println!("combat init");
+
+    cmd.server_trigger(ToClients {
+        targets: SendTargets::CLIENTS_ONLY,
+        message: CheckClientBattleReady,
+    });
+
+    data.state = BattleState::AwaitingClient;
 }
 
-pub fn handle_battle_init(battle_data: Option<Res<BattleData>>, mut cmd: Commands) {
-    let Some(battle_data) = battle_data else {
-        return;
-    };
-
-    if battle_data.is_added() {
-        match battle_data.get_current_turn_kind() {
-            TurnKind::Player => cmd.trigger(EntityTurnStart::player()),
-            TurnKind::Enemy => cmd.trigger(EntityTurnStart::enemy()),
+pub fn confirm_server_battle_ready(
+    _: On<CheckClientBattleReady>,
+    state: Res<State<ClientState>>,
+    mut cmd: Commands,
+) {
+    match state.get() {
+        ClientState::Connected => {}
+        _ => {
+            return;
         }
+    }
+    cmd.client_trigger(ConfirmBattleReady);
+}
+
+pub fn handle_client_confirm_battle_start(
+    _: On<FromClient<ConfirmBattleReady>>,
+    mut data: ResMut<BattleData>,
+    mut cmd: Commands,
+) {
+    data.state = BattleState::Running;
+
+    match data.get_current_turn_kind() {
+        TurnKind::Player => cmd.trigger(EntityTurnStart::player()),
+        TurnKind::Enemy => cmd.trigger(EntityTurnStart::enemy()),
     }
 }
 
+#[derive(Debug, Clone)]
+pub enum DrawAmount {
+    Fixed(i32),
+    FillHand,
+}
+
 #[derive(EntityEvent, Clone, Debug)]
-pub struct DrawFillHand {
+pub struct DrawFromPile {
     #[event_target]
     hand_pile: Entity,
     draw_pile: Entity,
-    is_player: bool,
+    draw_amount: DrawAmount,
 }
 
-impl DrawFillHand {
+impl DrawFromPile {
     pub fn new(
-        hand_pile: Instance<CardsPile>,
-        draw_pile: Instance<CardsPile>,
-        is_player: bool,
+        hand_pile: Instance<HandPile>,
+        draw_pile: Instance<DrawPile>,
+        draw_amount: DrawAmount,
     ) -> Self {
         Self {
             hand_pile: hand_pile.entity(),
             draw_pile: draw_pile.entity(),
-            is_player,
+            draw_amount,
         }
     }
 }
@@ -373,15 +476,16 @@ fn handle_turn_start(
     println!("COMPS LOG on CURR draw pile : ");
     cmd.entity(draw_pile.entity()).log_components();
 
-    cmd.trigger(DrawFillHand::new(hand_pile, draw_pile, is_player));
+    cmd.trigger(DrawFromPile::new(
+        hand_pile,
+        draw_pile,
+        DrawAmount::FillHand,
+    ));
 }
 
-pub fn handle_fill_hand(e: On<DrawFillHand>, q: Query<&CardsPile>, mut cmd: Commands) {
-    let draw_pile = q
-        .get(e.draw_pile)
-        .expect("Should find 'CardsPile' Comp on pile to draw from entity");
-    let hand_pile = q
-        .get(e.hand_pile)
+pub fn handle_draw_from_pile(e: On<DrawFromPile>, mut q: Query<&mut CardsPile>, mut cmd: Commands) {
+    let [mut draw_pile, mut hand_pile] = q
+        .get_many_mut([e.draw_pile, e.hand_pile])
         .expect("Should find 'CardsPile' Comp on pile to draw from entity");
 
     let max_hand_size: usize = 3;
@@ -390,21 +494,25 @@ pub fn handle_fill_hand(e: On<DrawFillHand>, q: Query<&CardsPile>, mut cmd: Comm
         return;
     }
 
-    let left_to_draw_count = max_hand_size - hand_pile.len();
+    let max_draw_amount = max_hand_size - hand_pile.len();
 
-    for i in 0..left_to_draw_count {
-        let Some(card) = draw_pile.0.get(i) else {
-            return;
-        };
+    let left_to_draw_count = match e.draw_amount {
+        DrawAmount::Fixed(amount) => max_draw_amount.min(amount as usize),
+        DrawAmount::FillHand => max_draw_amount,
+    };
 
-        cmd.request_game_event(DrawCard {
-            card: *card,
-            is_player: e.is_player,
-        });
+    for _ in 0..left_to_draw_count {
+        let drawn = draw_pile.0.pop_front().unwrap();
+        cmd.entity(drawn).insert((JustDrawn, InHand));
+        hand_pile.0.push_back(drawn);
+        println!("drawing DRAWING FTAWING");
     }
 
-    cmd.request_event(EntityTurnEnd(e.hand_pile));
+    // cmd.trigger(EntityTurnEnd(e.hand_pile));
 }
+
+#[derive(Component, Debug, Clone)]
+pub struct JustDrawn;
 
 fn handle_turn_end(_: On<EntityTurnEnd>, mut battle_data: ResMut<BattleData>, mut cmd: Commands) {
     println!("TURN ENDED");
