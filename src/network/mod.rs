@@ -1,11 +1,13 @@
 use std::{
+    collections::{BTreeMap, HashMap},
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket},
     time::SystemTime,
 };
 
 use bevy::{
-    app::{App, Plugin, PluginGroup, Startup, Update},
+    app::{App, FixedUpdate, Plugin, PluginGroup, Startup, Update},
     input::{ButtonInput, keyboard::KeyCode},
+    prelude::{Deref, DerefMut},
     state::{
         app::AppExtStates,
         commands::CommandsStatesExt,
@@ -17,13 +19,15 @@ use bevy::{
 };
 use bevy_ecs::{
     change_detection::DetectChanges,
-    component::Component,
+    component::{Component, Mutable},
     entity::Entity,
+    error::BevyError,
     event::{EntityEvent, Event},
     hierarchy::ChildOf,
     lifecycle::{Add, Remove},
     message::MessageWriter,
     observer::On,
+    query::{Changed, Or, With},
     resource::Resource,
     schedule::IntoScheduleConfigs,
     system::{Commands, Query, Res, ResMut},
@@ -36,26 +40,35 @@ use bevy_renet::{
         ClientAuthentication, NetcodeClientTransport, NetcodeServerTransport, ServerAuthentication,
         ServerConfig,
     },
-    renet::ConnectionConfig,
+    renet::{Bytes, ConnectionConfig},
 };
 use bevy_replicon::{
     RepliconPlugins,
     prelude::{
-        AppRuleExt, Channel, ClientEventAppExt, ClientId, ClientState, ClientTriggerExt,
-        ConnectedClient, DisconnectRequest, FromClient, ProtocolHash, ProtocolMismatch, Replicated,
-        RepliconChannels, SendTargets, ServerEventAppExt, ServerState, ServerTriggerExt, Signature,
-        SyncRelatedAppExt, ToClients,
+        AppMarkerExt, AppRuleExt, Channel, ClientEventAppExt, ClientId, ClientState,
+        ClientTriggerExt, ConnectedClient, DisconnectRequest, FromClient, ProtocolHash,
+        ProtocolMismatch, Replicated, RepliconChannels, RuleFns, SendTargets, ServerEventAppExt,
+        ServerState, ServerTriggerExt, Signature, SyncRelatedAppExt, ToClients,
     },
     server::AuthorizedClient,
-    shared::{AuthMethod, RepliconSharedPlugin},
+    shared::{
+        AuthMethod, RepliconSharedPlugin,
+        replication::{
+            deferred_entity::DeferredEntity,
+            receive_markers::MarkerConfig,
+            registry::ctx::{RemoveCtx, SerializeCtx, WriteCtx},
+        },
+    },
 };
 use bevy_replicon_renet::{RenetChannelsExt, RepliconRenetPlugins};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    BeingDrawn, CardInPile, CardIndex, CardWidgetFor, DrawPile, EnemyCard, EnemyData, HandPile,
-    InDiscard, InDrawPile, InHand, Magnetic, MainSceneUiRoot, PlayerCard, PlayerData, UiCardMarker,
+    BattleTick, BeingDrawn, BoardUtilsCommandsExt, CardInPile, CardState, CardWidgetFor,
+    DelayCompleted, Delayer, DrawPile, EnemyCard, EnemyData, HandPile, InDiscard, InDrawPile,
+    InHand, Magnetic, MainSceneUiRoot, PlayerCard, PlayerData, UiCardMarker,
     abilities::effects::{StatusEffectOf, StatusEffects},
+    check_increment_action_tick,
     deck::deck_and_cards::{Card, CardPile},
     game_flow::turns::{
         BattleData, BattleTriggered, CheckClientBattleReady, ConfirmBattleReady, EnemyBoardMarker,
@@ -75,6 +88,8 @@ impl Plugin for NetworkPlugin {
         ))
         .init_resource::<Cli>()
         .init_state::<GameState>()
+        .replicate::<CurrBattleTick>()
+        .replicate::<BattleTick>()
         .replicate::<SharedVal>()
         .replicate::<Card>()
         .replicate::<CardPile>()
@@ -85,7 +100,12 @@ impl Plugin for NetworkPlugin {
         .replicate::<BeingDrawn>()
         .replicate::<InDrawPile>()
         .replicate::<InDiscard>()
-        .replicate::<CardIndex>()
+        .replicate::<CardState>()
+        .register_marker_with::<SaveHistory>(MarkerConfig {
+            need_history: true,
+            ..Default::default()
+        })
+        .set_marker_fns::<SaveHistory, CardState>(write_history, remove_history::<CardState>)
         .replicate::<PlayerBoardMarker>()
         .replicate::<EnemyBoardMarker>()
         .replicate_once::<Node>()
@@ -105,6 +125,7 @@ impl Plugin for NetworkPlugin {
         .add_server_event::<CheckClientBattleReady>(Channel::Ordered)
         .add_server_event::<ProtocolMismatch>(Channel::Unreliable)
         .make_event_independent::<ProtocolMismatch>()
+        .add_server_event::<BattleTickUpdated>(Channel::Ordered)
         .add_observer(handle_sent_client_protocol)
         .add_systems(OnEnter(ClientState::Connected), client_start)
         .add_client_event::<IncrementReq>(Channel::Ordered)
@@ -120,14 +141,116 @@ impl Plugin for NetworkPlugin {
         .add_observer(handle_client_confirm_battle_start)
         .add_observer(confirm_server_battle_ready)
         .add_systems(Startup, setup_networking)
+        .add_observer(handle_add_curr_battle_tick)
         .add_systems(
-            Update,
+            FixedUpdate,
+            check_battle_tick_changed
+                .after(check_increment_action_tick)
+                .run_if(in_state(ServerState::Running)),
+        )
+        .add_systems(
+            FixedUpdate,
             (
                 check_inputs.run_if(in_state(ClientState::Connected)),
                 log_shared_vals,
             ),
         );
     }
+}
+
+#[derive(Component, Default)]
+pub struct SaveHistory;
+
+fn handle_add_curr_battle_tick(
+    e: On<Add, SaveHistory>,
+    s: Res<State<ServerState>>,
+    q: Query<&BattleTick>,
+    mut cmd: Commands,
+) {
+    match s.get() {
+        ServerState::Stopped => {
+            return;
+        }
+        ServerState::Running => {}
+    }
+
+    let curr_battle_tick = q.single().map_or(BattleTick::initial(), |v| v.clone());
+
+    cmd.entity(e.entity)
+        .insert(CurrBattleTick(curr_battle_tick));
+}
+
+#[derive(Event, Serialize, Deserialize, Clone)]
+pub struct BattleTickUpdated(pub BattleTick);
+
+fn check_battle_tick_changed(
+    q: Query<Entity, Or<(With<SaveHistory>, With<CurrBattleTick>)>>,
+    q_battle_tick: Query<&BattleTick, Changed<BattleTick>>,
+    mut cmd: Commands,
+) {
+    if q_battle_tick.count() == 0 {
+        return;
+    }
+
+    let tick = q_battle_tick
+        .single()
+        .expect("only should have one BattleTick at max");
+
+    let cloned_tick = tick.clone();
+
+    cmd.spawn(Delayer::from_secs(0.3)).observe(
+        move |_: On<DelayCompleted>, mut obs_cmd: Commands| {
+            obs_cmd.server_trigger(ToClients {
+                targets: SendTargets::CLIENTS_ONLY,
+                message: BattleTickUpdated(cloned_tick.clone()),
+            });
+        },
+    );
+
+    for ent in &q {
+        println!("tick changed to = {:?}", tick);
+        cmd.entity(ent).insert(CurrBattleTick(tick.clone()));
+    }
+}
+
+#[derive(Component, Serialize, Deserialize)]
+pub struct CurrBattleTick(BattleTick);
+
+#[derive(Component, Deref, DerefMut)]
+pub struct History<C>(pub BTreeMap<BattleTick, Vec<C>>);
+
+fn write_history(
+    ctx: &mut WriteCtx,
+    rule_fns: &RuleFns<CardState>,
+    entity: &mut DeferredEntity,
+    message: &mut Bytes,
+) -> Result<(), BevyError> {
+    let component: CardState = rule_fns.deserialize(ctx, message)?;
+    let battle_tick = component.2.clone();
+
+    if let Some(mut history) = entity.get_mut::<History<CardState>>() {
+        match history.0.get_mut(&battle_tick) {
+            Some(changes) => {
+                if changes.iter().any(|v| *v == component) {
+                    return Ok(());
+                }
+                changes.push(component);
+            }
+            None => {
+                history.0.insert(battle_tick, vec![component]);
+            }
+        }
+    } else {
+        entity.insert(History::<CardState>(
+            [(battle_tick, vec![component])].into(),
+        ));
+    }
+
+    Ok(())
+}
+
+fn remove_history<C: Component>(_ctx: &mut RemoveCtx, entity: &mut DeferredEntity) {
+    entity.remove::<History<C>>().remove::<C>();
 }
 
 fn handle_sent_client_protocol(

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use bevy::{
-    app::{App, Plugin, Startup, Update},
+    app::{App, FixedUpdate, Plugin, Startup, Update},
     asset::{AssetServer, Assets},
     color::{Srgba, palettes::css::RED},
     ecs::{
@@ -61,8 +61,8 @@ use rand::RngExt;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    BoardUtilsCommandsExt, CardDir, CardInPile, CardsPile, DeckDataSupplier, DrawCard, DrawPile,
-    EnemyData, HandPile, InHand, MainSceneUiRoot, PlayerData,
+    BattleTick, BoardUtilsCommandsExt, CardDir, CardInPile, CardsPile, DeckDataSupplier, DrawCard,
+    DrawPile, EnemyData, HandPile, InHand, MainSceneUiRoot, PlayerData,
     abilities::abilities_templates::{Marker, Projectile},
     creatures::{
         definitions::{Creature, CreatureKind},
@@ -91,7 +91,7 @@ impl Plugin for TurnsPlugin {
             .add_observer(handle_player_board_spawned)
             .add_observer(handle_enemy_board_spawned)
             .add_systems(Startup, spawn_dev_text)
-            .add_systems(Update, draw_dev_text);
+            .add_systems(FixedUpdate, draw_dev_text);
     }
 }
 
@@ -396,6 +396,7 @@ fn handle_combat_init(
         message: CheckClientBattleReady,
     });
 
+    cmd.spawn(BattleTick::initial());
     data.state = BattleState::AwaitingClient;
 }
 
@@ -460,7 +461,7 @@ fn handle_turn_start(
     enemy_data: Res<EnemyData>,
     mut cmd: Commands,
 ) {
-    let (hand_pile, draw_pile, is_player) = match e.turn_kind {
+    let (hand_pile, draw_pile, _) = match e.turn_kind {
         TurnKind::Player => (
             player_data.hand_pile_entity,
             player_data.draw_pile_entity,
@@ -483,8 +484,12 @@ fn handle_turn_start(
     ));
 }
 
-pub fn handle_draw_from_pile(e: On<DrawFromPile>, mut q: Query<&mut CardsPile>, mut cmd: Commands) {
-    let [mut draw_pile, mut hand_pile] = q
+pub fn handle_draw_from_pile(
+    e: On<DrawFromPile>,
+    mut q: Query<(Entity, &mut CardsPile)>,
+    mut cmd: Commands,
+) {
+    let [(draw_entity, mut draw_pile), (hand_entity, mut hand_pile)] = q
         .get_many_mut([e.draw_pile, e.hand_pile])
         .expect("Should find 'CardsPile' Comp on pile to draw from entity");
 
@@ -503,8 +508,9 @@ pub fn handle_draw_from_pile(e: On<DrawFromPile>, mut q: Query<&mut CardsPile>, 
 
     for _ in 0..left_to_draw_count {
         let drawn = draw_pile.0.pop_front().unwrap();
-        cmd.entity(drawn).insert((JustDrawn, InHand));
-        hand_pile.0.push_back(drawn);
+        cmd.entity(drawn)
+            .insert((JustDrawn, InHand, CardInPile(hand_entity)));
+        // hand_pile.0.push_back(drawn);
         println!("drawing DRAWING FTAWING");
     }
 
@@ -514,8 +520,14 @@ pub fn handle_draw_from_pile(e: On<DrawFromPile>, mut q: Query<&mut CardsPile>, 
 #[derive(Component, Debug, Clone)]
 pub struct JustDrawn;
 
-fn handle_turn_end(_: On<EntityTurnEnd>, mut battle_data: ResMut<BattleData>, mut cmd: Commands) {
+fn handle_turn_end(
+    _: On<EntityTurnEnd>,
+    mut battle_data: ResMut<BattleData>,
+    mut battle_tick: Single<&mut BattleTick>,
+    mut cmd: Commands,
+) {
     println!("TURN ENDED");
+    battle_tick.increment_next_turn();
     match battle_data.get_trigger_next_turn_kind() {
         TurnKind::Player => cmd.trigger(EntityTurnStart::player()),
         TurnKind::Enemy => cmd.trigger(EntityTurnStart::enemy()),
