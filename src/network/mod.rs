@@ -30,7 +30,8 @@ use bevy_ecs::{
     query::{Changed, Or, With},
     resource::Resource,
     schedule::IntoScheduleConfigs,
-    system::{Commands, Query, Res, ResMut},
+    system::{Commands, ParallelCommands, Query, Res, ResMut},
+    world::Ref,
 };
 
 use bevy_flair::style::components::NodeStyleSheet;
@@ -64,11 +65,10 @@ use bevy_replicon_renet::{RenetChannelsExt, RepliconRenetPlugins};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    BattleTick, BeingDrawn, BoardUtilsCommandsExt, CardInPile, CardState, CardWidgetFor,
+    BattleTick, BeingDrawn, BoardUtilsCommandsExt, CardCast, CardInPile, CardWidgetFor,
     DelayCompleted, Delayer, DrawPile, EnemyCard, EnemyData, HandPile, InDiscard, InDrawPile,
-    InHand, Magnetic, MainSceneUiRoot, PlayerCard, PlayerData, UiCardMarker,
+    InHand, Magnetic, MainSceneUiRoot, PlayerCard, PlayerData, PosInDeck, TickAmount, UiCardMarker,
     abilities::effects::{StatusEffectOf, StatusEffects},
-    check_increment_action_tick,
     deck::deck_and_cards::{Card, CardPile},
     game_flow::turns::{
         BattleState, BattleTriggered, CheckClientBattleReady, ConfirmBattleReady, EnemyBoardMarker,
@@ -88,7 +88,7 @@ impl Plugin for NetworkPlugin {
         ))
         .init_resource::<Cli>()
         .init_state::<GameState>()
-        .replicate::<CurrBattleTick>()
+        .replicate::<TickAmount>()
         .replicate::<BattleTick>()
         .replicate::<SharedVal>()
         .replicate::<Card>()
@@ -100,12 +100,13 @@ impl Plugin for NetworkPlugin {
         .replicate::<BeingDrawn>()
         .replicate::<InDrawPile>()
         .replicate::<InDiscard>()
-        .replicate::<CardState>()
+        .replicate::<PosInDeck>()
         .register_marker_with::<SaveHistory>(MarkerConfig {
             need_history: true,
             ..Default::default()
         })
-        .set_marker_fns::<SaveHistory, CardState>(write_history, remove_history::<CardState>)
+        .set_marker_fns::<SaveHistory, PosInDeck>(write_history, remove_history::<PosInDeck>)
+        .set_marker_fns::<SaveHistory, TickAmount>(write_history, remove_history::<TickAmount>)
         .replicate::<PlayerBoardMarker>()
         .replicate::<EnemyBoardMarker>()
         .replicate_once::<Node>()
@@ -125,7 +126,7 @@ impl Plugin for NetworkPlugin {
         .add_server_event::<CheckClientBattleReady>(Channel::Ordered)
         .add_server_event::<ProtocolMismatch>(Channel::Unreliable)
         .make_event_independent::<ProtocolMismatch>()
-        .add_server_event::<BattleTickUpdated>(Channel::Ordered)
+        .add_server_event::<BattleTickStarted>(Channel::Ordered)
         .add_observer(handle_sent_client_protocol)
         .add_systems(OnEnter(ClientState::Connected), client_start)
         .add_client_event::<IncrementReq>(Channel::Ordered)
@@ -140,13 +141,11 @@ impl Plugin for NetworkPlugin {
         .add_observer(apply_increment_req)
         .add_observer(handle_client_confirm_battle_start)
         .add_observer(confirm_server_battle_ready)
+        .add_observer(handle_battle_tick_incremented)
         .add_systems(Startup, setup_networking)
-        .add_observer(handle_add_curr_battle_tick)
         .add_systems(
             FixedUpdate,
-            check_battle_tick_changed
-                .after(check_increment_action_tick)
-                .run_if(in_state(ServerState::Running)),
+            check_battle_tick_changed.run_if(in_state(ServerState::Running)),
         )
         .add_systems(
             FixedUpdate,
@@ -161,74 +160,80 @@ impl Plugin for NetworkPlugin {
 #[derive(Component, Default)]
 pub struct SaveHistory;
 
-fn handle_add_curr_battle_tick(
-    e: On<Add, SaveHistory>,
-    s: Res<State<ServerState>>,
-    q: Query<&BattleTick>,
-    mut cmd: Commands,
+#[derive(Event, Serialize, Deserialize, Clone)]
+pub struct BattleTickStarted(pub BattleTick);
+
+#[derive(Event, Clone)]
+pub struct BattleTickIncremented(pub BattleTick);
+
+fn handle_battle_tick_incremented(
+    e: On<BattleTickIncremented>,
+    mut q: Query<(Entity, &mut TickAmount)>,
+    par_cmd: ParallelCommands,
 ) {
-    match s.get() {
-        ServerState::Stopped => {
-            return;
-        }
-        ServerState::Running => {}
-    }
-
-    let curr_battle_tick = q.single().map_or(BattleTick::initial(), |v| v.clone());
-
-    cmd.entity(e.entity)
-        .insert(CurrBattleTick(curr_battle_tick));
+    q.par_iter_mut()
+        .for_each(|(card, mut t)| match t.tick(&e.0) {
+            crate::CastState::Pending => {}
+            crate::CastState::Triggered => {
+                par_cmd.command_scope(|mut cmd| {
+                    cmd.trigger(CardCast { card });
+                });
+            }
+        });
 }
 
-#[derive(Event, Serialize, Deserialize, Clone)]
-pub struct BattleTickUpdated(pub BattleTick);
-
 fn check_battle_tick_changed(
-    q: Query<Entity, Or<(With<SaveHistory>, With<CurrBattleTick>)>>,
-    q_battle_tick: Query<&BattleTick, Changed<BattleTick>>,
+    q_battle_tick: Query<(&BattleTick, Ref<BattleTick>)>,
     mut cmd: Commands,
 ) {
     if q_battle_tick.count() == 0 {
         return;
     }
 
-    let tick = q_battle_tick
+    let (tick, tick_ref) = q_battle_tick
         .single()
         .expect("only should have one BattleTick at max");
 
+    if !tick_ref.is_changed() {
+        return;
+    }
+
     let cloned_tick = tick.clone();
+    cmd.trigger(BattleTickIncremented(tick.clone()));
+
+    if !tick_ref.is_added() {
+        return;
+    }
 
     cmd.spawn(Delayer::from_secs(0.1)).observe(
         move |_: On<DelayCompleted>, mut obs_cmd: Commands| {
             obs_cmd.server_trigger(ToClients {
                 targets: SendTargets::CLIENTS_ONLY,
-                message: BattleTickUpdated(cloned_tick.clone()),
+                message: BattleTickStarted(cloned_tick.clone()),
             });
         },
     );
-
-    for ent in &q {
-        println!("tick changed to = {:?}", tick);
-        cmd.entity(ent).insert(CurrBattleTick(tick.clone()));
-    }
 }
 
-#[derive(Component, Serialize, Deserialize)]
-pub struct CurrBattleTick(BattleTick);
+pub trait ProvidesLastChangeTick {
+    fn get_last_change_tick(&self) -> BattleTick;
+}
 
 #[derive(Component, Deref, DerefMut)]
-pub struct History<C>(pub BTreeMap<BattleTick, Vec<C>>);
+pub struct History<C>(pub BTreeMap<BattleTick, Vec<C>>)
+where
+    C: Component + ProvidesLastChangeTick;
 
-fn write_history(
+fn write_history<C: Component + Eq + ProvidesLastChangeTick>(
     ctx: &mut WriteCtx,
-    rule_fns: &RuleFns<CardState>,
+    rule_fns: &RuleFns<C>,
     entity: &mut DeferredEntity,
     message: &mut Bytes,
 ) -> Result<(), BevyError> {
-    let component: CardState = rule_fns.deserialize(ctx, message)?;
-    let battle_tick = component.2.clone();
+    let component: C = rule_fns.deserialize(ctx, message)?;
+    let battle_tick = component.get_last_change_tick();
 
-    if let Some(mut history) = entity.get_mut::<History<CardState>>() {
+    if let Some(mut history) = entity.get_mut::<History<C>>() {
         match history.0.get_mut(&battle_tick) {
             Some(changes) => {
                 if changes.iter().any(|v| *v == component) {
@@ -241,15 +246,16 @@ fn write_history(
             }
         }
     } else {
-        entity.insert(History::<CardState>(
-            [(battle_tick, vec![component])].into(),
-        ));
+        entity.insert(History::<C>([(battle_tick, vec![component])].into()));
     }
 
     Ok(())
 }
 
-fn remove_history<C: Component>(_ctx: &mut RemoveCtx, entity: &mut DeferredEntity) {
+fn remove_history<C: Component + ProvidesLastChangeTick>(
+    _ctx: &mut RemoveCtx,
+    entity: &mut DeferredEntity,
+) {
     entity.remove::<History<C>>().remove::<C>();
 }
 

@@ -96,6 +96,11 @@ impl Plugin for TurnsPlugin {
                 OnEnter(BattleState::DrawInitialHands),
                 handle_initial_draw.run_if(in_state(ServerState::Running)),
             )
+            .add_systems(
+                FixedUpdate,
+                tick_battle
+                    .run_if(in_state(BattleState::Running).and(in_state(ServerState::Running))),
+            )
             .add_observer(handle_draw_from_pile)
             .add_observer(setup_battle_context)
             .add_observer(handle_player_board_spawned)
@@ -115,6 +120,10 @@ pub struct PlayerBoardMarker;
 #[derive(Component, Debug, Serialize, Deserialize)]
 #[require(Replicated)]
 pub struct EnemyBoardMarker;
+
+pub fn tick_battle(mut battle_tick: Single<&mut BattleTick>) {
+    battle_tick.increment_next_turn();
+}
 
 pub fn handle_player_board_spawned(
     e: On<Add, PlayerBoardMarker>,

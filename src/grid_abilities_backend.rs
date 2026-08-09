@@ -32,7 +32,7 @@ use bevy_rand::{plugin::EntropyPlugin, prelude::GlobalRng};
 use rand::{Rng, RngExt, SeedableRng};
 
 use crate::{
-    CardInPile, DrawCard, InDrawPile, InHand,
+    CardCast, CardInPile, DrawCard, InDrawPile, InHand,
     abilities::{
         abilities_templates::ActionCastData,
         effects::{AbilityOfCaster, handle_invoke_subability_effect, handle_spawn_effect},
@@ -348,6 +348,7 @@ impl Plugin for BoardDieselPlugin {
         // #TODO: Will need to do something similar
         // // Collision types + system (unfiltered - entities with Collides marker)
         app.register_transition::<DrawCard>();
+        app.register_transition::<CardCast>();
         app.register_transition::<AbilityHitEntity>();
         app.register_transition::<AbilityHitPosition>();
         app.register_transition::<StartCast>();
