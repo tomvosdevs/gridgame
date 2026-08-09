@@ -71,7 +71,7 @@ use crate::{
     check_increment_action_tick,
     deck::deck_and_cards::{Card, CardPile},
     game_flow::turns::{
-        BattleData, BattleTriggered, CheckClientBattleReady, ConfirmBattleReady, EnemyBoardMarker,
+        BattleState, BattleTriggered, CheckClientBattleReady, ConfirmBattleReady, EnemyBoardMarker,
         PlayerBoardMarker, confirm_server_battle_ready, handle_client_confirm_battle_start,
     },
 };
@@ -198,7 +198,7 @@ fn check_battle_tick_changed(
 
     let cloned_tick = tick.clone();
 
-    cmd.spawn(Delayer::from_secs(0.3)).observe(
+    cmd.spawn(Delayer::from_secs(0.1)).observe(
         move |_: On<DelayCompleted>, mut obs_cmd: Commands| {
             obs_cmd.server_trigger(ToClients {
                 targets: SendTargets::CLIENTS_ONLY,

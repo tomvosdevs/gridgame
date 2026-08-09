@@ -11,40 +11,23 @@ use bevy::{
     utils::default,
 };
 
-use crate::game_flow::turns::{EnteredCombat, EntityTurnStart, GlobalTurnStart};
+use crate::game_flow::turns::EnteredCombat;
 
 pub struct DebugUiPlugin;
 
 impl Plugin for DebugUiPlugin {
     fn build(&self, app: &mut bevy::app::App) {
-        app.add_systems(Startup, setup_debug_ui)
-            .add_observer(
-                |_: On<EnteredCombat>, d: Res<DebugUiData>, mut q: Query<&mut Text>| {
-                    if let Ok(mut t) = q.get_mut(d.0) {
-                        let new_line = match t.0.is_empty() {
-                            true => "Combat started",
-                            false => "\nCombat started",
-                        };
-                        t.0 += new_line;
-                    }
-                },
-            )
-            .add_observer(
-                |_: On<GlobalTurnStart>, d: Res<DebugUiData>, mut q: Query<&mut Text>| {
-                    if let Ok(mut t) = q.get_mut(d.0) {
-                        let new_line = "\nNew [Global] turn started";
-                        t.0 += new_line;
-                    }
-                },
-            )
-            .add_observer(
-                |_: On<EntityTurnStart>, d: Res<DebugUiData>, mut q: Query<&mut Text>| {
-                    if let Ok(mut t) = q.get_mut(d.0) {
-                        let new_line = "\nNew [Entity] turn started";
-                        t.0 += new_line;
-                    }
-                },
-            );
+        app.add_systems(Startup, setup_debug_ui).add_observer(
+            |_: On<EnteredCombat>, d: Res<DebugUiData>, mut q: Query<&mut Text>| {
+                if let Ok(mut t) = q.get_mut(d.0) {
+                    let new_line = match t.0.is_empty() {
+                        true => "Combat started",
+                        false => "\nCombat started",
+                    };
+                    t.0 += new_line;
+                }
+            },
+        );
     }
 }
 

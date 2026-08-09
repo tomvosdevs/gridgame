@@ -3,7 +3,7 @@ use bevy::{
     ecs::{bundle::Bundle, component::Component, name::Name, system::Commands},
 };
 
-use crate::{abilities::effects::tick_on, game_flow::turns::EntityTurnEnd};
+use crate::abilities::effects::tick_on;
 
 pub struct AbilitiesDefinitionsPlugin;
 

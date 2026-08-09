@@ -17,13 +17,7 @@ use bevy_ecs::{
 use bevy_gearbox::{InitStateMachine, SpawnTransition};
 use bevy_ghx_grid::ghx_grid::cartesian::coordinates::CartesianPosition;
 
-use crate::{
-    game_flow::turns::{EntityTurnStart, PlayingEntity},
-    grid_abilities_backend::{
-        BoardPos, DeckInvokerTarget, DeckSpawnConfig, DeckStartInvoke, DeckTarget,
-        DeckTargetGenerator,
-    },
-};
+use crate::grid_abilities_backend::{DeckSpawnConfig, DeckStartInvoke, DeckTargetGenerator};
 
 pub struct AbilityComposingPlugin;
 

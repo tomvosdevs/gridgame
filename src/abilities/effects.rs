@@ -34,7 +34,7 @@ use crate::{
         card_builders::{CardPool, CardPoolStatus, PoolSupplier},
         deck_and_cards::SoulLife,
     },
-    game_flow::turns::{CurrentDeckReference, EntityTurnEnd, PlayingEntity},
+    game_flow::turns::{CurrentDeckReference, PlayingEntity},
     grid_abilities_backend::{AbilityHitEntity, DeckGoOff, DeckInvokerTarget, DeckStartInvoke},
     utils::IntoVec,
 };
@@ -43,7 +43,7 @@ pub struct StatusEffectsPlugin;
 
 impl Plugin for StatusEffectsPlugin {
     fn build(&self, app: &mut bevy::app::App) {
-        app.add_observer(tick_on::<EntityTurnEnd>);
+        //
     }
 }
 
@@ -226,7 +226,6 @@ pub fn status_effect(
                 effect_key: key,
                 status_applied_by: Some(source),
             },
-            TriggerOn::<EntityTurnEnd>::new(),
             Attributes::new(),
             AttributeInitializer::new(status_default_mod),
             observe(tick_status_effect),

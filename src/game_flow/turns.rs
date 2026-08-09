@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, default, ops::DerefMut};
 
 use bevy::{
     app::{App, FixedUpdate, Plugin, Startup, Update},
@@ -26,14 +26,21 @@ use bevy::{
     mesh::{Mesh, Mesh3d},
     pbr::{MeshMaterial3d, StandardMaterial},
     sprite::Text2d,
-    state::state::State,
+    state::{
+        app::AppExtStates,
+        condition::in_state,
+        state::{NextState, OnEnter, State, States},
+    },
     transform::components::{GlobalTransform, Transform},
     ui::Node,
 };
 use bevy_diesel::prelude::Invokes;
 use bevy_ecs::{
-    hierarchy::ChildOf, lifecycle::Add, message::Message,
+    hierarchy::ChildOf,
+    lifecycle::Add,
+    message::Message,
     relationship::OrderedRelationshipSourceCollection,
+    schedule::{IntoScheduleConfigs, SystemCondition},
 };
 use bevy_flair::style::{StyleSheet, components::NodeStyleSheet};
 use bevy_gauge::prelude::AttributesMut;
@@ -51,8 +58,8 @@ use bevy_rand::global::GlobalRng;
 use bevy_replicon::{
     client::Remote,
     prelude::{
-        ClientState, ClientTriggerExt, FromClient, Replicated, SendTargets, ServerTriggerExt,
-        ToClients,
+        ClientState, ClientTriggerExt, FromClient, Replicated, SendTargets, ServerState,
+        ServerTriggerExt, ToClients,
     },
 };
 use moonshine_kind::{InsertInstance, Instance, SpawnInstance};
@@ -82,11 +89,14 @@ pub struct TurnsPlugin;
 impl Plugin for TurnsPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(RunData::init())
+            .init_state::<BattleState>()
             .add_observer(handle_playing_gen_req)
             .add_observer(handle_combat_init)
-            .add_observer(handle_turn_start)
+            .add_systems(
+                OnEnter(BattleState::DrawInitialHands),
+                handle_initial_draw.run_if(in_state(ServerState::Running)),
+            )
             .add_observer(handle_draw_from_pile)
-            .add_observer(handle_turn_end)
             .add_observer(setup_battle_context)
             .add_observer(handle_player_board_spawned)
             .add_observer(handle_enemy_board_spawned)
@@ -144,7 +154,11 @@ pub fn handle_enemy_board_spawned(
         )));
 }
 
-fn setup_battle_context(_: On<BattleTriggered>, mut cmd: Commands) {
+fn setup_battle_context(
+    _: On<BattleTriggered>,
+    mut next_battle_state: ResMut<NextState<BattleState>>,
+    mut cmd: Commands,
+) {
     println!("setting up ui");
 
     // Draw piles
@@ -159,19 +173,18 @@ fn setup_battle_context(_: On<BattleTriggered>, mut cmd: Commands) {
 
     cmd.insert_resource(PlayerData {
         ui_entity: player_board_ui,
-        draw_pile_entity: player_draw_pile,
-        hand_pile_entity: player_hand_pile,
+        draw_pile: player_draw_pile,
+        hand_pile: player_hand_pile,
     });
 
     cmd.insert_resource(EnemyData {
         ui_entity: enemy_board_ui,
-        draw_pile_entity: enemy_draw_pile,
-        hand_pile_entity: enemy_hand_pile,
+        draw_pile: enemy_draw_pile,
+        hand_pile: enemy_hand_pile,
     });
 
-    cmd.insert_resource(BattleData::new());
-
     cmd.trigger(EnteredCombat);
+    next_battle_state.set(BattleState::Init);
 }
 
 #[derive(Event)]
@@ -233,42 +246,15 @@ pub fn board_ui_bundle<D: DeckDataSupplier>(styles: NodeStyleSheet) -> impl Bund
     )
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, States, Default, PartialEq, Eq, Hash)]
 pub enum BattleState {
+    #[default]
+    OutOfCombat,
     Init,
+    DrawInitialHands,
     AwaitingClient,
     Running,
     Ended,
-}
-
-#[derive(Resource, Clone, Debug, Serialize, Deserialize)]
-pub struct BattleData {
-    pub is_player_turn: bool,
-    pub state: BattleState,
-}
-
-impl BattleData {
-    pub fn new() -> Self {
-        Self {
-            is_player_turn: true,
-            state: BattleState::Init,
-        }
-    }
-
-    pub fn get_current_turn_kind(&self) -> TurnKind {
-        match self.is_player_turn {
-            true => TurnKind::Player,
-            false => TurnKind::Enemy,
-        }
-    }
-
-    pub fn get_trigger_next_turn_kind(&mut self) -> TurnKind {
-        self.is_player_turn = !self.is_player_turn;
-        match self.is_player_turn {
-            true => TurnKind::Player,
-            false => TurnKind::Enemy,
-        }
-    }
 }
 
 #[derive(Resource)]
@@ -310,13 +296,13 @@ fn handle_combat_init(
     _: On<EnteredCombat>,
     player_deck: Res<PlayerData>,
     enemy_deck: Res<EnemyData>,
-    mut data: ResMut<BattleData>,
+    mut next_battle_state: ResMut<NextState<BattleState>>,
     mut cmd: Commands,
 ) {
-    let player_draw_pile = player_deck.draw_pile_entity;
-    let player_hand_pile = player_deck.hand_pile_entity;
-    let enemy_draw_pile = enemy_deck.draw_pile_entity;
-    let enemy_hand_pile = enemy_deck.hand_pile_entity;
+    let player_draw_pile = player_deck.draw_pile;
+    let player_hand_pile = player_deck.hand_pile;
+    let enemy_draw_pile = enemy_deck.draw_pile;
+    let enemy_hand_pile = enemy_deck.hand_pile;
 
     spawn_card(
         (magnetic_effect(CardDir::Around, 1)),
@@ -397,7 +383,7 @@ fn handle_combat_init(
     });
 
     cmd.spawn(BattleTick::initial());
-    data.state = BattleState::AwaitingClient;
+    next_battle_state.set(BattleState::AwaitingClient);
 }
 
 pub fn confirm_server_battle_ready(
@@ -416,15 +402,9 @@ pub fn confirm_server_battle_ready(
 
 pub fn handle_client_confirm_battle_start(
     _: On<FromClient<ConfirmBattleReady>>,
-    mut data: ResMut<BattleData>,
-    mut cmd: Commands,
+    mut next_battle_state: ResMut<NextState<BattleState>>,
 ) {
-    data.state = BattleState::Running;
-
-    match data.get_current_turn_kind() {
-        TurnKind::Player => cmd.trigger(EntityTurnStart::player()),
-        TurnKind::Enemy => cmd.trigger(EntityTurnStart::enemy()),
-    }
+    next_battle_state.set(BattleState::DrawInitialHands);
 }
 
 #[derive(Debug, Clone)]
@@ -455,33 +435,25 @@ impl DrawFromPile {
     }
 }
 
-fn handle_turn_start(
-    e: On<EntityTurnStart>,
+fn handle_initial_draw(
     player_data: Res<PlayerData>,
     enemy_data: Res<EnemyData>,
+    mut next_battle_state: ResMut<NextState<BattleState>>,
     mut cmd: Commands,
 ) {
-    let (hand_pile, draw_pile, _) = match e.turn_kind {
-        TurnKind::Player => (
-            player_data.hand_pile_entity,
-            player_data.draw_pile_entity,
-            true,
-        ),
-        TurnKind::Enemy => (
-            enemy_data.hand_pile_entity,
-            enemy_data.draw_pile_entity,
-            false,
-        ),
-    };
-
-    println!("COMPS LOG on CURR draw pile : ");
-    cmd.entity(draw_pile.entity()).log_components();
-
     cmd.trigger(DrawFromPile::new(
-        hand_pile,
-        draw_pile,
+        player_data.hand_pile,
+        player_data.draw_pile,
         DrawAmount::FillHand,
     ));
+
+    cmd.trigger(DrawFromPile::new(
+        enemy_data.hand_pile,
+        enemy_data.draw_pile,
+        DrawAmount::FillHand,
+    ));
+
+    next_battle_state.set(BattleState::Running);
 }
 
 pub fn handle_draw_from_pile(
@@ -489,29 +461,28 @@ pub fn handle_draw_from_pile(
     mut q: Query<(Entity, &mut CardsPile)>,
     mut cmd: Commands,
 ) {
-    let [(draw_entity, mut draw_pile), (hand_entity, mut hand_pile)] = q
+    let [(draw_entity, mut draw_pile), (hand_entity, hand_pile)] = q
         .get_many_mut([e.draw_pile, e.hand_pile])
         .expect("Should find 'CardsPile' Comp on pile to draw from entity");
 
-    let max_hand_size: usize = 3;
+    let max_hand_size: usize = 5;
 
     if hand_pile.len() >= max_hand_size {
         return;
     }
 
-    let max_draw_amount = max_hand_size - hand_pile.len();
-
-    let left_to_draw_count = match e.draw_amount {
-        DrawAmount::Fixed(amount) => max_draw_amount.min(amount as usize),
-        DrawAmount::FillHand => max_draw_amount,
+    let max_draw_amount = match e.draw_amount {
+        DrawAmount::Fixed(amount) => amount,
+        DrawAmount::FillHand => max_hand_size as i32,
     };
 
-    for _ in 0..left_to_draw_count {
+    for _ in 0..max_draw_amount {
+        if draw_pile.is_empty() {
+            break;
+        }
         let drawn = draw_pile.0.pop_front().unwrap();
         cmd.entity(drawn)
             .insert((JustDrawn, InHand, CardInPile(hand_entity)));
-        // hand_pile.0.push_back(drawn);
-        println!("drawing DRAWING FTAWING");
     }
 
     // cmd.trigger(EntityTurnEnd(e.hand_pile));
@@ -519,20 +490,6 @@ pub fn handle_draw_from_pile(
 
 #[derive(Component, Debug, Clone)]
 pub struct JustDrawn;
-
-fn handle_turn_end(
-    _: On<EntityTurnEnd>,
-    mut battle_data: ResMut<BattleData>,
-    mut battle_tick: Single<&mut BattleTick>,
-    mut cmd: Commands,
-) {
-    println!("TURN ENDED");
-    battle_tick.increment_next_turn();
-    match battle_data.get_trigger_next_turn_kind() {
-        TurnKind::Player => cmd.trigger(EntityTurnStart::player()),
-        TurnKind::Enemy => cmd.trigger(EntityTurnStart::enemy()),
-    }
-}
 
 pub fn start_combat_test(mut cmd: Commands, keyboard_input: Res<ButtonInput<KeyCode>>) {
     if !keyboard_input.just_pressed(KeyCode::KeyC) {
@@ -631,40 +588,6 @@ pub struct CombatInit;
 
 #[derive(Event)]
 pub struct EnteredCombat;
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum TurnKind {
-    Player,
-    Enemy,
-}
-
-#[derive(Clone, Event)]
-pub struct EntityTurnStart {
-    pub turn_kind: TurnKind,
-}
-
-impl EntityTurnStart {
-    pub fn player() -> Self {
-        Self {
-            turn_kind: TurnKind::Player,
-        }
-    }
-
-    pub fn enemy() -> Self {
-        Self {
-            turn_kind: TurnKind::Enemy,
-        }
-    }
-}
-
-#[derive(EntityEvent, Clone, Message)]
-pub struct EntityTurnEnd(Entity);
-
-#[derive(Event)]
-pub struct GlobalTurnStart;
-
-#[derive(Event)]
-pub struct GlobalTurnEnd;
 
 #[derive(Component)]
 pub struct MemberOf<const ID: i32>;

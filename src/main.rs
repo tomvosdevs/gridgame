@@ -104,7 +104,7 @@ use crate::deck::deck_and_cards::{Card, DeckAndCardsPlugin, InDeck, StatelessCar
 use crate::effects::{Burning, EffectsPlugin};
 
 use crate::game_flow::turns::{
-    BattleData, CurrentDeckReference, EnemyBoardMarker, EnteredCombat, JustDrawn,
+    BattleState, CurrentDeckReference, EnemyBoardMarker, EnteredCombat, JustDrawn,
     PlayerBoardMarker, PlayingEntity, TurnsPlugin,
 };
 use crate::grid_abilities_backend::{BoardPos, DeckBackend};
@@ -359,15 +359,15 @@ pub trait DeckDataSupplier: Resource {
 #[derive(Resource)]
 pub struct PlayerData {
     pub ui_entity: Entity,
-    pub draw_pile_entity: Instance<DrawPile>,
-    pub hand_pile_entity: Instance<HandPile>,
+    pub draw_pile: Instance<DrawPile>,
+    pub hand_pile: Instance<HandPile>,
 }
 
 #[derive(Resource)]
 pub struct EnemyData {
     pub ui_entity: Entity,
-    pub draw_pile_entity: Instance<DrawPile>,
-    pub hand_pile_entity: Instance<HandPile>,
+    pub draw_pile: Instance<DrawPile>,
+    pub hand_pile: Instance<HandPile>,
 }
 
 impl DeckDataSupplier for PlayerData {
@@ -378,7 +378,7 @@ impl DeckDataSupplier for PlayerData {
     }
 
     fn get_deck_entity(&self) -> Entity {
-        self.draw_pile_entity.entity()
+        self.draw_pile.entity()
     }
 
     fn is_player() -> bool {
@@ -394,7 +394,7 @@ impl DeckDataSupplier for EnemyData {
     }
 
     fn get_deck_entity(&self) -> Entity {
-        self.draw_pile_entity.entity()
+        self.draw_pile.entity()
     }
 
     fn is_player() -> bool {
@@ -1400,18 +1400,11 @@ fn setup_base_scene(
     ));
 }
 
-pub fn input_linked_tests(
-    mut cmd: Commands,
-    keys: Res<ButtonInput<KeyCode>>,
-    maybe_battle_data: Option<Res<BattleData>>,
-) {
+pub fn input_linked_tests(mut cmd: Commands, keys: Res<ButtonInput<KeyCode>>) {
     for key in keys.get_just_pressed() {
         match key {
             KeyCode::Space => {
-                if maybe_battle_data.is_some() {
-                    return;
-                }
-                cmd.insert_resource(BattleData::new());
+                //
             }
             _ => {}
         }

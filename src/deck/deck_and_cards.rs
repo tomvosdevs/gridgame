@@ -16,10 +16,7 @@ use bevy_gauge::{AttributeComponent, prelude::Attributes};
 use bevy_replicon::prelude::Replicated;
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    UiCardMarker, creatures::definitions::CreatureKind, deck::card_builders::PoolSupplier,
-    game_flow::turns::EntityTurnEnd, ui::CardTextureCamera,
-};
+use crate::{creatures::definitions::CreatureKind, deck::card_builders::PoolSupplier};
 
 pub struct DeckAndCardsPlugin;
 
@@ -27,9 +24,7 @@ impl Plugin for DeckAndCardsPlugin {
     fn build(&self, app: &mut App) {
         use bevy_trait_query::RegisterExt;
 
-        app.register_component_as::<dyn PoolSupplier, CreatureKind>()
-            .add_observer(set_hand_cards)
-            .add_observer(handle_entity_turn_end);
+        app.register_component_as::<dyn PoolSupplier, CreatureKind>();
     }
 }
 
@@ -37,65 +32,6 @@ impl Plugin for DeckAndCardsPlugin {
 // Observer systems
 // ===============
 //
-
-pub fn set_hand_cards(
-    e: On<DrawHand>,
-    mut cmd: Commands,
-    decks_q: Query<(&HandDrawData, &CardPile), With<Deck>>,
-    drawable_cards_q: Query<Entity, (With<Card>, With<CardState<InDrawPile>>)>,
-) {
-    println!("drawing hand cards");
-    let (hand_draw_data, card_pile) = decks_q.get(e.entity).expect("Target deck not found");
-
-    println!("deck cards count = {:?}", card_pile.len());
-
-    let hand_size = hand_draw_data.cards_per_turn as usize;
-
-    let new_hand_cards: Vec<Entity> = card_pile
-        .iter()
-        .filter(|card_entity| drawable_cards_q.contains(*card_entity))
-        // This ensure the Vec never grows larger than the hand size.
-        .take(hand_size)
-        .collect();
-
-    for (idx, card_entity) in new_hand_cards.iter().enumerate() {
-        let mut entity_cmds = cmd.entity(*card_entity);
-        entity_cmds.remove::<CardState<InDrawPile>>();
-        entity_cmds.insert(HandCard::new());
-        println!("drawn card entity : {:?}", card_entity);
-        cmd.trigger(CardDrawn {
-            entity: *card_entity,
-            card_hand_index: idx as u16,
-        });
-    }
-}
-
-pub fn handle_entity_turn_end(
-    _: On<EntityTurnEnd>,
-    mut cmd: Commands,
-    hand_cards: Query<Entity, (With<Card>, With<HandCard>)>,
-    ui_cards: Query<Entity, With<UiCardMarker>>,
-    ui_card_textures: Query<Entity, With<CardTextureCamera>>,
-) {
-    // TODO: Also remove the Image and Material asset entries for the UI cards and UI card source
-    cmd.trigger(HandDiscarded);
-    for card_entity in &hand_cards {
-        let mut entity_cmds = cmd.entity(card_entity);
-        entity_cmds.remove::<HandCard>();
-        entity_cmds.insert(DiscardPileCard::new());
-        cmd.trigger(CardDiscarded {
-            entity: card_entity,
-        });
-    }
-
-    for ui_card_entity in &ui_cards {
-        cmd.entity(ui_card_entity).despawn();
-    }
-
-    for tex in &ui_card_textures {
-        cmd.entity(tex).despawn();
-    }
-}
 
 // Structs etc
 
