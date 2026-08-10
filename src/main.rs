@@ -17,7 +17,6 @@ use bevy::color::palettes::css::{BLUE, GREEN, PALE_TURQUOISE, PURPLE, RED, YELLO
 use bevy::color::palettes::tailwind::{
     BLUE_600, BLUE_800, GRAY_300, ORANGE_400, RED_300, RED_800, RED_900, SLATE_600, YELLOW_800,
 };
-use bevy::core_pipeline::core_3d::graph::Node3d;
 use bevy::core_pipeline::fullscreen_material::{FullscreenMaterial, FullscreenMaterialPlugin};
 use bevy::light::{CascadeShadowConfigBuilder, DirectionalLightShadowMap, NotShadowCaster};
 use bevy::log::LogPlugin;
@@ -26,7 +25,6 @@ use bevy::pbr::{ExtendedMaterial, MaterialExtension};
 use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
 use bevy::render::extract_component::ExtractComponent;
-use bevy::render::render_graph::RenderLabel;
 use bevy::render::render_resource::{
     AsBindGroup, Extent3d, ShaderType, TextureDescriptor, TextureDimension, TextureFormat,
     TextureUsages,
@@ -36,6 +34,11 @@ use bevy::state::app::StatesPlugin;
 use bevy::ui_widgets::observe;
 use bevy_diesel::DieselSet;
 use bevy_diesel::events::HasDieselTarget;
+use bevy_diesel::gauge::{AttributeResolvable, requires};
+use bevy_diesel::gearbox::{
+    AcceptAll, EnterState, GearboxMessage, GearboxSet, InitStateMachine, SpawnSubstate,
+    SpawnTransition, StateComponent, StateMachine,
+};
 use bevy_diesel::invoke::Ability;
 use bevy_diesel::prelude::{
     ActiveState, RequiresStatsOf, SpatialBackend, SpawnBranch, SpawnDieselSubstate, SpawnSubEffect,
@@ -46,38 +49,18 @@ use bevy_ecs::relationship::{OrderedRelationshipSourceCollection, Relationship};
 use bevy_ecs::schedule::{MultiThreadedExecutor, ScheduleLabel};
 use bevy_ecs::system::{IntoObserverSystem, SystemParam};
 use bevy_ecs::world::{self, DeferredWorld};
-use bevy_ecs_tilemap::prelude::*;
+
 use bevy_flair::FlairPlugin;
 use bevy_flair::style::StyleSheet;
-use bevy_flair::style::components::{ClassList, NodeStyleSheet};
-use bevy_gauge::requires;
-use bevy_gearbox::{
-    AcceptAll, EnterState, GearboxMessage, GearboxSet, InitStateMachine, SpawnSubstate,
-    SpawnTransition, StateComponent, StateMachine,
-};
-use bevy_ghx_grid::debug_plugin::view::DebugGridView;
-use bevy_ghx_grid::debug_plugin::{DebugGridView3dBundle, GridDebugPlugin};
-use bevy_ghx_grid::ghx_grid::cartesian::coordinates::{Cartesian3D, GridDelta};
-use bevy_ghx_grid::ghx_grid::cartesian::grid::CartesianGrid;
-use bevy_ghx_grid::ghx_grid::direction::Direction;
-use bevy_ghx_grid::ghx_grid::grid::{Grid, GridIndex};
-use bevy_ghx_proc_gen::GridNode;
-use bevy_ghx_proc_gen::assets::{BundleInserter, ModelsAssets};
-use bevy_ghx_proc_gen::proc_gen::generator::builder::GeneratorBuilder;
-use bevy_ghx_proc_gen::proc_gen::generator::model::{
-    ModelCollection, ModelInstance, ModelRotation,
-};
-use bevy_ghx_proc_gen::proc_gen::generator::rules::RulesBuilder;
-use bevy_ghx_proc_gen::proc_gen::generator::socket::{SocketCollection, SocketsCartesian3D};
-use bevy_ghx_proc_gen::simple_plugin::ProcGenSimplePlugins;
-use bevy_ghx_proc_gen::spawner_plugin::NodesSpawner;
+use bevy_flair::style::components::{ClassList, Styled};
+
 use bevy_immediate::Imm;
 use bevy_immediate::attach::{BevyImmediateAttachPlugin, ImmediateAttach};
 use bevy_immediate::ui::CapsUi;
 use bevy_immediate::ui::look::ImmUiLook;
 use bevy_immediate::ui::text::ImmUiText;
 use bevy_mod_opacity::OpacityPlugin;
-use bevy_northstar::nav::Nav;
+
 use bevy_replicon::prelude::{ClientState, Replicated, ServerState};
 use bevy_replicon::server::server_tick::ServerTick;
 use bevy_tween::BevyTweenRegisterSystems;
@@ -110,8 +93,8 @@ use crate::game_flow::turns::{
     BattleState, CurrentDeckReference, EnemyBoardMarker, EnteredCombat, JustDrawn,
     PlayerBoardMarker, PlayingEntity, TurnsPlugin,
 };
-use crate::grid_abilities_backend::{BoardPos, DeckBackend};
 
+use crate::grid_abilities_backend::DeckBackend;
 use crate::network::{
     BattleTickStarted, History, NetworkPlugin, ProvidesLastChangeTick, SaveHistory,
 };
@@ -210,15 +193,6 @@ struct FullscreenEffect {
 impl FullscreenMaterial for FullscreenEffect {
     fn fragment_shader() -> ShaderRef {
         "shaders/fullscreen.wgsl".into()
-    }
-
-    fn node_edges() -> Vec<bevy::render::render_graph::InternedRenderLabel> {
-        vec![
-            Node3d::Tonemapping.intern(),
-            // The label is automatically generated from the name of the struct
-            Self::node_label().intern(),
-            Node3d::EndMainPassPostProcessing.intern(),
-        ]
     }
 }
 
@@ -477,25 +451,53 @@ impl TickAmount {
     }
 }
 
-const CARD_WIDTH: i32 = 121;
+const CARD_WIDTH: u32 = 121;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(
+    Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Reflect, Copy, Default, AttributeResolvable,
+)]
 pub enum DeckKind {
+    #[default]
     Draw,
     Hand,
 }
 
-#[derive(Component, Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(
+    Component,
+    Debug,
+    Clone,
+    Serialize,
+    Deserialize,
+    PartialEq,
+    Eq,
+    Reflect,
+    Copy,
+    Default,
+    AttributeResolvable,
+)]
+// (i32, DeckKind, BattleTick)
 #[require(Replicated, SaveHistory)]
-pub struct PosInDeck(i32, DeckKind, BattleTick);
+pub struct PosInDeck {
+    index: u32,
+    deck: DeckKind,
+    last_update: BattleTick,
+}
 
 impl PosInDeck {
+    pub fn new(index: u32, deck: DeckKind, last_update: BattleTick) -> Self {
+        Self {
+            index,
+            deck,
+            last_update,
+        }
+    }
+
     pub fn as_world_pos(&self) -> Vec2 {
-        Vec2::new(((self.0 + 1) * CARD_WIDTH) as f32, 0.0)
+        Vec2::new(((self.index + 1) * CARD_WIDTH) as f32, 0.0)
     }
 
     pub fn is_in_hand(&self) -> bool {
-        match self.1 {
+        match self.deck {
             DeckKind::Draw => false,
             DeckKind::Hand => true,
         }
@@ -504,7 +506,7 @@ impl PosInDeck {
 
 impl ProvidesLastChangeTick for PosInDeck {
     fn get_last_change_tick(&self) -> BattleTick {
-        self.2.clone()
+        self.last_update.clone()
     }
 }
 
@@ -539,7 +541,20 @@ pub fn on_battle_tick_init(
     cmd.spawn(BattleSubTick(0));
 }
 
-#[derive(Component, Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(
+    Component,
+    Debug,
+    Clone,
+    Serialize,
+    Deserialize,
+    PartialEq,
+    Eq,
+    Hash,
+    Reflect,
+    Copy,
+    Default,
+    AttributeResolvable,
+)]
 #[require(Replicated)]
 pub struct BattleTick {
     turn: u32,
@@ -698,7 +713,7 @@ pub fn handle_animate_tick(
                     if !card_idx.is_in_hand() {
                         continue;
                     }
-                    println!("animating world pos from card index : {:?}", card_idx.0);
+                    println!("animating world pos from card index : {:?}", card_idx.index);
 
                     let start_pos: Vec2 = match i == 0 {
                         true => match last_loop_changes {
@@ -1026,14 +1041,14 @@ fn invert_indexes(mut cards: Vec<Mut<PosInDeck>>) {
     }
 
     // sort the Vec in place by CardIndex value
-    cards.sort_by_key(|val| val.0);
+    cards.sort_by_key(|val| val.index);
 
-    let ordered_indexes: Vec<i32> = cards.iter().map(|val| val.0).collect();
+    let ordered_indexes: Vec<u32> = cards.iter().map(|val| val.index).collect();
 
     for (i, card_idx) in cards.iter_mut().enumerate() {
         let new = *ordered_indexes.get((count - 1) - i).unwrap();
-        println!("invert from {:?} to {:?}", card_idx.0, new);
-        card_idx.0 = new;
+        println!("invert from {:?} to {:?}", card_idx.index, new);
+        card_idx.index = new;
     }
 }
 
@@ -1186,12 +1201,6 @@ impl GearboxMessage for CardDrawn {
     }
 }
 
-impl HasDieselTarget<BoardPos> for CardDrawn {
-    fn diesel_target(&self) -> bevy_diesel::prelude::Target<BoardPos> {
-        Target::position(BoardPos::new_on_enemy(1))
-    }
-}
-
 pub fn propagate_effect_statuses<T: EntityEvent + Clone>(
     e: On<T>,
     q: Query<&StatusEffects>,
@@ -1266,11 +1275,11 @@ pub trait GeneratesCardTargeting {
 #[require(CardTargeting, Replicated)]
 pub struct Magnetic {
     pub direction: CardDir,
-    pub strength: i32,
+    pub strength: u32,
 }
 
 impl Magnetic {
-    pub fn new(direction: CardDir, strength: i32) -> Self {
+    pub fn new(direction: CardDir, strength: u32) -> Self {
         Self {
             direction,
             strength,
@@ -1289,27 +1298,27 @@ impl GeneratesCardTargeting for Magnetic {
             return;
         }
 
-        cards.sort_by_key(|(_, _, card_idx)| card_idx.0);
+        cards.sort_by_key(|(_, _, card_idx)| card_idx.index);
 
-        let curr = source.0;
+        let curr = source.index;
         // Position of the source *within the `cards` slice* — NOT `curr` itself.
-        let Some(curr_pos) = cards.iter().position(|(_, _, idx)| idx.0 == curr) else {
+        let Some(curr_pos) = cards.iter().position(|(_, _, idx)| idx.index == curr) else {
             return;
         };
-        let curr_pos = curr_pos as i32;
-        let len = cards.len() as i32;
+        let curr_pos = curr_pos as u32;
+        let len = cards.len() as u32;
 
-        let right_count = (len - 1 - curr_pos).min(self.strength);
+        let right_count = (len - 1 - curr_pos).min(self.strength) as u32;
         let left_count = curr_pos.min(self.strength);
 
-        let col_indexes: HashMap<Entity, i32> = collection
+        let col_indexes: HashMap<Entity, u32> = collection
             .0
             .iter()
             .enumerate()
-            .map(|(i, e)| (*e, i as i32))
+            .map(|(i, e)| (*e, i as u32))
             .collect();
 
-        let modified: Vec<(Entity, i32)> = match self.direction {
+        let modified: Vec<(Entity, u32)> = match self.direction {
             CardDir::Right => {
                 if right_count <= 0 {
                     vec![]
@@ -1318,7 +1327,7 @@ impl GeneratesCardTargeting for Magnetic {
                     let end = (curr_pos + 1 + right_count) as usize;
                     cards[start..end]
                         .iter()
-                        .map(|(e, _, i)| (*e, i.0 - right_count))
+                        .map(|(e, _, i)| (*e, i.index - right_count))
                         .collect()
                 }
             }
@@ -1331,12 +1340,12 @@ impl GeneratesCardTargeting for Magnetic {
                     cards[start..end]
                         .iter()
                         // moving *toward* curr means increasing index, not decreasing
-                        .map(|(e, _, i)| (*e, i.0 + left_count))
+                        .map(|(e, _, i)| (*e, i.index + left_count))
                         .collect()
                 }
             }
             CardDir::Around => {
-                let mut right: Vec<(Entity, i32)> = if right_count <= 0 {
+                let mut right: Vec<(Entity, u32)> = if right_count <= 0 {
                     vec![]
                 } else {
                     let start = (curr_pos + 1) as usize;
@@ -1347,7 +1356,7 @@ impl GeneratesCardTargeting for Magnetic {
                         .collect()
                 };
 
-                let mut left: Vec<(Entity, i32)> = if left_count <= 0 {
+                let mut left: Vec<(Entity, u32)> = if left_count <= 0 {
                     vec![]
                 } else {
                     let start = (curr_pos - left_count) as usize;
@@ -1364,7 +1373,7 @@ impl GeneratesCardTargeting for Magnetic {
         };
 
         for (e, new_i) in modified.into_iter() {
-            let old_idx = cards.iter().find(|v| v.0 == e).unwrap().2.0;
+            let old_idx = cards.iter().find(|v| v.0 == e).unwrap().2.index;
             println!("switching card from {:?} to {:?}", old_idx, new_i.max(0));
             collection.0.place(e, new_i.max(0) as usize);
         }
@@ -1375,11 +1384,11 @@ pub fn status_effect<E: EntityEvent + Clone, T: Component + Clone>(effect: T) ->
     related!(StatusEffects[(TriggerOn::<E>::new(), effect, observe(tick_on::<E>))])
 }
 
-pub fn magnetic_effect(direction: CardDir, strength: i32) -> impl Bundle {
+pub fn magnetic_effect(direction: CardDir, strength: u32) -> impl Bundle {
     status_effect::<DrawCard, Magnetic>(Magnetic::new(direction, strength))
 }
 
-pub fn burn_effect(direction: CardDir, strength: i32) -> impl Bundle {
+pub fn burn_effect(direction: CardDir, strength: u32) -> impl Bundle {
     status_effect::<DrawCard, Magnetic>(Magnetic::new(direction, strength))
 }
 
@@ -1577,14 +1586,14 @@ fn check_update_cards_idx(
                 false => DeckKind::Draw,
             };
 
-            let after = PosInDeck(i as i32, card_kind, battle_tick.clone());
+            let after = PosInDeck::new(i as u32, card_kind, battle_tick.clone());
             let Ok(before) = q_idx.get(card) else {
                 // Initializes value the first time
                 cmd.entity(card).insert(after);
                 continue;
             };
 
-            if before.0 == after.0 && before.1 == after.1 {
+            if before.index == after.index && before.deck == after.deck {
                 continue;
             }
 
@@ -1770,14 +1779,11 @@ fn main() {
             })
             .set(ImagePlugin::default_nearest())
             .set(LogPlugin {
-                filter:
-                    "info,wgpu_core=error,wgpu_hal=error,ghx_proc_gen=debug,bevy_replicon=debug,renet=debug,bevy_renet=debug,bevy_replicon_renet=debug"
-                        .into(),
+                filter: "info,wgpu_core=error,wgpu_hal=error".into(),
                 level: bevy::log::Level::DEBUG,
                 ..default()
             }),
     ))
-    .add_plugins(TilemapPlugin)
     .add_plugins((
         MaterialPlugin::<ExtendedMaterial<StandardMaterial, SkewMaterial>>::default(),
         MaterialPlugin::<TrainMaterial>::default(),
@@ -1801,20 +1807,29 @@ fn main() {
     // Startup
     .add_systems(Startup, setup_base_scene.after(GearboxSet))
     .add_systems(Update, input_linked_tests)
-    .add_systems(FixedPreUpdate, check_increment_action_tick.run_if(in_state(ServerState::Running)))
+    .add_systems(
+        FixedPreUpdate,
+        check_increment_action_tick.run_if(in_state(ServerState::Running)),
+    )
     .add_observer(handle_animate_tick)
     // Observers
     .add_observer(propagate_effect_statuses::<DrawCard>)
     .add_observer(tick_effects)
     .register_viewable::<Card>()
     .add_observer(build_card_view)
-    .add_systems(FixedUpdate, (|mut reader: MessageReader<DrawCard>, q: Query<(Entity, &PosInDeck)>, mut cmd: Commands| {
-        for e in reader.read() {
-            if let Ok((ent, ci)) = q.get(e.card) {
-                cmd.trigger_next_tick(e.clone());
+    .add_systems(
+        FixedUpdate,
+        (|mut reader: MessageReader<DrawCard>,
+          q: Query<(Entity, &PosInDeck)>,
+          mut cmd: Commands| {
+            for e in reader.read() {
+                if let Ok((ent, ci)) = q.get(e.card) {
+                    cmd.trigger_next_tick(e.clone());
+                }
             }
-        }
-    }).before(check_update_cards_idx))
+        })
+        .before(check_update_cards_idx),
+    )
     .add_systems(FixedUpdate, tick_delayers)
     .add_observer(on_battle_tick_init)
     .add_observer(handle_battle_tick_updated)
@@ -1825,18 +1840,31 @@ fn main() {
     //         }
     //     }
     // }).run_if(in_state(ClientState::Connected)))
-    .add_systems(FixedUpdate, (|q: Query<&History<TickAmount>, Changed<History<TickAmount>>>| {
-        for hist in &q {
-            for (tick, changes) in &hist.0 {
-                println!("changes his for tick amount {:?} are : {:?}", tick.joined_tick(), changes);
+    .add_systems(
+        FixedUpdate,
+        (|q: Query<&History<TickAmount>, Changed<History<TickAmount>>>| {
+            for hist in &q {
+                for (tick, changes) in &hist.0 {
+                    println!(
+                        "changes his for tick amount {:?} are : {:?}",
+                        tick.joined_tick(),
+                        changes
+                    );
+                }
             }
-        }
-    }).run_if(in_state(ClientState::Connected)))
+        })
+        .run_if(in_state(ClientState::Connected)),
+    )
     .add_systems(
         FixedUpdate,
         check_update_cards_idx.run_if(in_state(ServerState::Running)),
     )
-    .add_systems(FixedUpdate, check_increment_action_tick.after(check_update_cards_idx).run_if(in_state(ServerState::Running)))
+    .add_systems(
+        FixedUpdate,
+        check_increment_action_tick
+            .after(check_update_cards_idx)
+            .run_if(in_state(ServerState::Running)),
+    )
     .add_systems(FixedUpdate, handle_tick_battle_anim)
     .run();
 }

@@ -1,4 +1,5 @@
 use bevy::app::{App, Plugin, Startup};
+use bevy_diesel::gearbox::{InitStateMachine, SpawnTransition};
 use bevy_diesel::{
     invoke::Ability,
     prelude::{InvokedBy, SpawnDieselSubstate, SpawnSubEffect},
@@ -14,8 +15,6 @@ use bevy_ecs::{
     query::With,
     system::{Commands, Query},
 };
-use bevy_gearbox::{InitStateMachine, SpawnTransition};
-use bevy_ghx_grid::ghx_grid::cartesian::coordinates::CartesianPosition;
 
 use crate::grid_abilities_backend::{DeckSpawnConfig, DeckStartInvoke, DeckTargetGenerator};
 
@@ -38,7 +37,7 @@ impl Plugin for AbilityComposingPlugin {
 
         //         cmd.entity(entity).insert(DeckInvokerTarget::entity(
         //             target_entity,
-        //             BoardPos::new_on_player(1),
+        //             PosInDeck::new_on_player(1),
         //         ));
 
         //         let ability_entity = create_base_ability_entity(&mut cmd, entity);

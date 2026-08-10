@@ -26,6 +26,7 @@ use bevy::{
     },
     image::Image,
     input::{ButtonState, mouse::MouseButton},
+    material::AlphaMode,
     math::{
         AspectRatio, Rot2, Vec2, Vec3,
         primitives::{InfinitePlane3d, Rectangle},
@@ -41,7 +42,6 @@ use bevy::{
     },
     prelude::{Deref, DerefMut},
     render::{
-        alpha::AlphaMode,
         camera::NormalizedRenderTargetExt,
         render_resource::{Extent3d, TextureDimension, TextureFormat, TextureUsages},
         texture::ManualTextureViews,
@@ -69,15 +69,6 @@ use bevy_tween::{
     tween::IntoTarget,
 };
 use bevy_tweening::TweeningPlugin;
-use bevy_ui_anchor::{AnchorPoint, AnchorUiConfig, AnchorUiPlugin, AnchoredUiNodes};
-use haalka::{
-    HaalkaPlugin,
-    align::{Align, Alignable},
-    jonmo::signal,
-    prelude::{
-        BuilderPassThrough, Column, Cursorable, El, Element, Row, SignalExt, Spawnable, Stack,
-    },
-};
 
 use crate::{
     ActiveCamera, CursorTarget, SkewMaterial, UiCardMarker,
@@ -90,10 +81,8 @@ pub struct GameUiPlugin;
 
 impl Plugin for GameUiPlugin {
     fn build(&self, app: &mut bevy::app::App) {
-        app.add_plugins(HaalkaPlugin::new())
-            .add_plugins(TweeningPlugin)
+        app.add_plugins(TweeningPlugin)
             .add_observer(spawn_card_drawn_notifer)
-            .add_plugins(AnchorUiPlugin::<UiCameraMarker>::new())
             .add_plugins(DefaultTweenPlugins::default())
             .insert_resource(DraggedCard::empty())
             .insert_resource(CardVisualAssets::default())
@@ -155,103 +144,6 @@ impl Default for CardVisualAssets {
     fn default() -> Self {
         Self { background: None }
     }
-}
-
-pub fn card_ui(card: Entity, background: Handle<Image>) -> impl Element {
-    El::<Node>::new()
-        .with_node(|mut n| {
-            n.height = px(151);
-            n.width = px(121);
-            n.position_type = PositionType::Relative;
-        })
-        .insert(Pickable {
-            should_block_lower: false,
-            is_hoverable: true,
-        })
-        .cursor(CursorIcon::default())
-        .align_content(Align::new().left().top())
-        .child(
-            El::<Node>::new()
-                .child(El::<ImageNode>::new().with_image_node(|mut n| {
-                    n.image = background;
-                }))
-                .with_node(|mut n| {
-                    n.width = percent(100.0);
-                    n.height = percent(100.0);
-                }),
-        )
-}
-
-pub fn old_card_ui(card_text_entity: Entity) -> impl Element {
-    El::<Node>::new()
-        .with_node(|mut n| {
-            n.height = Val::Percent(100.);
-            n.width = Val::Percent(100.);
-            n.padding = UiRect::all(Val::Px(10.0));
-            n.position_type = PositionType::Relative;
-        })
-        .insert(Pickable {
-            should_block_lower: false,
-            is_hoverable: true,
-        })
-        .insert(BackgroundColor::from(Color::hsla(0., 0., 0., 0.)))
-        .insert(CardUiRoot)
-        .cursor(CursorIcon::default())
-        .align_content(Align::new().left().top())
-        .child(
-            El::<Node>::new()
-                .with_node(|mut n| {
-                    n.position_type = PositionType::Absolute;
-                    n.top = Val::Px(0.0);
-                    n.left = Val::Px(0.0);
-                    n.width = Val::Px(80.0);
-                    n.height = Val::Px(80.0);
-                    n.border_radius = BorderRadius::all(Val::Px(100.0));
-                    n.display = Display::Flex;
-                    n.align_items = AlignItems::Center;
-                    n.justify_content = JustifyContent::Center;
-                })
-                .insert(BackgroundColor::from(Srgba::hex("#B01807").unwrap()))
-                .insert(ZIndex(10))
-                .child(
-                    El::<Text>::new()
-                        .text(Text::new("2"))
-                        .text_font(TextFont::from_font_size(48.0)),
-                ),
-        )
-        .child(
-            El::<Node>::new()
-                .with_node(|mut n| {
-                    n.height = Val::Percent(100.);
-                    n.width = Val::Percent(100.);
-                    n.padding = UiRect::all(Val::Percent(8.0));
-                    n.border_radius = BorderRadius::all(Val::Px(18.0));
-                })
-                .insert(BackgroundColor::from(Srgba::hex("#F7F5F3").unwrap()))
-                .child_signal(
-                    signal::from_component_changed::<CardUiTextContent>(card_text_entity).map_in(
-                        |text_sections| {
-                            let sections = text_sections.sections.to_vec();
-                            Column::<Node>::new().items(
-                                sections
-                                    .into_iter()
-                                    .map(|section| match section {
-                                        TextSection::Title(s) => El::<Text>::new()
-                                            .text(Text::new(s.clone()))
-                                            .text_font(TextFont::from_font_size(64.0)),
-                                        TextSection::Subtitle(s) => El::<Text>::new()
-                                            .text(Text::new(s.clone()))
-                                            .text_font(TextFont::from_font_size(48.0)),
-                                        TextSection::Description(s) => El::<Text>::new()
-                                            .text(Text::new(s.clone()))
-                                            .text_font(TextFont::from_font_size(26.0)),
-                                    })
-                                    .into_iter(),
-                            )
-                        },
-                    ),
-                ),
-        )
 }
 
 #[derive(Component)]

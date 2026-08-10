@@ -12,7 +12,7 @@ use bevy::{
         system::{Commands, Query},
     },
 };
-use bevy_gauge::{AttributeComponent, prelude::Attributes};
+use bevy_diesel::gauge::{AttributeComponent, prelude::Attributes};
 use bevy_replicon::prelude::Replicated;
 use serde::{Deserialize, Serialize};
 

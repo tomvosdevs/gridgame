@@ -1,6 +1,15 @@
 use std::{any::TypeId, collections::HashMap, marker::PhantomData};
 
 use bevy::{app::Plugin, ui_widgets::observe};
+use bevy_diesel::gauge::{
+    attributes,
+    expr::Expr,
+    instant,
+    prelude::{
+        AttributeInitializer, AttributeQueries, Attributes, AttributesMut, InstantExt,
+        InstantModifierSet, Modifier, ModifierSet,
+    },
+};
 use bevy_diesel::prelude::InvokedBy;
 use bevy_ecs::{
     bundle::Bundle,
@@ -16,16 +25,7 @@ use bevy_ecs::{
     system::{Commands, Query, SystemId},
     world::EntityWorldMut,
 };
-use bevy_gauge::{
-    attributes,
-    expr::Expr,
-    instant,
-    prelude::{
-        AttributeInitializer, AttributeQueries, Attributes, AttributesMut, InstantExt,
-        InstantModifierSet, Modifier, ModifierSet,
-    },
-};
-use bevy_ghx_grid::ghx_grid::cartesian::coordinates::CartesianPosition;
+
 use serde::{Deserialize, Serialize};
 
 use crate::{

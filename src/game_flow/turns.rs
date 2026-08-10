@@ -1,4 +1,4 @@
-use std::{collections::HashMap, default, ops::DerefMut};
+use std::{collections::HashMap, default, ops::DerefMut, vec};
 
 use bevy::{
     app::{App, FixedUpdate, Plugin, Startup, Update},
@@ -34,6 +34,7 @@ use bevy::{
     transform::components::{GlobalTransform, Transform},
     ui::Node,
 };
+use bevy_diesel::gauge::prelude::AttributesMut;
 use bevy_diesel::prelude::Invokes;
 use bevy_ecs::{
     hierarchy::ChildOf,
@@ -42,17 +43,8 @@ use bevy_ecs::{
     relationship::OrderedRelationshipSourceCollection,
     schedule::{IntoScheduleConfigs, SystemCondition},
 };
-use bevy_flair::style::{StyleSheet, components::NodeStyleSheet};
-use bevy_gauge::prelude::AttributesMut;
-use bevy_ghx_grid::ghx_grid::cartesian::{
-    coordinates::{Cartesian3D, CartesianPosition},
-    grid::CartesianGrid,
-};
-use bevy_ghx_proc_gen::{GridNode, bevy_egui::egui::Vec2, proc_gen::generator::Generator};
-use bevy_northstar::{
-    CardinalIsoGrid,
-    prelude::{AgentOfGrid, AgentPos, Blocking},
-};
+use bevy_flair::style::{StyleSheet, components::Styled};
+
 use bevy_prng::WyRand;
 use bevy_rand::global::GlobalRng;
 use bevy_replicon::{
@@ -81,7 +73,6 @@ use crate::{
     },
     magnetic_effect, spawn_card,
     stats::players::{MeleeRange, Speed, Strength},
-    utils::AsFlippedUVec3,
 };
 
 pub struct TurnsPlugin;
@@ -139,7 +130,7 @@ pub fn handle_player_board_spawned(
     }
     let hand_board_stylesheet = asset_server.load("styles/main.css");
     cmd.entity(e.entity)
-        .insert(board_ui_bundle::<PlayerData>(NodeStyleSheet::new(
+        .insert(board_ui_bundle::<PlayerData>(Styled::new(
             hand_board_stylesheet.clone(),
         )));
 }
@@ -158,7 +149,7 @@ pub fn handle_enemy_board_spawned(
     }
     let hand_board_stylesheet = asset_server.load("styles/main.css");
     cmd.entity(e.entity)
-        .insert(board_ui_bundle::<EnemyData>(NodeStyleSheet::new(
+        .insert(board_ui_bundle::<EnemyData>(Styled::new(
             hand_board_stylesheet.clone(),
         )));
 }
@@ -220,11 +211,7 @@ impl RequestPlayingGeneration {
 
 pub fn handle_playing_gen_req(e: On<RequestPlayingGeneration>, mut cmd: Commands) {
     let entity = cmd
-        .spawn((
-            Name::new("Some player"),
-            PlayingEntity::new_ally(),
-            Invokes::new(),
-        ))
+        .spawn((Name::new("Some player"), PlayingEntity::new_ally()))
         .id();
 
     match e.team {
@@ -246,7 +233,7 @@ pub fn request_test_playing_gen(mut cmd: Commands) {
     }
 }
 
-pub fn board_ui_bundle<D: DeckDataSupplier>(styles: NodeStyleSheet) -> impl Bundle {
+pub fn board_ui_bundle<D: DeckDataSupplier>(styles: Styled) -> impl Bundle {
     (
         Node::default(),
         MainSceneUiRoot::<D>::new(),

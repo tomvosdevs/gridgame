@@ -1,5 +1,5 @@
 use bevy::ecs::component::Component;
-use bevy_gauge::prelude::Attributes;
+use bevy_diesel::gauge::prelude::Attributes;
 use bevy_prng::WyRand;
 use rand::RngExt;
 

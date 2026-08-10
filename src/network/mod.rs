@@ -34,7 +34,7 @@ use bevy_ecs::{
     world::Ref,
 };
 
-use bevy_flair::style::components::NodeStyleSheet;
+use bevy_flair::style::components::Styled;
 use bevy_renet::{
     RenetClient, RenetServer,
     netcode::{

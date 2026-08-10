@@ -13,12 +13,13 @@ use bevy::{
     },
     transform::components::{GlobalTransform, Transform},
 };
+use bevy_diesel::gauge::{attributes, instant, prelude::Attributes, requires};
+use bevy_diesel::gearbox::{
+    GearboxSet, InitStateMachine, SpawnSubstate, SpawnTransition, StateComponent,
+};
 use bevy_diesel::{
     invoke::Ability,
-    prelude::{
-        DelayedDespawn, InvokedBy, RequiresStatsOf, SpawnBranch, SpawnDieselSubstate,
-        SpawnSubEffect,
-    },
+    prelude::{InvokedBy, RequiresStatsOf, SpawnBranch, SpawnDieselSubstate, SpawnSubEffect},
     print::PrintLn,
     spawn::TemplateRegistry,
 };
@@ -30,13 +31,7 @@ use bevy_ecs::{
     schedule::IntoScheduleConfigs,
     system::{Res, Single},
 };
-use bevy_gauge::{attributes, instant, prelude::Attributes, requires};
-use bevy_gearbox::{GearboxSet, InitStateMachine, SpawnSubstate, SpawnTransition, StateComponent};
-use bevy_ghx_grid::ghx_grid::cartesian::{
-    coordinates::{Cartesian3D, CartesianPosition},
-    grid::CartesianGrid,
-};
-use bevy_ghx_proc_gen::GridNode;
+
 use bevy_prng::WyRand;
 use rand::RngExt;
 
@@ -51,7 +46,6 @@ use crate::{
         DeckTargetMutator, EntityGatheringFilter, GridCheckShape, NumberType,
     },
     stats::players::Speed,
-    utils::{CombatGridQ, IntoVec},
 };
 
 pub struct AbilitiesTemplatePlugin;

@@ -10,7 +10,7 @@ use bevy::ecs::{
 use bevy_diesel::spawn::TemplateRegistry;
 use bevy_ecs::{entity::Entity, event::EntityEvent};
 
-use bevy_gauge::{
+use bevy_diesel::gauge::{
     AttributeComponent, AttributeResolvable,
     prelude::{AttributesMut, WriteBack},
 };

@@ -25,11 +25,7 @@ use bevy::{
     transform::components::{GlobalTransform, Transform},
 };
 use bevy_diesel::{prelude::InvokedBy, spawn::TemplateRegistry};
-use bevy_ghx_grid::ghx_grid::cartesian::{
-    coordinates::{Cartesian3D, CartesianPosition},
-    grid::CartesianGrid,
-};
-use bevy_ghx_proc_gen::GridNode;
+
 use bevy_tween::{
     combinator::TransformTargetState,
     prelude::{AnimationBuilderExt, EaseKind, TransformTargetStateExt},

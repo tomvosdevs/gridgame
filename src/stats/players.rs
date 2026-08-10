@@ -1,5 +1,5 @@
+use bevy_diesel::gauge::prelude::*;
 use bevy_ecs::prelude::*;
-use bevy_gauge::prelude::*;
 
 // === BASE STATS
 

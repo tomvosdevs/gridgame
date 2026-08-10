@@ -17,22 +17,35 @@ use bevy::{
     transform::components::{GlobalTransform, Transform},
 };
 use bevy_diesel::{
-    effect::{GoOff, GoOffOrigin, SubEffects},
-    events::HasDieselTarget,
-    prelude::{InvokedBy, generate_targets, resolve_invoker, resolve_root},
-    target::{InvokerTarget, TargetMutator},
+    DieselSet,
+    effect::{GoOff, GoOffConfig, GoOffOrigin, SubEffects, go_off_on_entry},
+    events::{self, HasDieselTarget, OnRepeat, StartInvoke, StopInvoke, go_off_side_effect},
+    gauge::AttributeResolvable,
+    gearbox::GearboxSchedule,
+    prelude::{
+        GearboxPhase, InvokedBy, SustainedModifierSet, generate_targets, resolve_invoker,
+        resolve_root,
+    },
+    print::print_effect,
+    spawn::{self, OnSpawnInvoker, OnSpawnOrigin, OnSpawnTarget, SpawnConfig, spawn_system},
+    target::{self, InvokerTarget, Scope, Target, TargetGenerator, TargetMutator, TargetType},
 };
-use bevy_diesel::{pipeline::propagate_system, prelude::SpatialBackend, target::Target};
-use bevy_ecs::{hierarchy::Children, system::Commands};
-use bevy_gauge::AttributeResolvable;
-use bevy_gearbox::{AcceptAll, GearboxMessage, GearboxSet, RegistrationAppExt};
-use bevy_ghx_proc_gen::GridNode;
+use bevy_diesel::{
+    gauge_ext::modifiers::sustained_modifier_apply,
+    gearbox::{AcceptAll, GearboxMessage, GearboxSet, RegistrationAppExt},
+};
+use bevy_diesel::{pipeline::propagate_system, prelude::SpatialBackend};
+use bevy_ecs::{
+    hierarchy::Children,
+    system::{Commands, Res},
+};
+
 use bevy_prng::WyRand;
 use bevy_rand::{plugin::EntropyPlugin, prelude::GlobalRng};
 use rand::{Rng, RngExt, SeedableRng};
 
 use crate::{
-    CardCast, CardInPile, DrawCard, InDrawPile, InHand,
+    CardCast, CardInPile, DrawCard, EnemyData, InDrawPile, InHand, PlayerData, PosInDeck,
     abilities::{
         abilities_templates::ActionCastData,
         effects::{AbilityOfCaster, handle_invoke_subability_effect, handle_spawn_effect},
@@ -42,21 +55,21 @@ use crate::{
 };
 
 // Vec3 type aliases
-pub type DeckInvokerTarget = bevy_diesel::target::InvokerTarget<BoardPos>;
-pub type DeckTarget = bevy_diesel::target::Target<BoardPos>;
-pub type DeckGoOff = bevy_diesel::effect::GoOff<BoardPos>;
-pub type DeckStartInvoke = bevy_diesel::events::StartInvoke<BoardPos>;
-pub type DeckStopInvoke = bevy_diesel::events::StopInvoke<BoardPos>;
-pub type DeckOnRepeat = bevy_diesel::events::OnRepeat<BoardPos>;
-pub type DeckOnSpawnOrigin = bevy_diesel::spawn::OnSpawnOrigin<BoardPos>;
-pub type DeckOnSpawnTarget = bevy_diesel::spawn::OnSpawnTarget<BoardPos>;
-pub type DeckOnSpawnInvoker = bevy_diesel::spawn::OnSpawnInvoker<BoardPos>;
-pub type DeckTargetType = bevy_diesel::target::TargetType<BoardPos>;
-pub type DeckTargetGenerator = bevy_diesel::target::TargetGenerator<DeckBackend>;
-pub type DeckTargetMutator = bevy_diesel::target::TargetMutator<DeckBackend>;
-pub type DeckSpawnConfig = bevy_diesel::spawn::SpawnConfig<DeckBackend>;
-pub type DeckGoOffConfig = bevy_diesel::effect::GoOffConfig<DeckBackend>;
-pub type DeckGoOffOrigin = bevy_diesel::effect::GoOffOrigin<DeckBackend>;
+pub type DeckInvokerTarget = InvokerTarget<PosInDeck>;
+pub type DeckTarget = Target<PosInDeck>;
+pub type DeckGoOff = GoOff<PosInDeck>;
+pub type DeckStartInvoke = StartInvoke<PosInDeck>;
+pub type DeckStopInvoke = StopInvoke<PosInDeck>;
+pub type DeckOnRepeat = OnRepeat<PosInDeck>;
+pub type DeckOnSpawnOrigin = OnSpawnOrigin<PosInDeck>;
+pub type DeckOnSpawnTarget = OnSpawnTarget<PosInDeck>;
+pub type DeckOnSpawnInvoker = OnSpawnInvoker<PosInDeck>;
+pub type DeckTargetType = TargetType<PosInDeck>;
+pub type DeckTargetGenerator = TargetGenerator<DeckBackend>;
+pub type DeckTargetMutator = TargetMutator<DeckBackend>;
+pub type DeckSpawnConfig = SpawnConfig<DeckBackend>;
+pub type DeckGoOffConfig = GoOffConfig<DeckBackend>;
+pub type DeckGoOffOrigin = GoOffOrigin<DeckBackend>;
 
 #[derive(Debug, Clone, Reflect, PartialEq)]
 pub enum HitTargetKind {
@@ -126,8 +139,8 @@ impl GearboxMessage for CastEnd {
     }
 }
 
-impl HasDieselTarget<BoardPos> for CastEnd {
-    fn diesel_target(&self) -> Target<BoardPos> {
+impl HasDieselTarget<PosInDeck> for CastEnd {
+    fn diesel_target(&self) -> Target<PosInDeck> {
         self.target
     }
 }
@@ -171,13 +184,13 @@ impl AbilityHitPosition {
     }
 }
 
-impl HasDieselTarget<BoardPos> for AbilityHitEntity {
+impl HasDieselTarget<PosInDeck> for AbilityHitEntity {
     fn diesel_target(&self) -> DeckTarget {
         self.target
     }
 }
 
-impl HasDieselTarget<BoardPos> for AbilityHitPosition {
+impl HasDieselTarget<PosInDeck> for AbilityHitPosition {
     fn diesel_target(&self) -> DeckTarget {
         self.target
     }
@@ -243,7 +256,7 @@ impl HitReceived {
 pub fn handle_unfiltered_hit_system(
     mut hit_events: MessageReader<HitReceived>,
     mut cmd: Commands,
-    grid_playing_q: Query<&BoardPos>,
+    grid_playing_q: Query<&PosInDeck>,
     invoked_q: Query<&InvokedBy>,
     mut entity_writer: MessageWriter<AbilityHitEntity>,
     mut cast_end_writer: MessageWriter<CastEnd>,
@@ -311,38 +324,37 @@ impl Plugin for BoardDieselPlugin {
         app.add_plugins(EntropyPlugin::<bevy_prng::WyRand>::default());
         app.add_plugins(DeckBackend::plugin_core());
 
-        use bevy_diesel::bevy_gauge::prelude::AttributesAppExt;
+        use bevy_diesel::gauge::prelude::AttributesAppExt;
         app.register_attribute_derived::<DeckSpawnConfig>();
         app.register_attribute_derived::<DeckTargetMutator>();
 
         app.add_systems(
-            bevy_diesel::bevy_gearbox::GearboxSchedule,
+            GearboxSchedule,
             (
-                bevy_diesel::effect::go_off_on_entry::<DeckBackend>,
+                go_off_on_entry::<DeckBackend>,
                 propagate_system::<DeckBackend>,
             )
                 .chain()
-                .in_set(bevy_diesel::DieselSet::Propagation),
+                .in_set(DieselSet::Propagation),
         );
 
         // Leaf effect systems: read GoOff
         app.add_systems(
-            bevy_diesel::bevy_gearbox::GearboxSchedule,
+            GearboxSchedule,
             (
-                bevy_diesel::spawn::spawn_system::<DeckBackend>,
-                bevy_diesel::print::print_effect::<BoardPos>,
+                spawn_system::<DeckBackend>,
+                print_effect::<PosInDeck>,
                 handle_spawn_effect,
                 handle_invoke_subability_effect,
             )
-                .in_set(bevy_diesel::DieselSet::Effects),
+                .in_set(DieselSet::Effects),
         );
 
         // Sustained modifier apply — monomorphized here because the generic
         // fn needs B::Context which can only resolve with a concrete backend.
         app.add_systems(
             Update,
-            bevy_diesel::gauge::modifiers::sustained_modifier_apply::<DeckBackend>
-                .in_set(bevy_diesel::gauge::SustainedModifierSet),
+            sustained_modifier_apply::<DeckBackend>.in_set(SustainedModifierSet),
         );
 
         // #TODO: Will need to do something similar
@@ -358,17 +370,16 @@ impl Plugin for BoardDieselPlugin {
         app.register_state_component::<InHand>();
         app.register_state_component::<InDrawPile>();
 
-        app.add_systems(
-            bevy_diesel::bevy_gearbox::GearboxSchedule,
-            (
-                bevy_diesel::events::go_off_side_effect::<AbilityHitEntity, BoardPos>
-                    .in_set(bevy_diesel::bevy_gearbox::GearboxPhase::SideEffectPhase),
-                bevy_diesel::events::go_off_side_effect::<AbilityHitPosition, BoardPos>
-                    .in_set(bevy_diesel::bevy_gearbox::GearboxPhase::SideEffectPhase),
-                bevy_diesel::events::go_off_side_effect::<CastEnd, BoardPos>
-                    .in_set(bevy_diesel::bevy_gearbox::GearboxPhase::SideEffectPhase),
-            ),
-        );
+        // app.add_systems(
+        //     GearboxSchedule,
+        //     (
+        //         go_off_side_effect::<AbilityHitEntity, PosInDeck>
+        //             .in_set(GearboxPhase::SideEffectPhase),
+        //         go_off_side_effect::<AbilityHitPosition, PosInDeck>
+        //             .in_set(GearboxPhase::SideEffectPhase),
+        //         go_off_side_effect::<CastEnd, PosInDeck>.in_set(GearboxPhase::SideEffectPhase),
+        //     ),
+        // );
 
         // app.add_plugins(HitHandlingPlugin);
     }
@@ -427,11 +438,36 @@ pub enum GridCheckShape {
     Sphere(f32),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, AttributeResolvable)]
+pub enum GatherMode {
+    RandomPick,
+    FromStart,
+    FromEnd,
+}
+#[derive(Debug, Clone, PartialEq, Eq, AttributeResolvable)]
+pub enum PileType {
+    Hand,
+    Draw,
+    Both,
+}
+#[derive(Debug, Clone, PartialEq, Eq, AttributeResolvable)]
+pub enum PlayerType {
+    Player,
+    Enemy,
+    Both,
+}
+
 #[derive(Clone, Debug, AttributeResolvable)]
 pub enum BoardGatherer {
-    NextCard,
-    PrevCard,
-    OffsetBy(i32),
+    Around(u32),
+    OnRight(u32),
+    OnLeft(u32),
+    Piles {
+        piles: PileType,
+        players: PlayerType,
+        amount: u32,
+        mode: GatherMode,
+    },
 }
 
 #[derive(Clone, Debug, AttributeResolvable)]
@@ -456,8 +492,9 @@ impl Default for BoardFilter {
 
 #[derive(SystemParam)]
 pub struct BoardContext<'w, 's> {
-    pub playing: Query<'w, 's, (Entity, &'static BoardPos), With<PlayingEntity>>,
-    pub cards: Query<'w, 's, (Entity, &'static Card, &'static BoardPos)>,
+    pub player_data: Option<Res<'w, PlayerData>>,
+    pub enemy_data: Option<Res<'w, EnemyData>>,
+    pub cards: Query<'w, 's, (Entity, &'static Card, &'static PosInDeck)>,
     global_transforms: Query<'w, 's, &'static GlobalTransform>,
     rng: Single<'w, 's, &'static mut WyRand, With<GlobalRng>>,
 }
@@ -472,32 +509,32 @@ fn rand_u32_range(rng: Single<&mut WyRand, With<GlobalRng>>, min: u32, max: u32)
 
 pub struct DeckBackend;
 
-#[derive(Reflect, Debug, Default, Clone, Copy, AttributeResolvable, Component)]
-pub struct BoardPos {
-    is_player: bool,
-    hand_index: i32,
-}
+// #[derive(Reflect, Debug, Default, Clone, Copy, AttributeResolvable, Component)]
+// pub struct PosInDeck {
+//     is_player: bool,
+//     hand_index: i32,
+// }
 
-impl BoardPos {
-    pub fn new_on_player(hand_index: i32) -> Self {
-        Self {
-            is_player: true,
-            hand_index,
-        }
-    }
+// impl PosInDeck {
+//     pub fn new_on_player(hand_index: i32) -> Self {
+//         Self {
+//             is_player: true,
+//             hand_index,
+//         }
+//     }
 
-    pub fn new_on_enemy(hand_index: i32) -> Self {
-        Self {
-            is_player: false,
-            hand_index,
-        }
-    }
-}
+//     pub fn new_on_enemy(hand_index: i32) -> Self {
+//         Self {
+//             is_player: false,
+//             hand_index,
+//         }
+//     }
+// }
 
 impl SpatialBackend for DeckBackend {
-    type Pos = BoardPos;
+    type Pos = PosInDeck;
 
-    type Offset = BoardPos;
+    type Offset = PosInDeck;
 
     type Gatherer = BoardGatherer;
 
@@ -510,11 +547,13 @@ impl SpatialBackend for DeckBackend {
         pos: Self::Pos,
         offset: &Self::Offset,
     ) -> Self::Pos {
-        BoardPos::new_on_player(pos.hand_index + offset.hand_index)
+        let mut new = pos.clone();
+        new.index += offset.index;
+        new
     }
 
     fn distance(a: &Self::Pos, b: &Self::Pos) -> f32 {
-        (a.hand_index - b.hand_index) as f32
+        (a.index - b.index) as f32
     }
 
     fn position_of(ctx: &Self::Context<'_, '_>, entity: Entity) -> Option<Self::Pos> {
@@ -526,28 +565,62 @@ impl SpatialBackend for DeckBackend {
         origin: Self::Pos,
         gatherer: &Self::Gatherer,
         exclude: Entity,
-    ) -> Vec<bevy_diesel::prelude::Target<Self::Pos>> {
-        let index_offset = match gatherer {
-            BoardGatherer::NextCard => 1,
-            BoardGatherer::PrevCard => -1,
-            BoardGatherer::OffsetBy(offset) => *offset,
+    ) -> Vec<(Target<Self::Pos>, Scope)> {
+        let cards = match gatherer {
+            BoardGatherer::Around(amount)
+            | BoardGatherer::OnRight(amount)
+            | BoardGatherer::OnLeft(amount) => {
+                let mut start = origin.index - amount;
+                let mut end = origin.index - amount;
+                match gatherer {
+                    BoardGatherer::OnRight(_) => start = origin.index,
+                    BoardGatherer::OnLeft(_) => end = origin.index,
+                    _ => {}
+                }
+
+                let gather_range = start..end;
+
+                let mut res = ctx
+                    .cards
+                    .iter()
+                    .filter(|(e, _, pos)| *e != exclude && pos.deck == origin.deck)
+                    .find(|(_, _, pos)| gather_range.contains(&pos.index))
+                    .map_or(vec![], |(card, _, pos)| {
+                        let dist_from_origin = origin.index.abs_diff(pos.index);
+                        let scope = vec![
+                            ("OriginDistance@scope", dist_from_origin as f32),
+                            ("Radius@scope", *amount as f32),
+                            ("Rank@scope", dist_from_origin as f32),
+                        ];
+                        vec![(DeckTarget::entity(card, *pos), scope)]
+                    });
+
+                let total = res.len() as f32;
+                for c in &mut res {
+                    c.1.push(("GatherCount@scope", total));
+                }
+                res
+            }
+            BoardGatherer::Piles {
+                piles,
+                players,
+                amount,
+                mode,
+            } => {
+                todo!()
+            }
         };
 
-        ctx.cards
-            .iter()
-            .find(|(_, _, pos)| pos.hand_index == (origin.hand_index + index_offset))
-            .map_or(vec![], |(card, _, pos)| {
-                vec![DeckTarget::entity(card, *pos)]
-            })
+        cards
     }
 
     fn apply_filter(
         ctx: &mut Self::Context<'_, '_>,
-        targets: Vec<bevy_diesel::prelude::Target<Self::Pos>>,
+        targets: Vec<(Target<Self::Pos>, Scope)>,
         filter: &Self::Filter,
         _invoker: bevy::ecs::entity::Entity,
         _origin: Self::Pos,
-    ) -> Vec<bevy_diesel::prelude::Target<Self::Pos>> {
+    ) -> Vec<(Target<Self::Pos>, Scope)> {
         let resolved_count = match filter.count {
             NumberType::All => usize::MAX,
             NumberType::Fixed(n) => n,
