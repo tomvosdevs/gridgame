@@ -1,4 +1,4 @@
-use std::{f32::consts::TAU, fmt::Debug, i32, marker::PhantomData, ops::Deref, u32};
+use std::{f32::consts::TAU, fmt::Debug, i32, marker::PhantomData, u32};
 
 use bevy::{
     app::{App, Plugin, Update},
@@ -21,10 +21,11 @@ use bevy_diesel::{
     effect::{GoOff, GoOffConfig, GoOffOrigin, SubEffects, go_off_on_entry},
     events::{self, HasDieselTarget, OnRepeat, StartInvoke, StopInvoke, go_off_side_effect},
     gauge::AttributeResolvable,
-    gearbox::GearboxSchedule,
+    gearbox::{EdgeTimer, GearboxSchedule},
+    invoke::Ability,
     prelude::{
-        GearboxPhase, InvokedBy, SustainedModifierSet, generate_targets, resolve_invoker,
-        resolve_root,
+        GearboxPhase, InvokedBy, Source, SubstateOf, SustainedModifierSet, generate_targets,
+        resolve_invoker, resolve_root,
     },
     print::print_effect,
     spawn::{self, OnSpawnInvoker, OnSpawnOrigin, OnSpawnTarget, SpawnConfig, spawn_system},
@@ -37,6 +38,8 @@ use bevy_diesel::{
 use bevy_diesel::{pipeline::propagate_system, prelude::SpatialBackend};
 use bevy_ecs::{
     hierarchy::Children,
+    lifecycle::Add,
+    observer::On,
     system::{Commands, Res},
 };
 
@@ -196,45 +199,6 @@ impl HasDieselTarget<PosInDeck> for AbilityHitPosition {
     }
 }
 
-// pub trait HitFilter: Component + Clone + Debug + Send + Sync + 'static {
-//     /// Component queried on invoker and target entities.
-//     type Lookup: Component;
-
-//     /// Return `true` if the ability should affect this target.
-//     fn can_target(
-//         &self,
-//         invoker_data: Option<&Self::Lookup>,
-//         target_data: Option<&Self::Lookup>,
-//     ) -> bool;
-// }
-
-// struct HitFilterPlugin<F: HitFilter> {
-//     _marker: PhantomData<F>,
-// }
-
-// impl<F: HitFilter> Default for HitFilterPlugin<F> {
-//     fn default() -> Self {
-//         Self {
-//             _marker: PhantomData,
-//         }
-//     }
-// }
-
-// impl<F: HitFilter> Plugin for HitFilterPlugin<F> {
-//     fn build(&self, app: &mut App) {
-//         app.add_systems(Update, handle_hit_system::<F>);
-//     }
-// }
-
-// pub struct HitHandlingPlugin;
-
-// impl Plugin for HitHandlingPlugin {
-//     fn build(&self, app: &mut App) {
-//         app.add_plugins(HitFilterPlugin::<TeamHitFilter>::default())
-//             .add_systems(Update, handle_unfiltered_hit_system.before(GearboxSet));
-//     }
-// }
-
 #[derive(EntityEvent, Message)]
 pub struct HitReceived {
     #[event_target]
@@ -357,6 +321,8 @@ impl Plugin for BoardDieselPlugin {
             sustained_modifier_apply::<DeckBackend>.in_set(SustainedModifierSet),
         );
 
+        app.add_observer(log_edge_timer);
+
         // #TODO: Will need to do something similar
         // // Collision types + system (unfiltered - entities with Collides marker)
         app.register_transition::<DrawCard>();
@@ -382,6 +348,29 @@ impl Plugin for BoardDieselPlugin {
         // );
 
         // app.add_plugins(HitHandlingPlugin);
+    }
+}
+
+pub struct TickEdgeTimer {
+    current: u32,
+    // Point this to the CardCast ? Or use attributes ?
+    cast_source: Entity,
+}
+
+fn log_edge_timer(
+    e: On<Add, EdgeTimer>,
+    mut q: Query<(&mut EdgeTimer, &Source)>,
+    q_substate_of: Query<&SubstateOf>,
+    q_abilities: Query<(), With<Ability>>,
+    mut cmd: Commands,
+) {
+    if let Ok((mut timer, source)) = q.get_mut(e.entity) {
+        let root = q_substate_of.root_ancestor(source.0);
+        if q_abilities.contains(root) {
+            timer.0.pause();
+            println!("created a timer = {:?}", timer.0);
+            cmd.entity(root).log_components();
+        }
     }
 }
 
@@ -507,6 +496,7 @@ fn rand_u32_range(rng: Single<&mut WyRand, With<GlobalRng>>, min: u32, max: u32)
     min + rand_u32(rng) * (max - min)
 }
 
+#[derive(Clone, Copy, Default)]
 pub struct DeckBackend;
 
 // #[derive(Reflect, Debug, Default, Clone, Copy, AttributeResolvable, Component)]

@@ -33,7 +33,7 @@ use bevy::shader::ShaderRef;
 use bevy::state::app::StatesPlugin;
 use bevy::ui_widgets::observe;
 use bevy_diesel::DieselSet;
-use bevy_diesel::events::HasDieselTarget;
+use bevy_diesel::events::{HasDieselTarget, PosBound};
 use bevy_diesel::gauge::{AttributeResolvable, requires};
 use bevy_diesel::gearbox::{
     AcceptAll, EnterState, GearboxMessage, GearboxSet, InitStateMachine, SpawnSubstate,

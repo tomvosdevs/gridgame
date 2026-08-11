@@ -11,11 +11,23 @@ use bevy::{
         query::With,
         system::{Commands, Query, ResMut},
     },
+    scene::{CommandsSceneExt, Scene, bsn, on},
     transform::components::{GlobalTransform, Transform},
 };
-use bevy_diesel::gauge::{attributes, instant, prelude::Attributes, requires};
-use bevy_diesel::gearbox::{
-    GearboxSet, InitStateMachine, SpawnSubstate, SpawnTransition, StateComponent,
+use bevy_diesel::{
+    effect::GoOffConfig,
+    events::{PosBound, StartInvoke},
+    gauge::{attributes, instant, prelude::Attributes, requires},
+    prelude::{
+        Active, AlwaysEdge, AttributeInitializer, BranchArm, BranchTransition, Delay,
+        DespawnEffect, Done, InitialState, MessageEdge, StateMachine, Substates, Target,
+        Transitions,
+    },
+    scenes::{invoked, invoked_with, single_shot},
+};
+use bevy_diesel::{
+    gearbox::{GearboxSet, InitStateMachine, SpawnSubstate, SpawnTransition, StateComponent},
+    prelude::ModifierSet,
 };
 use bevy_diesel::{
     invoke::Ability,
@@ -30,22 +42,26 @@ use bevy_ecs::{
     observer::{Observer, On},
     schedule::IntoScheduleConfigs,
     system::{Res, Single},
+    template::{EntityTemplate, SceneEntityReference, template},
 };
 
 use bevy_prng::WyRand;
 use rand::RngExt;
 
 use crate::{
+    BattleTick, PosInDeck,
     abilities::{
         effects::{AbilityOfCaster, CasterHitEffect, SpawnEffect},
         utils::AbilityComposingPlugin,
     },
     grid_abilities_backend::{
-        AbilityHitEntity, BoardFilter, BoardGatherer, CastEnd, DeckGoOff, DeckGoOffConfig,
-        DeckInvokerTarget, DeckSpawnConfig, DeckStartInvoke, DeckTarget, DeckTargetGenerator,
-        DeckTargetMutator, EntityGatheringFilter, GridCheckShape, NumberType,
+        AbilityHitEntity, BoardFilter, BoardGatherer, CastEnd, DeckBackend, DeckGoOff,
+        DeckGoOffConfig, DeckInvokerTarget, DeckSpawnConfig, DeckStartInvoke, DeckTarget,
+        DeckTargetGenerator, DeckTargetMutator, EntityGatheringFilter, GridCheckShape, NumberType,
     },
+    network::BattleTickIncremented,
     stats::players::Speed,
+    ui::UiCameraMarker,
 };
 
 pub struct AbilitiesTemplatePlugin;
@@ -53,7 +69,49 @@ pub struct AbilitiesTemplatePlugin;
 impl Plugin for AbilitiesTemplatePlugin {
     fn build(&self, app: &mut bevy::app::App) {
         app.add_plugins(AbilityComposingPlugin)
-            .add_systems(Startup, register_templates);
+            .add_systems(Startup, register_templates)
+            .add_systems(
+                Startup,
+                (|mut writer: MessageWriter<DeckStartInvoke>,
+                  registry: Res<TemplateRegistry>,
+                  mut cmd: Commands| {
+                    let ability = registry.spawn("fireball", &mut cmd).unwrap();
+                    let target = DeckTarget::position(PosInDeck::new(
+                        0,
+                        crate::DeckKind::Draw,
+                        BattleTick::initial(),
+                    ));
+
+                    writer.write(DeckStartInvoke::new(ability, target));
+                })
+                .after(register_templates),
+            );
+    }
+}
+
+fn fireball() -> impl Scene {
+    invoked::<PosInDeck, _, _>("Test", 1.0, |root| {
+        single_shot::<DeckBackend>(
+            root,
+            bsn! {
+                DeckSpawnConfig::invoker_offset_target(
+                    "explosive_projectile",
+                    PosInDeck::new(0, crate::DeckKind::Draw, BattleTick::initial()),
+                    DeckTargetGenerator::at_invoker_target()
+                )
+            },
+        )
+    })
+}
+
+fn explosive_projectile() -> impl Scene {
+    bsn! {
+        #Root
+            Name::new("ExplosiveProjectile")
+            StateMachine InitialState(#Done)
+        Substates [
+            #Done DeckGoOffConfig::root() DespawnEffect,
+        ]
     }
 }
 
@@ -124,10 +182,8 @@ pub enum AbilityKind {
 }
 
 fn register_templates(mut registry: ResMut<TemplateRegistry>) {
-    // TODO remove
-    // registry.register("projectile", projectile_template);
-    // registry.register("melee", melee_template);
-    // registry.register(BaseAbility::Projectile.as_str(), basic_projectile_ability);
+    registry.register("explosive_projectile", || Box::new(explosive_projectile()));
+    registry.register("fireball", || Box::new(fireball()));
 }
 
 #[derive(EntityEvent)]
