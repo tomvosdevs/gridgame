@@ -49,10 +49,12 @@ use bevy_prng::WyRand;
 use bevy_rand::global::GlobalRng;
 use bevy_replicon::{
     client::Remote,
+    postcard_utils,
     prelude::{
         ClientState, ClientTriggerExt, FromClient, Replicated, SendTargets, ServerState,
         ServerTriggerExt, ToClients,
     },
+    server::ReplicationUserdata,
 };
 use moonshine_kind::{InsertInstance, Instance, SpawnInstance};
 
@@ -60,8 +62,8 @@ use rand::RngExt;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    BattleTick, BoardUtilsCommandsExt, CardDir, CardInPile, CardsPile, DeckDataSupplier, DrawCard,
-    DrawPile, EnemyData, HandPile, InHand, MainSceneUiRoot, PlayerData,
+    BattleData, BattleTick, BoardUtilsCommandsExt, CardDir, CardInPile, CardsPile,
+    DeckDataSupplier, DrawCard, DrawPile, EnemyData, HandPile, InHand, MainSceneUiRoot, PlayerData,
     abilities::abilities_templates::{Marker, Projectile},
     creatures::{
         definitions::{Creature, CreatureKind},
@@ -80,6 +82,7 @@ pub struct TurnsPlugin;
 impl Plugin for TurnsPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(RunData::init())
+            .insert_resource(BattleData::NoBattle)
             .init_state::<BattleState>()
             .add_observer(handle_playing_gen_req)
             .add_observer(handle_combat_init)
@@ -112,8 +115,13 @@ pub struct PlayerBoardMarker;
 #[require(Replicated)]
 pub struct EnemyBoardMarker;
 
-pub fn tick_battle(mut battle_tick: Single<&mut BattleTick>) {
-    battle_tick.increment_next_turn();
+pub fn tick_battle(mut battle_data: ResMut<BattleData>) {
+    match &mut battle_data.into_inner() {
+        BattleData::NoBattle => {}
+        BattleData::InCombat { battle_tick } => {
+            battle_tick.increment_next_turn();
+        }
+    }
 }
 
 pub fn handle_player_board_spawned(
@@ -292,9 +300,23 @@ fn handle_combat_init(
     _: On<EnteredCombat>,
     player_deck: Res<PlayerData>,
     enemy_deck: Res<EnemyData>,
+    curr_battle_state: Res<State<BattleState>>,
     mut next_battle_state: ResMut<NextState<BattleState>>,
     mut cmd: Commands,
 ) {
+    match curr_battle_state.get() {
+        BattleState::DrawInitialHands => {
+            return;
+        }
+        BattleState::AwaitingClient => {
+            return;
+        }
+        BattleState::Running => {
+            return;
+        }
+        _ => {}
+    }
+
     let player_draw_pile = player_deck.draw_pile;
     let player_hand_pile = player_deck.hand_pile;
     let enemy_draw_pile = enemy_deck.draw_pile;
@@ -378,7 +400,14 @@ fn handle_combat_init(
         message: CheckClientBattleReady,
     });
 
-    cmd.spawn(BattleTick::initial());
+    let battle_data = BattleData::InCombat {
+        battle_tick: BattleTick::initial(),
+    };
+    let mut message: Vec<u8> = Vec::new();
+    postcard_utils::to_extend_mut(&battle_data, &mut message)
+        .expect("Could not serialize battle data");
+    cmd.insert_resource(ReplicationUserdata(message));
+    cmd.insert_resource(battle_data.clone());
     next_battle_state.set(BattleState::AwaitingClient);
 }
 

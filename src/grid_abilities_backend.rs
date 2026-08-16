@@ -48,7 +48,8 @@ use bevy_rand::{plugin::EntropyPlugin, prelude::GlobalRng};
 use rand::{Rng, RngExt, SeedableRng};
 
 use crate::{
-    CardCast, CardInPile, DrawCard, EnemyData, InDrawPile, InHand, PlayerData, PosInDeck,
+    CardCast, CardInPile, CastTicksRequirement, DrawCard, EnemyData, InDrawPile, InHand,
+    PlayerData, PosInDeck, Ticking, TicksSinceCast,
     abilities::{
         abilities_templates::ActionCastData,
         effects::{AbilityOfCaster, handle_invoke_subability_effect, handle_spawn_effect},
@@ -321,7 +322,7 @@ impl Plugin for BoardDieselPlugin {
             sustained_modifier_apply::<DeckBackend>.in_set(SustainedModifierSet),
         );
 
-        app.add_observer(log_edge_timer);
+        app.add_observer(log_test_ticker_setup);
 
         // #TODO: Will need to do something similar
         // // Collision types + system (unfiltered - entities with Collides marker)
@@ -357,21 +358,20 @@ pub struct TickEdgeTimer {
     cast_source: Entity,
 }
 
-fn log_edge_timer(
-    e: On<Add, EdgeTimer>,
-    mut q: Query<(&mut EdgeTimer, &Source)>,
-    q_substate_of: Query<&SubstateOf>,
+fn log_test_ticker_setup(
+    e: On<Add, Ticking>,
+    q: Query<(&CastTicksRequirement, &TicksSinceCast), (With<Ticking>, With<Ability>)>,
     q_abilities: Query<(), With<Ability>>,
     mut cmd: Commands,
 ) {
-    if let Ok((mut timer, source)) = q.get_mut(e.entity) {
-        let root = q_substate_of.root_ancestor(source.0);
-        if q_abilities.contains(root) {
-            timer.0.pause();
-            println!("created a timer = {:?}", timer.0);
-            cmd.entity(root).log_components();
-        }
-    }
+    // Todo : Later, change requirement to relationship with children,
+    // each representing a requirement, and check if one with TickAmount
+    // exists AND / OR use gauge attributes / condition check
+    let (tick_requirement, ticks_since_cast) = q.get(e.entity).expect(
+        "Any 'Ticking' component should only be
+            added to entities that also have Ability,
+            CastTicksRequirement and TicksSinceCast",
+    );
 }
 
 #[derive(Clone, Debug, AttributeResolvable)]

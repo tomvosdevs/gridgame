@@ -15,13 +15,14 @@ use bevy::{
     transform::components::{GlobalTransform, Transform},
 };
 use bevy_diesel::{
+    dot::PeriodicTick,
     effect::GoOffConfig,
     events::{PosBound, StartInvoke},
     gauge::{attributes, instant, prelude::Attributes, requires},
     prelude::{
-        Active, AlwaysEdge, AttributeInitializer, BranchArm, BranchTransition, Delay,
-        DespawnEffect, Done, InitialState, MessageEdge, StateMachine, Substates, Target,
-        Transitions,
+        Active, AlwaysEdge, AttributeDerived, AttributeInitializer, BranchArm, BranchTransition,
+        ComplexAttribute, Delay, DespawnEffect, Done, InitialState, MessageEdge, StateMachine,
+        Substates, Target, Transitions, state_component,
     },
     scenes::{invoked, invoked_with, single_shot},
 };
@@ -36,20 +37,23 @@ use bevy_diesel::{
     spawn::TemplateRegistry,
 };
 use bevy_ecs::{
+    error::BevyError,
     event::EntityEvent,
     lifecycle::Add,
     message::{MessageReader, MessageWriter},
     observer::{Observer, On},
     schedule::IntoScheduleConfigs,
     system::{Res, Single},
-    template::{EntityTemplate, SceneEntityReference, template},
+    template::{
+        EntityTemplate, FnTemplate, FromTemplate, SceneEntityReference, TemplateContext, template,
+    },
 };
 
 use bevy_prng::WyRand;
 use rand::RngExt;
 
 use crate::{
-    BattleTick, PosInDeck,
+    BattleTick, CardCast, CastTicksRequirement, PosInDeck, Ticking,
     abilities::{
         effects::{AbilityOfCaster, CasterHitEffect, SpawnEffect},
         utils::AbilityComposingPlugin,
@@ -69,24 +73,100 @@ pub struct AbilitiesTemplatePlugin;
 impl Plugin for AbilitiesTemplatePlugin {
     fn build(&self, app: &mut bevy::app::App) {
         app.add_plugins(AbilityComposingPlugin)
-            .add_systems(Startup, register_templates)
-            .add_systems(
-                Startup,
-                (|mut writer: MessageWriter<DeckStartInvoke>,
-                  registry: Res<TemplateRegistry>,
-                  mut cmd: Commands| {
-                    let ability = registry.spawn("fireball", &mut cmd).unwrap();
-                    let target = DeckTarget::position(PosInDeck::new(
-                        0,
-                        crate::DeckKind::Draw,
-                        BattleTick::initial(),
-                    ));
+            .add_systems(Startup, register_templates);
+        // .add_systems(
+        //     Startup,
+        //     (|mut writer: MessageWriter<DeckStartInvoke>,
+        //       registry: Res<TemplateRegistry>,
+        //       mut cmd: Commands| {
+        //         let ability = registry.spawn("fireball", &mut cmd).unwrap();
+        //         let target = DeckTarget::position(PosInDeck::new(0, crate::DeckKind::Draw));
 
-                    writer.write(DeckStartInvoke::new(ability, target));
-                })
-                .after(register_templates),
-            );
+        //         writer.write(DeckStartInvoke::new(ability, target));
+        //     })
+        //     .after(register_templates),
+        // );
     }
+}
+
+// Marker for abilities that use tick delays
+#[derive(Component, Clone, Debug, Default)]
+pub struct CardAbility;
+
+pub fn card_cast_invoked_with<P, F, S>(
+    name: &'static str,
+    ticks_to_cast: u32,
+    base: ModifierSet,
+    make_inner: F,
+) -> impl Scene
+where
+    P: PosBound + Unpin,
+    F: Fn(EntityTemplate) -> S + Send + Sync + 'static,
+    S: Scene,
+{
+    bsn! {
+        #Ability Ability CardAbility StateMachine InitialState(#Ready)
+            CastTicksRequirement {value: ticks_to_cast}
+            Name::new(name)
+            template(move |_| {
+                let mut set = base.clone();
+                let has = |set: &ModifierSet, name: &str| {
+                    set.entries().iter().any(|e| e.attribute.as_str() == name)
+                };
+                if !has(&set, "TicksSinceCast") {
+                    set.add("TicksSinceCast", 0.0);
+                }
+                if !has(&set, "CastTicksRequirement") {
+                    set.add("CastTicksRequirement", ticks_to_cast as f32);
+                }
+                // if !has(&set, "Damage") {
+                //     set.add("Damage", 1.0);
+                // }
+                Ok(AttributeInitializer::new(set))
+            })
+        Substates [
+            #Ready Transitions [
+                (Target(#Invoking) MessageEdge::<StartInvoke<P>>)
+            ],
+
+            #Invoking InitialState(#Inner) Transitions [
+                (Target(#Cooldown) MessageEdge::<Done>)
+            ] Substates [
+                #Inner make_inner(#Ability)
+            ],
+
+            // The cooldown edge's `Delay` attribute aliases the ability's
+            // `Cooldown` via the `@ability` source (registered from its
+            // `InvokedBy(#Ability)`), and `Delay` is gauge-derived, so
+            // modifiers/instants on `Cooldown` change the fire rate live.
+            #Cooldown Transitions [
+                (Target(#Ready) MessageEdge<CardCast>
+                    template(|_|  Ok(StateComponent(Ticking)))
+                    InvokedBy(#Ability)
+                    template(|_| Ok(attributes! { "Delay" => "Cooldown@ability" })))
+            ],
+        ]
+    }
+}
+
+fn card_ability(name: &'static str, ticks_to_cast: u32) -> impl Scene {
+    card_cast_invoked_with::<PosInDeck, _, _>(
+        name,
+        ticks_to_cast,
+        ModifierSet::new(),
+        move |root| {
+            single_shot::<DeckBackend>(
+                root,
+                bsn! {
+                    DeckSpawnConfig::invoker_offset_target(
+                        "explosive_projectile",
+                        PosInDeck::new(0, crate::DeckKind::Draw),
+                        DeckTargetGenerator::at_invoker_target()
+                    )
+                },
+            )
+        },
+    )
 }
 
 fn fireball() -> impl Scene {
@@ -96,7 +176,7 @@ fn fireball() -> impl Scene {
             bsn! {
                 DeckSpawnConfig::invoker_offset_target(
                     "explosive_projectile",
-                    PosInDeck::new(0, crate::DeckKind::Draw, BattleTick::initial()),
+                    PosInDeck::new(0, crate::DeckKind::Draw),
                     DeckTargetGenerator::at_invoker_target()
                 )
             },

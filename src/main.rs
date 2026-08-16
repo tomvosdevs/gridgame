@@ -6,6 +6,7 @@ use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::sync::Arc;
 use std::time::Duration;
+use std::u32;
 
 use bevy::DefaultPlugins;
 use bevy::app::{App, Startup};
@@ -34,14 +35,15 @@ use bevy::state::app::StatesPlugin;
 use bevy::ui_widgets::observe;
 use bevy_diesel::DieselSet;
 use bevy_diesel::events::{HasDieselTarget, PosBound};
-use bevy_diesel::gauge::{AttributeResolvable, requires};
+use bevy_diesel::gauge::{AttributeResolvable, register_derived, requires};
 use bevy_diesel::gearbox::{
     AcceptAll, EnterState, GearboxMessage, GearboxSet, InitStateMachine, SpawnSubstate,
     SpawnTransition, StateComponent, StateMachine,
 };
 use bevy_diesel::invoke::Ability;
 use bevy_diesel::prelude::{
-    ActiveState, RequiresStatsOf, SpatialBackend, SpawnBranch, SpawnDieselSubstate, SpawnSubEffect,
+    ActiveState, AttributeDerived, RequiresStatsOf, SpatialBackend, SpawnBranch,
+    SpawnDieselSubstate, SpawnSubEffect, WriteBack, state_component,
 };
 use bevy_diesel::target::Target;
 use bevy_ecs::lifecycle::HookContext;
@@ -61,6 +63,7 @@ use bevy_immediate::ui::look::ImmUiLook;
 use bevy_immediate::ui::text::ImmUiText;
 use bevy_mod_opacity::OpacityPlugin;
 
+use bevy_replicon::client::server_mutate_ticks::ServerMutateTicks;
 use bevy_replicon::prelude::{ClientState, Replicated, ServerState};
 use bevy_replicon::server::server_tick::ServerTick;
 use bevy_tween::BevyTweenRegisterSystems;
@@ -95,9 +98,7 @@ use crate::game_flow::turns::{
 };
 
 use crate::grid_abilities_backend::DeckBackend;
-use crate::network::{
-    BattleTickStarted, History, NetworkPlugin, ProvidesLastChangeTick, SaveHistory,
-};
+use crate::network::{BattleTickingJustStarted, History, NetworkPlugin, SaveHistory};
 use crate::ui::{CardVisualAssets, GameUiPlugin};
 use crate::utils::IntoVec;
 use crate::visuals::cards::animation::DiegeticCardTweenPlugin;
@@ -413,17 +414,66 @@ pub struct CardInPile(#[entities] Entity);
 
 #[derive(Component, Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[require(Replicated)]
-pub struct TickAmount {
-    current: i32,
-    cast_at: i32,
+pub struct TicksSinceCast {
+    value: u32,
     last_change_tick: BattleTick,
 }
 
-impl ProvidesLastChangeTick for TickAmount {
-    fn get_last_change_tick(&self) -> BattleTick {
-        self.last_change_tick.clone()
+impl Default for TicksSinceCast {
+    fn default() -> Self {
+        Self {
+            value: 0,
+            last_change_tick: BattleTick::initial(),
+        }
     }
 }
+
+impl AttributeDerived for TicksSinceCast {
+    fn should_update(&self, attrs: &bevy_diesel::prelude::Attributes) -> bool {
+        let attr_val = attrs.value("TicksSinceCast");
+        self.value as f32 != attr_val
+    }
+
+    fn update_from_attributes(&mut self, attrs: &bevy_diesel::prelude::Attributes) {
+        self.value = attrs.value("CastTicksRequirement").round() as u32;
+    }
+}
+
+register_derived!(TicksSinceCast);
+
+#[derive(Component, Clone, Debug)]
+pub struct RequiresBattleTickSync;
+
+fn handle_sync_new_battle_entity(e: On<Add, RequiresBattleTickSync>) {}
+
+#[derive(Component, Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[require(Replicated)]
+pub struct CastTicksRequirement {
+    value: u32,
+}
+
+impl CastTicksRequirement {
+    pub fn new(ticks: u32) -> Self {
+        Self { value: ticks }
+    }
+
+    pub fn tick(&mut self, curr_tick: &BattleTick) {
+        self.value += 1;
+    }
+}
+
+impl AttributeDerived for CastTicksRequirement {
+    fn should_update(&self, attrs: &bevy_diesel::prelude::Attributes) -> bool {
+        let attr_val = attrs.value("CastTicksRequirement");
+        self.value as f32 != attr_val
+    }
+
+    fn update_from_attributes(&mut self, attrs: &bevy_diesel::prelude::Attributes) {
+        self.value = attrs.value("CastTicksRequirement").round() as u32;
+    }
+}
+
+register_derived!(CastTicksRequirement);
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum CastState {
@@ -431,24 +481,15 @@ pub enum CastState {
     Triggered,
 }
 
-impl TickAmount {
-    pub fn cast_at(cast_at: i32) -> Self {
-        Self {
-            current: 0,
-            cast_at,
-            last_change_tick: BattleTick::initial(),
-        }
-    }
+#[state_component]
+#[derive(Component, Clone, Debug, FromTemplate)]
+pub struct Ticking;
 
-    pub fn tick(&mut self, curr_tick: &BattleTick) -> CastState {
-        self.last_change_tick = curr_tick.clone();
-        self.current += 1;
-        if self.current >= self.cast_at {
-            self.current = 0;
-            return CastState::Triggered;
-        }
-        CastState::Pending
-    }
+pub fn cast_data(cast_ticks_requirement: u32) -> impl Bundle {
+    (
+        CastTicksRequirement::new(cast_ticks_requirement),
+        TicksSinceCast::default(),
+    )
 }
 
 const CARD_WIDTH: u32 = 121;
@@ -480,16 +521,11 @@ pub enum DeckKind {
 pub struct PosInDeck {
     index: u32,
     deck: DeckKind,
-    last_update: BattleTick,
 }
 
 impl PosInDeck {
-    pub fn new(index: u32, deck: DeckKind, last_update: BattleTick) -> Self {
-        Self {
-            index,
-            deck,
-            last_update,
-        }
+    pub fn new(index: u32, deck: DeckKind) -> Self {
+        Self { index, deck }
     }
 
     pub fn as_world_pos(&self) -> Vec2 {
@@ -504,12 +540,6 @@ impl PosInDeck {
     }
 }
 
-impl ProvidesLastChangeTick for PosInDeck {
-    fn get_last_change_tick(&self) -> BattleTick {
-        self.last_update.clone()
-    }
-}
-
 #[derive(Component, Debug, Clone, Serialize, Deserialize)]
 #[require(Replicated)]
 pub struct PlayerCard;
@@ -521,12 +551,16 @@ pub struct EnemyCard;
 // Styling constants
 pub const CARDS_COL_GAP: i32 = 16;
 
-pub fn on_battle_tick_init(
-    _: On<Add, BattleTick>,
+pub fn check_battle_tick_init(
+    battle_data: Res<BattleData>,
     s: Res<State<ClientState>>,
     q_subtick: Query<Entity, With<BattleSubTick>>,
     mut cmd: Commands,
 ) {
+    if !battle_data.is_added() {
+        return;
+    }
+
     match s.get() {
         ClientState::Connected => {}
         _ => {
@@ -541,8 +575,13 @@ pub fn on_battle_tick_init(
     cmd.spawn(BattleSubTick(0));
 }
 
+#[derive(Resource, Clone, Serialize, Deserialize, Debug)]
+pub enum BattleData {
+    NoBattle,
+    InCombat { battle_tick: BattleTick },
+}
+
 #[derive(
-    Component,
     Debug,
     Clone,
     Serialize,
@@ -555,7 +594,6 @@ pub fn on_battle_tick_init(
     Default,
     AttributeResolvable,
 )]
-#[require(Replicated)]
 pub struct BattleTick {
     turn: u32,
     subtick: u32,
@@ -627,6 +665,13 @@ impl BattleTick {
         self.subtick = 0;
         self.turn += 1;
     }
+
+    pub fn null() -> Self {
+        Self {
+            turn: u32::MAX,
+            subtick: u32::MAX,
+        }
+    }
 }
 
 #[derive(Component, Debug, Clone)]
@@ -645,7 +690,7 @@ pub fn handle_animate_tick(
     let min_action_tick = q_cards
         .iter()
         .map(|v| {
-            v.2.0
+            v.2.changes
                 .iter()
                 .filter(|t| t.0.turn as u32 == tick)
                 .map(|t| t.0.subtick)
@@ -658,10 +703,13 @@ pub fn handle_animate_tick(
     let max_action_tick = q_cards
         .iter()
         .map(|v| {
-            v.2.0
+            v.2.changes
                 .iter()
                 .filter(|t| t.0.turn as u32 == tick)
-                .map(|t| t.0.subtick)
+                .map(|t| {
+                    println!("animating one with subtick : {:?}", t.0.subtick);
+                    t.0.subtick
+                })
                 .max()
                 .unwrap_or(0)
         })
@@ -678,7 +726,7 @@ pub fn handle_animate_tick(
 
         if maybe_world_pos.is_ok() {
             let change_group_by_subtick: HashMap<u32, &Vec<PosInDeck>> = history
-                .0
+                .changes
                 .iter()
                 .filter_map(|(t, vals)| {
                     if t.turn != tick || vals.is_empty() {
@@ -713,7 +761,7 @@ pub fn handle_animate_tick(
                     if !card_idx.is_in_hand() {
                         continue;
                     }
-                    println!("animating world pos from card index : {:?}", card_idx.index);
+                    let cloned_idx = card_idx.clone();
 
                     let start_pos: Vec2 = match i == 0 {
                         true => match last_loop_changes {
@@ -790,6 +838,11 @@ pub fn handle_animate_tick(
                     let delay_secs = loop_delay_ms / 1000.0;
                     cmd.spawn(Delayer::from_secs(delay_secs)).observe(
                         move |_: On<DelayCompleted>, mut q: Query<&mut TweenAnim>| {
+                            println!(
+                                "animating world pos, following a delay of {:?} seconds from card index : {:?}",
+                                delay_secs.clone(),
+                                cloned_idx.clone()
+                            );
                             let [mut tween_a, mut tween_b] =
                                 q.get_many_mut([anim_a, anim_b]).unwrap();
 
@@ -1082,12 +1135,8 @@ fn spawn_card(
         false => cmd.spawn((EnemyCard, CardInPile(draw_pile_entity))).id(),
     };
 
-    cmd.entity(card).insert((
-        UiCardMarker,
-        Card::new(),
-        TickAmount::cast_at(10),
-        components,
-    ));
+    cmd.entity(card)
+        .insert((UiCardMarker, Card::new(), cast_data(10), components));
 
     cmd.entity(card).with_children(|parent| {
         let ticking = parent.spawn_substate(card, Name::new("Ticking")).id();
@@ -1363,7 +1412,9 @@ impl GeneratesCardTargeting for Magnetic {
                     let end = curr_pos as usize;
                     cards[start..end]
                         .iter()
-                        .map(|(e, _, _)| (*e, col_indexes.get(e).unwrap() - left_count))
+                        .map(|(e, _, _)| {
+                            (*e, col_indexes.get(e).unwrap().saturating_sub(left_count))
+                        })
                         .collect()
                 };
 
@@ -1568,7 +1619,6 @@ fn check_update_cards_idx(
     q_decks: Query<(&CardsPile, Has<HandPile>), Changed<CardsPile>>,
     q_just_drawn: Query<(), With<JustDrawn>>,
     q_idx: Query<&PosInDeck>,
-    q_battle_tick: Query<&BattleTick>,
     mut writer: MessageWriter<DrawCard>,
     mut cmd: Commands,
     mut increment_action_tick: ResMut<IncrementActionTick>,
@@ -1577,8 +1627,6 @@ fn check_update_cards_idx(
         return;
     }
 
-    let battle_tick = q_battle_tick.single().unwrap();
-
     for (deck, is_hand) in q_decks.iter() {
         for (i, card) in deck.iter().enumerate() {
             let card_kind = match is_hand {
@@ -1586,7 +1634,7 @@ fn check_update_cards_idx(
                 false => DeckKind::Draw,
             };
 
-            let after = PosInDeck::new(i as u32, card_kind, battle_tick.clone());
+            let after = PosInDeck::new(i as u32, card_kind);
             let Ok(before) = q_idx.get(card) else {
                 // Initializes value the first time
                 cmd.entity(card).insert(after);
@@ -1660,7 +1708,7 @@ fn tick_delayers(mut q: Query<(Entity, &mut Delayer)>, time: Res<Time>, mut cmd:
 }
 
 fn check_increment_action_tick(
-    mut q: Query<&mut BattleTick>,
+    mut battle_data: ResMut<BattleData>,
     mut increment_action_tick: Option<ResMut<IncrementActionTick>>,
     mut cmd: Commands,
 ) {
@@ -1669,18 +1717,20 @@ fn check_increment_action_tick(
         return;
     };
 
-    if q.count() == 0 {
-        return;
-    }
-
     if !increment_action_tick.0 {
         return;
     }
 
-    let mut battle_tick = q.single_mut().unwrap();
-    battle_tick.subtick += 1;
+    match &mut battle_data.into_inner() {
+        BattleData::NoBattle => {
+            return;
+        }
+        BattleData::InCombat { battle_tick } => {
+            battle_tick.subtick += 1;
 
-    increment_action_tick.0 = false;
+            increment_action_tick.0 = false;
+        }
+    }
 }
 
 #[derive(Resource)]
@@ -1700,24 +1750,26 @@ impl Default for ClientBattleAnimState {
     }
 }
 
-fn handle_battle_tick_updated(
-    e: On<BattleTickStarted>,
+fn check_battle_data_fully_received(
+    server_mutate_ticks: Res<ServerMutateTicks>,
     mut anim_state: ResMut<ClientBattleAnimState>,
-    s: Res<State<ClientState>>,
+    q: Query<&History<PosInDeck>>,
 ) {
-    match s.get() {
-        ClientState::Connected => {}
-        _ => {
-            return;
-        }
-    }
-
-    let tick = &e.0;
-
-    if tick.turn != 0 || anim_state.started {
+    if anim_state.started {
         return;
     }
 
+    let Some(_) = server_mutate_ticks.last_confirmed_tick() else {
+        return;
+    };
+
+    let any_changes_registered = q.iter().any(|his| his.changes.len() >= 1);
+
+    if !any_changes_registered {
+        return;
+    }
+
+    println!("READY ! All ticks for first turn receive -> START ANIMATING");
     anim_state.started = true;
 }
 
@@ -1831,8 +1883,11 @@ fn main() {
         .before(check_update_cards_idx),
     )
     .add_systems(FixedUpdate, tick_delayers)
-    .add_observer(on_battle_tick_init)
-    .add_observer(handle_battle_tick_updated)
+    .add_systems(FixedUpdate, check_battle_tick_init)
+    .add_systems(
+        FixedUpdate,
+        check_battle_data_fully_received.run_if(in_state(ClientState::Connected)),
+    )
     // .add_systems(FixedUpdate, (|q: Query<&History<PosInDeck>, Changed<History<PosInDeck>>>| {
     //     for hist in &q {
     //         for (tick, changes) in &hist.0 {
@@ -1840,21 +1895,21 @@ fn main() {
     //         }
     //     }
     // }).run_if(in_state(ClientState::Connected)))
-    .add_systems(
-        FixedUpdate,
-        (|q: Query<&History<TickAmount>, Changed<History<TickAmount>>>| {
-            for hist in &q {
-                for (tick, changes) in &hist.0 {
-                    println!(
-                        "changes his for tick amount {:?} are : {:?}",
-                        tick.joined_tick(),
-                        changes
-                    );
-                }
-            }
-        })
-        .run_if(in_state(ClientState::Connected)),
-    )
+    // .add_systems(
+    //     FixedUpdate,
+    //     (|q: Query<&History<CastTicksRequirement>, Changed<History<CastTicksRequirement>>>| {
+    //         for hist in &q {
+    //             for (tick, changes) in &hist.0 {
+    //                 println!(
+    //                     "changes his for tick amount {:?} are : {:?}",
+    //                     tick.joined_tick(),
+    //                     changes
+    //                 );
+    //             }
+    //         }
+    //     })
+    //     .run_if(in_state(ClientState::Connected)),
+    // )
     .add_systems(
         FixedUpdate,
         check_update_cards_idx.run_if(in_state(ServerState::Running)),
