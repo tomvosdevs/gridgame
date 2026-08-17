@@ -79,9 +79,11 @@ use crate::{
     abilities::effects::{StatusEffectOf, StatusEffects},
     deck::deck_and_cards::{Card, CardPile},
     game_flow::turns::{
-        BattleState, BattleTriggered, CheckClientBattleReady, ConfirmBattleReady, EnemyBoardMarker,
-        PlayerBoardMarker, confirm_server_battle_ready, handle_client_confirm_battle_start,
+        BattleGlobalState, BattleTriggered, CheckClientBattleReady, ConfirmBattleReady,
+        EnemyBoardMarker, PlayerBoardMarker, confirm_server_battle_ready,
+        handle_client_confirm_battle_start,
     },
+    update_subtick,
 };
 
 pub struct NetworkPlugin;
@@ -180,8 +182,10 @@ impl Plugin for NetworkPlugin {
             cmd.insert_resource(ReplicationStorage::default());
         })
         .add_systems(
-            FixedUpdate,
-            check_battle_tick_changed.run_if(in_state(ServerState::Running)),
+            Update,
+            check_battle_tick_changed
+                .after(update_subtick)
+                .run_if(in_state(ServerState::Running)),
         )
         .add_systems(
             FixedUpdate,
@@ -202,9 +206,6 @@ fn update_null_tick_histories(
     ticks_map: Res<RepliconTickToBattleTick>,
 ) {
     for mut history in &mut q {
-        println!("-===============-");
-        println!("current history awaiting : {:?}", history.awaiting);
-        println!("current history changes : {:?}", history.changes);
         let mut to_update: Vec<(u32, BattleTick)> = vec![];
         for (repl_tick, _) in history.awaiting.iter_mut() {
             match ticks_map.0.get(repl_tick) {
@@ -292,7 +293,6 @@ fn check_battle_tick_changed(
     if !battle_data.is_changed() {
         return;
     }
-    println!("inside here, the data has changed");
 
     // println!("BATTLE DATA CHANGED TO : {:?}", battle_data.clone());
 
@@ -347,6 +347,9 @@ impl<C: Component + Clone> History<C> {
     }
 }
 
+#[derive(Component, Clone, Debug)]
+pub struct HistoryJustUpdated;
+
 fn write_history<C: Component + Eq + Clone>(
     ctx: &mut WriteCtx,
     rule_fns: &RuleFns<C>,
@@ -368,6 +371,8 @@ fn write_history<C: Component + Eq + Clone>(
     } else {
         entity.insert(History::<C>::from_initial_change(component, repl_tick));
     };
+
+    entity.insert(HistoryJustUpdated);
 
     Ok(())
 }

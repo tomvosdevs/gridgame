@@ -93,8 +93,8 @@ use crate::deck::deck_and_cards::{Card, DeckAndCardsPlugin, InDeck, StatelessCar
 use crate::effects::{Burning, EffectsPlugin};
 
 use crate::game_flow::turns::{
-    BattleState, CurrentDeckReference, EnemyBoardMarker, EnteredCombat, JustDrawn,
-    PlayerBoardMarker, PlayingEntity, TurnsPlugin,
+    BattleGlobalState, CurrentDeckReference, EnemyBoardMarker, EnteredCombat, JustDrawn,
+    PlayerBoardMarker, PlayingEntity, TurnsPlugin, inside_battle, should_update_subtick,
 };
 
 use crate::grid_abilities_backend::DeckBackend;
@@ -383,32 +383,32 @@ impl DeckDataSupplier for EnemyData {
 }
 
 #[derive(Component, Debug, Clone, Serialize, Deserialize)]
-#[require(CardsPile, Replicated)]
+#[require(PileWithCards, Replicated)]
 pub struct DrawPile;
 
 #[derive(Component, Debug, Clone, Serialize, Deserialize)]
-#[require(CardsPile, Replicated)]
+#[require(PileWithCards, Replicated)]
 pub struct HandPile;
 
 #[derive(Component, Debug, Clone, Serialize, Deserialize)]
 #[relationship_target(relationship = CardInPile, linked_spawn)]
 #[require(Replicated)]
-pub struct CardsPile(#[entities] Vec<Entity>);
+pub struct PileWithCards(#[entities] Vec<Entity>);
 
-impl Default for CardsPile {
+impl Default for PileWithCards {
     fn default() -> Self {
         Self::init()
     }
 }
 
-impl CardsPile {
+impl PileWithCards {
     pub fn init() -> Self {
         Self(vec![])
     }
 }
 
 #[derive(Component, Debug, Clone, Serialize, Deserialize)]
-#[relationship(relationship_target = CardsPile)]
+#[relationship(relationship_target = PileWithCards)]
 #[require(Replicated)]
 pub struct CardInPile(#[entities] Entity);
 
@@ -551,30 +551,6 @@ pub struct EnemyCard;
 // Styling constants
 pub const CARDS_COL_GAP: i32 = 16;
 
-pub fn check_battle_tick_init(
-    battle_data: Res<BattleData>,
-    s: Res<State<ClientState>>,
-    q_subtick: Query<Entity, With<BattleSubTick>>,
-    mut cmd: Commands,
-) {
-    if !battle_data.is_added() {
-        return;
-    }
-
-    match s.get() {
-        ClientState::Connected => {}
-        _ => {
-            return;
-        }
-    }
-
-    for e in q_subtick {
-        cmd.entity(e).despawn();
-    }
-
-    cmd.spawn(BattleSubTick(0));
-}
-
 #[derive(Resource, Clone, Serialize, Deserialize, Debug)]
 pub enum BattleData {
     NoBattle,
@@ -680,19 +656,30 @@ pub struct BattleSubTick(pub i32);
 pub const TICK_DURACTION_MS: u64 = 1000;
 pub const MAX_ANIM_DURATION_MS: u64 = TICK_DURACTION_MS - 20;
 
+#[derive(Component, Debug, Clone)]
+pub struct TurnAnimator {
+    turn: u32,
+}
+
+impl TurnAnimator {
+    pub fn from_turn_tick(turn: u32) -> Self {
+        Self { turn }
+    }
+}
+
 pub fn handle_animate_tick(
     e: On<AnimateTick>,
     q_cards: Query<(Entity, &Viewable<Card>, &History<PosInDeck>)>,
     q_world_pos: Query<&WorldPos>,
     mut cmd: Commands,
 ) {
-    let tick = e.0;
+    let turn_tick = e.0;
     let min_action_tick = q_cards
         .iter()
         .map(|v| {
             v.2.changes
                 .iter()
-                .filter(|t| t.0.turn as u32 == tick)
+                .filter(|t| t.0.turn as u32 == turn_tick)
                 .map(|t| t.0.subtick)
                 .min()
                 .unwrap_or(999)
@@ -705,7 +692,7 @@ pub fn handle_animate_tick(
         .map(|v| {
             v.2.changes
                 .iter()
-                .filter(|t| t.0.turn as u32 == tick)
+                .filter(|t| t.0.turn as u32 == turn_tick)
                 .map(|t| {
                     println!("animating one with subtick : {:?}", t.0.subtick);
                     t.0.subtick
@@ -729,7 +716,7 @@ pub fn handle_animate_tick(
                 .changes
                 .iter()
                 .filter_map(|(t, vals)| {
-                    if t.turn != tick || vals.is_empty() {
+                    if t.turn != turn_tick || vals.is_empty() {
                         return None;
                     }
 
@@ -825,14 +812,22 @@ pub fn handle_animate_tick(
                     anim.playback_state = PlaybackState::Paused;
 
                     let anim_a = cmd
-                        .spawn((anim, AnimTarget::component::<WorldPos>(view)))
+                        .spawn((
+                            anim,
+                            TurnAnimator::from_turn_tick(turn_tick),
+                            AnimTarget::component::<WorldPos>(view),
+                        ))
                         .id();
 
                     let mut anim = TweenAnim::new(tf_tween).with_destroy_on_completed(true);
                     anim.playback_state = PlaybackState::Paused;
 
                     let anim_b = cmd
-                        .spawn((anim, AnimTarget::component::<WorldPos>(view)))
+                        .spawn((
+                            anim,
+                            TurnAnimator::from_turn_tick(turn_tick),
+                            AnimTarget::component::<WorldPos>(view),
+                        ))
                         .id();
 
                     let delay_secs = loop_delay_ms / 1000.0;
@@ -1087,37 +1082,6 @@ pub struct CardUiDrawn {
     entity: Entity,
 }
 
-fn invert_indexes(mut cards: Vec<Mut<PosInDeck>>) {
-    let count = cards.len();
-    if count <= 1 {
-        return;
-    }
-
-    // sort the Vec in place by CardIndex value
-    cards.sort_by_key(|val| val.index);
-
-    let ordered_indexes: Vec<u32> = cards.iter().map(|val| val.index).collect();
-
-    for (i, card_idx) in cards.iter_mut().enumerate() {
-        let new = *ordered_indexes.get((count - 1) - i).unwrap();
-        println!("invert from {:?} to {:?}", card_idx.index, new);
-        card_idx.index = new;
-    }
-}
-
-fn test_pos_tr(
-    keyboard_input: Res<ButtonInput<KeyCode>>,
-    mut player_cards_q: Query<&mut PosInDeck, (With<PlayerCard>, With<InHand>, Without<EnemyCard>)>,
-    mut enemy_cards_q: Query<&mut PosInDeck, (With<EnemyCard>, With<InHand>, Without<PlayerCard>)>,
-) {
-    if !keyboard_input.just_pressed(KeyCode::KeyI) {
-        return;
-    }
-
-    invert_indexes(player_cards_q.iter_mut().collect::<Vec<Mut<PosInDeck>>>());
-    invert_indexes(enemy_cards_q.iter_mut().collect::<Vec<Mut<PosInDeck>>>());
-}
-
 #[derive(Clone, Component)]
 pub struct TestMark;
 
@@ -1316,7 +1280,7 @@ pub trait GeneratesCardTargeting {
         &self,
         source: &PosInDeck,
         cards: &mut Vec<(Entity, &Card, &PosInDeck)>,
-        collection: &mut CardsPile,
+        collection: &mut PileWithCards,
     );
 }
 
@@ -1341,7 +1305,7 @@ impl GeneratesCardTargeting for Magnetic {
         &self,
         source: &PosInDeck,
         cards: &mut Vec<(Entity, &Card, &PosInDeck)>,
-        collection: &mut CardsPile,
+        collection: &mut PileWithCards,
     ) {
         if cards.len() < 2 {
             return;
@@ -1376,7 +1340,7 @@ impl GeneratesCardTargeting for Magnetic {
                     let end = (curr_pos + 1 + right_count) as usize;
                     cards[start..end]
                         .iter()
-                        .map(|(e, _, i)| (*e, i.index - right_count))
+                        .map(|(e, _, i)| (*e, i.index.saturating_sub(right_count)))
                         .collect()
                 }
             }
@@ -1384,7 +1348,7 @@ impl GeneratesCardTargeting for Magnetic {
                 if left_count <= 0 {
                     vec![]
                 } else {
-                    let start = (curr_pos - left_count) as usize;
+                    let start = (curr_pos.saturating_sub(left_count)) as usize;
                     let end = curr_pos as usize;
                     cards[start..end]
                         .iter()
@@ -1401,14 +1365,16 @@ impl GeneratesCardTargeting for Magnetic {
                     let end = (curr_pos + 1 + right_count) as usize;
                     cards[start..end]
                         .iter()
-                        .map(|(e, _, _)| (*e, col_indexes.get(e).unwrap() - right_count))
+                        .map(|(e, _, _)| {
+                            (*e, col_indexes.get(e).unwrap().wrapping_sub(right_count))
+                        })
                         .collect()
                 };
 
                 let mut left: Vec<(Entity, u32)> = if left_count <= 0 {
                     vec![]
                 } else {
-                    let start = (curr_pos - left_count) as usize;
+                    let start = (curr_pos.saturating_sub(left_count)) as usize;
                     let end = curr_pos as usize;
                     cards[start..end]
                         .iter()
@@ -1459,7 +1425,7 @@ pub fn tick_on<T: EntityEvent + Clone>(
 pub fn tick_effects(
     e: On<Tick>,
     q: Query<(Entity, &StatusEffectOf)>,
-    mut q_decks: Query<&mut CardsPile>,
+    mut q_decks: Query<&mut PileWithCards>,
     q_card_of: Query<&CardInPile>,
     // Instead use cardindex.stat
     cards: Query<(Entity, &Card, &PosInDeck)>,
@@ -1615,13 +1581,15 @@ impl<D: DeckDataSupplier> ImmediateAttach<CapsUi> for MainSceneUiRoot<D> {
     }
 }
 
+#[derive(Component, Clone)]
+pub struct PendingDraw;
+
 fn check_update_cards_idx(
-    q_decks: Query<(&CardsPile, Has<HandPile>), Changed<CardsPile>>,
+    q_decks: Query<(&PileWithCards, Has<HandPile>), Changed<PileWithCards>>,
     q_just_drawn: Query<(), With<JustDrawn>>,
     q_idx: Query<&PosInDeck>,
-    mut writer: MessageWriter<DrawCard>,
     mut cmd: Commands,
-    mut increment_action_tick: ResMut<IncrementActionTick>,
+    // mut increment_action_tick: ResMut<IncrementActionTick>,
 ) {
     if q_decks.count() == 0 {
         return;
@@ -1650,12 +1618,12 @@ fn check_update_cards_idx(
             if is_hand && q_just_drawn.contains(card) {
                 println!("on draw mon calisse");
                 cmd.entity(card).remove::<JustDrawn>();
-                writer.write(DrawCard { card });
+                cmd.entity(card).insert(PendingDraw);
             }
         }
     }
 
-    increment_action_tick.0 = true;
+    // increment_action_tick.0 = true;
 }
 
 #[derive(Clone, Debug)]
@@ -1707,44 +1675,26 @@ fn tick_delayers(mut q: Query<(Entity, &mut Delayer)>, time: Res<Time>, mut cmd:
     }
 }
 
-fn check_increment_action_tick(
-    mut battle_data: ResMut<BattleData>,
-    mut increment_action_tick: Option<ResMut<IncrementActionTick>>,
-    mut cmd: Commands,
-) {
-    let Some(mut increment_action_tick) = increment_action_tick else {
-        cmd.insert_resource(IncrementActionTick(false));
-        return;
-    };
-
-    if !increment_action_tick.0 {
-        return;
-    }
-
-    match &mut battle_data.into_inner() {
-        BattleData::NoBattle => {
-            return;
-        }
-        BattleData::InCombat { battle_tick } => {
-            battle_tick.subtick += 1;
-
-            increment_action_tick.0 = false;
-        }
-    }
+#[derive(Resource)]
+pub struct ClientBattleAnimState {
+    started: bool,
+    next_animated_tick: u32,
 }
 
-#[derive(Resource)]
-struct ClientBattleAnimState {
-    started: bool,
-    timer: Timer,
-    next_animated_tick: u32,
+impl ClientBattleAnimState {
+    pub fn get_current_animating_turn_tick(&self) -> Option<u32> {
+        if !self.started {
+            return None;
+        }
+
+        Some(self.next_animated_tick.saturating_sub(1))
+    }
 }
 
 impl Default for ClientBattleAnimState {
     fn default() -> Self {
         Self {
             started: false,
-            timer: Timer::from_seconds((TICK_DURACTION_MS as f32 / 1000.0), TimerMode::Repeating),
             next_animated_tick: 0,
         }
     }
@@ -1753,6 +1703,7 @@ impl Default for ClientBattleAnimState {
 fn check_battle_data_fully_received(
     server_mutate_ticks: Res<ServerMutateTicks>,
     mut anim_state: ResMut<ClientBattleAnimState>,
+    mut cmd: Commands,
     q: Query<&History<PosInDeck>>,
 ) {
     if anim_state.started {
@@ -1771,15 +1722,16 @@ fn check_battle_data_fully_received(
 
     println!("READY ! All ticks for first turn receive -> START ANIMATING");
     anim_state.started = true;
+    cmd.trigger_delayed(ReqNextTurnAnim { turn: 0 }, 0.1);
 }
 
 #[derive(Event)]
 pub struct AnimateTick(pub u32);
 
-fn handle_tick_battle_anim(
+fn start_next_turn_anim(
+    _: On<ReqNextTurnAnim>,
     mut anim_state: ResMut<ClientBattleAnimState>,
     s: Res<State<ClientState>>,
-    time: Res<Time>,
     mut cmd: Commands,
 ) {
     match s.get() {
@@ -1793,32 +1745,64 @@ fn handle_tick_battle_anim(
         return;
     }
 
-    anim_state.timer.tick(time.delta());
-    if !anim_state.timer.just_finished() {
-        return;
-    }
-
-    println!(
-        "triggering anim for tick : {:?}",
-        anim_state.next_animated_tick
-    );
     cmd.trigger(AnimateTick(anim_state.next_animated_tick));
     anim_state.next_animated_tick += 1;
 }
 
-#[derive(Resource)]
-struct IncrementActionTick(bool);
+#[derive(Event, Clone, Debug)]
+pub struct ReqNextTurnAnim {
+    turn: u32,
+}
 
-#[derive(Message, Debug, Clone, PartialEq, Eq, Hash)]
-struct TurnTick;
+fn handle_turn_animator_added(
+    e: On<Add, TurnAnimator>,
+    q: Query<&TurnAnimator, With<TweenAnim>>,
+    mut cmd: Commands,
+) {
+    let target = e.entity;
+    let turn = q
+        .get(target)
+        .expect("TurnAnimator should always be put on an entity with TweenAnim")
+        .turn;
 
-#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
-struct TurnTickSet;
+    cmd.entity(target).observe(
+        move |evt: On<AnimCompletedEvent>,
+              q: Query<(Entity, &TurnAnimator)>,
+              mut obs_cmd: Commands,
+              anim_state: Res<ClientBattleAnimState>| {
+            obs_cmd.entity(evt.anim_entity).despawn();
+            let turn_has_pending_animators = q
+                .iter()
+                .any(|(ent, t)| ent != evt.anim_entity && t.turn == turn.clone());
+
+            let next_expected_turn = turn.clone() + 1;
+            if turn_has_pending_animators || anim_state.next_animated_tick != next_expected_turn {
+                return;
+            }
+
+            println!("STARTING NEXT TURN ANIM");
+            obs_cmd.trigger(ReqNextTurnAnim {
+                turn: next_expected_turn,
+            });
+        },
+    );
+}
+
+fn update_subtick(mut battle_data: ResMut<BattleData>) {
+    match &mut battle_data.into_inner() {
+        BattleData::NoBattle => {
+            println!("XXXXXX == NO BATTLE DATAA");
+            return;
+        }
+        BattleData::InCombat { battle_tick } => {
+            println!("OOOOOO == FOUND BATTLE DATAA : {:?}", battle_tick);
+            battle_tick.subtick += 1;
+        }
+    }
+}
 
 fn main() {
     let mut app = App::new();
-
-    app.configure_sets(Update, TurnTickSet.run_if(on_message::<TurnTick>));
     app.add_plugins((
         MeshPickingPlugin,
         DefaultPlugins
@@ -1859,67 +1843,41 @@ fn main() {
     // Startup
     .add_systems(Startup, setup_base_scene.after(GearboxSet))
     .add_systems(Update, input_linked_tests)
-    .add_systems(
-        FixedPreUpdate,
-        check_increment_action_tick.run_if(in_state(ServerState::Running)),
-    )
     .add_observer(handle_animate_tick)
     // Observers
     .add_observer(propagate_effect_statuses::<DrawCard>)
     .add_observer(tick_effects)
     .register_viewable::<Card>()
     .add_observer(build_card_view)
+    .add_observer(|e: On<Remove, PileWithCards>, mut cmd: Commands| {
+        cmd.entity(e.entity).insert(PileWithCards::init());
+    })
     .add_systems(
-        FixedUpdate,
+        Update,
         (|mut reader: MessageReader<DrawCard>,
           q: Query<(Entity, &PosInDeck)>,
           mut cmd: Commands| {
             for e in reader.read() {
                 if let Ok((ent, ci)) = q.get(e.card) {
-                    cmd.trigger_next_tick(e.clone());
+                    cmd.trigger(e.clone());
                 }
             }
-        })
-        .before(check_update_cards_idx),
+        }),
     )
     .add_systems(FixedUpdate, tick_delayers)
-    .add_systems(FixedUpdate, check_battle_tick_init)
     .add_systems(
         FixedUpdate,
         check_battle_data_fully_received.run_if(in_state(ClientState::Connected)),
     )
-    // .add_systems(FixedUpdate, (|q: Query<&History<PosInDeck>, Changed<History<PosInDeck>>>| {
-    //     for hist in &q {
-    //         for (tick, changes) in &hist.0 {
-    //             println!("changes for tick {:?} are : {:?}", tick.joined_tick(), changes);
-    //         }
-    //     }
-    // }).run_if(in_state(ClientState::Connected)))
-    // .add_systems(
-    //     FixedUpdate,
-    //     (|q: Query<&History<CastTicksRequirement>, Changed<History<CastTicksRequirement>>>| {
-    //         for hist in &q {
-    //             for (tick, changes) in &hist.0 {
-    //                 println!(
-    //                     "changes his for tick amount {:?} are : {:?}",
-    //                     tick.joined_tick(),
-    //                     changes
-    //                 );
-    //             }
-    //         }
-    //     })
-    //     .run_if(in_state(ClientState::Connected)),
-    // )
     .add_systems(
         FixedUpdate,
         check_update_cards_idx.run_if(in_state(ServerState::Running)),
     )
     .add_systems(
-        FixedUpdate,
-        check_increment_action_tick
-            .after(check_update_cards_idx)
-            .run_if(in_state(ServerState::Running)),
+        FixedPostUpdate,
+        update_subtick.run_if(should_update_subtick),
     )
-    .add_systems(FixedUpdate, handle_tick_battle_anim)
+    .add_observer(start_next_turn_anim)
+    .add_observer(handle_turn_animator_added)
     .run();
 }

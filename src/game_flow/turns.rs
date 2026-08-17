@@ -1,7 +1,7 @@
 use std::{collections::HashMap, default, ops::DerefMut, vec};
 
 use bevy::{
-    app::{App, FixedUpdate, Plugin, Startup, Update},
+    app::{App, FixedPostUpdate, FixedUpdate, Plugin, Startup, Update},
     asset::{AssetServer, Assets},
     color::{Srgba, palettes::css::RED},
     ecs::{
@@ -62,8 +62,9 @@ use rand::RngExt;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    BattleData, BattleTick, BoardUtilsCommandsExt, CardDir, CardInPile, CardsPile,
-    DeckDataSupplier, DrawCard, DrawPile, EnemyData, HandPile, InHand, MainSceneUiRoot, PlayerData,
+    BattleData, BattleTick, BoardUtilsCommandsExt, CardDir, CardInPile, DeckDataSupplier, DrawCard,
+    DrawPile, EnemyData, HandPile, InHand, MainSceneUiRoot, PendingDraw, PileWithCards, PlayerData,
+    PosInDeck,
     abilities::abilities_templates::{Marker, Projectile},
     creatures::{
         definitions::{Creature, CreatureKind},
@@ -79,21 +80,126 @@ use crate::{
 
 pub struct TurnsPlugin;
 
+pub fn in_turn_draw(
+    serv_state: Res<State<ServerState>>,
+    battle_global_state: Res<State<BattleGlobalState>>,
+    turn_state: Res<State<BattleTurnsState>>,
+) -> bool {
+    match serv_state.get() {
+        ServerState::Stopped => false,
+        ServerState::Running => match battle_global_state.get() {
+            BattleGlobalState::Running => match turn_state.get() {
+                BattleTurnsState::Draw => true,
+                _ => false,
+            },
+            _ => false,
+        },
+    }
+}
+
+pub fn in_turn_tick(
+    serv_state: Res<State<ServerState>>,
+    battle_global_state: Res<State<BattleGlobalState>>,
+    turn_state: Res<State<BattleTurnsState>>,
+) -> bool {
+    match serv_state.get() {
+        ServerState::Stopped => false,
+        ServerState::Running => match battle_global_state.get() {
+            BattleGlobalState::Running => match turn_state.get() {
+                BattleTurnsState::Tick => true,
+                _ => false,
+            },
+            _ => false,
+        },
+    }
+}
+
+pub fn in_turn_apply_effects(
+    serv_state: Res<State<ServerState>>,
+    battle_global_state: Res<State<BattleGlobalState>>,
+    turn_state: Res<State<BattleTurnsState>>,
+) -> bool {
+    match serv_state.get() {
+        ServerState::Stopped => false,
+        ServerState::Running => match battle_global_state.get() {
+            BattleGlobalState::Running => match turn_state.get() {
+                BattleTurnsState::ApplyEffects => true,
+                _ => false,
+            },
+            _ => false,
+        },
+    }
+}
+
+pub fn in_turn_increment(
+    serv_state: Res<State<ServerState>>,
+    battle_global_state: Res<State<BattleGlobalState>>,
+    turn_state: Res<State<BattleTurnsState>>,
+) -> bool {
+    match serv_state.get() {
+        ServerState::Stopped => false,
+        ServerState::Running => match battle_global_state.get() {
+            BattleGlobalState::Running => match turn_state.get() {
+                BattleTurnsState::IncrementTurnId => true,
+                _ => false,
+            },
+            _ => false,
+        },
+    }
+}
+
+pub fn should_update_subtick(
+    serv_state: Res<State<ServerState>>,
+    battle_global_state: Res<State<BattleGlobalState>>,
+    turn_state: Res<State<BattleTurnsState>>,
+) -> bool {
+    match serv_state.get() {
+        ServerState::Stopped => false,
+        ServerState::Running => match battle_global_state.get() {
+            BattleGlobalState::Running => match turn_state.get() {
+                BattleTurnsState::IncrementTurnId => false,
+                _ => true,
+            },
+            _ => false,
+        },
+    }
+}
+
+pub fn inside_battle(
+    serv_state: Res<State<ServerState>>,
+    battle_global_state: Res<State<BattleGlobalState>>,
+) -> bool {
+    match serv_state.get() {
+        ServerState::Stopped => false,
+        ServerState::Running => match battle_global_state.get() {
+            BattleGlobalState::Running => true,
+            _ => false,
+        },
+    }
+}
+
 impl Plugin for TurnsPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(RunData::init())
             .insert_resource(BattleData::NoBattle)
-            .init_state::<BattleState>()
+            .init_state::<BattleGlobalState>()
+            .init_state::<BattleTurnsState>()
             .add_observer(handle_playing_gen_req)
             .add_observer(handle_combat_init)
-            .add_systems(
-                OnEnter(BattleState::DrawInitialHands),
-                handle_initial_draw.run_if(in_state(ServerState::Running)),
-            )
+            // Turn states
+            .add_systems(FixedUpdate, handle_turn_draw.run_if(in_turn_draw))
+            .add_systems(FixedUpdate, handle_turn_tick.run_if(in_turn_tick))
             .add_systems(
                 FixedUpdate,
-                tick_battle
-                    .run_if(in_state(BattleState::Running).and(in_state(ServerState::Running))),
+                apply_pending_effects.run_if(in_turn_apply_effects),
+            )
+            .add_systems(
+                FixedPostUpdate,
+                increment_battle_turn.run_if(in_turn_increment),
+            )
+            .add_systems(
+                FixedPostUpdate,
+                trigger_turn_next_state.run_if(inside_battle),
             )
             .add_observer(handle_draw_from_pile)
             .add_observer(setup_battle_context)
@@ -101,6 +207,26 @@ impl Plugin for TurnsPlugin {
             .add_observer(handle_enemy_board_spawned)
             .add_systems(Startup, spawn_dev_text)
             .add_systems(FixedUpdate, draw_dev_text);
+    }
+}
+
+fn trigger_turn_next_state(
+    curr_turn_state: Res<State<BattleTurnsState>>,
+    mut next_turn_state: ResMut<NextState<BattleTurnsState>>,
+) {
+    next_turn_state.set(curr_turn_state.get_next_state());
+}
+
+fn apply_pending_effects(q: Query<(Entity, &PendingDraw)>, mut cmd: Commands) {
+    for (e, p) in &q {
+        cmd.entity(e).remove::<PendingDraw>();
+        cmd.trigger(DrawCard { card: e });
+    }
+}
+
+fn handle_turn_tick(q: Query<&PosInDeck>) {
+    for e in &q {
+        continue;
     }
 }
 
@@ -115,7 +241,7 @@ pub struct PlayerBoardMarker;
 #[require(Replicated)]
 pub struct EnemyBoardMarker;
 
-pub fn tick_battle(mut battle_data: ResMut<BattleData>) {
+pub fn increment_battle_turn(mut battle_data: ResMut<BattleData>) {
     match &mut battle_data.into_inner() {
         BattleData::NoBattle => {}
         BattleData::InCombat { battle_tick } => {
@@ -164,17 +290,29 @@ pub fn handle_enemy_board_spawned(
 
 fn setup_battle_context(
     _: On<BattleTriggered>,
-    mut next_battle_state: ResMut<NextState<BattleState>>,
+    mut next_battle_state: ResMut<NextState<BattleGlobalState>>,
     mut cmd: Commands,
 ) {
     println!("setting up ui");
 
     // Draw piles
-    let player_draw_pile = cmd.spawn_instance(DrawPile).insert(Replicated).instance();
-    let enemy_draw_pile = cmd.spawn_instance(DrawPile).insert(Replicated).instance();
+    let player_draw_pile = cmd
+        .spawn_instance(DrawPile)
+        .insert((Replicated, PileWithCards::init()))
+        .instance();
+    let enemy_draw_pile = cmd
+        .spawn_instance(DrawPile)
+        .insert((Replicated, PileWithCards::init()))
+        .instance();
     // Hand piles
-    let player_hand_pile = cmd.spawn_instance(HandPile).insert(Replicated).instance();
-    let enemy_hand_pile = cmd.spawn_instance(HandPile).insert(Replicated).instance();
+    let player_hand_pile = cmd
+        .spawn_instance(HandPile)
+        .insert((Replicated, PileWithCards::init()))
+        .instance();
+    let enemy_hand_pile = cmd
+        .spawn_instance(HandPile)
+        .insert((Replicated, PileWithCards::init()))
+        .instance();
     // Ui boards
     let player_board_ui = cmd.spawn((PlayerBoardMarker, Replicated)).id();
     let enemy_board_ui = cmd.spawn((EnemyBoardMarker, Replicated)).id();
@@ -191,8 +329,18 @@ fn setup_battle_context(
         hand_pile: enemy_hand_pile,
     });
 
+    let battle_data = BattleData::InCombat {
+        battle_tick: BattleTick::initial(),
+    };
+
+    let mut message: Vec<u8> = Vec::new();
+    postcard_utils::to_extend_mut(&battle_data, &mut message)
+        .expect("Could not serialize battle data");
+    cmd.insert_resource(ReplicationUserdata(message));
+    cmd.insert_resource(battle_data.clone());
+
     cmd.trigger(EnteredCombat);
-    next_battle_state.set(BattleState::Init);
+    next_battle_state.set(BattleGlobalState::Init);
 }
 
 #[derive(Event)]
@@ -251,14 +399,34 @@ pub fn board_ui_bundle<D: DeckDataSupplier>(styles: Styled) -> impl Bundle {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, States, Default, PartialEq, Eq, Hash)]
-pub enum BattleState {
+pub enum BattleGlobalState {
     #[default]
     OutOfCombat,
     Init,
-    DrawInitialHands,
     AwaitingClient,
     Running,
     Ended,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, States, Default, PartialEq, Eq, Hash)]
+#[repr(u32)]
+pub enum BattleTurnsState {
+    #[default]
+    Draw,
+    Tick,
+    ApplyEffects,
+    IncrementTurnId,
+}
+
+impl BattleTurnsState {
+    pub fn get_next_state(&self) -> BattleTurnsState {
+        match self {
+            BattleTurnsState::Draw => BattleTurnsState::Tick,
+            BattleTurnsState::Tick => BattleTurnsState::ApplyEffects,
+            BattleTurnsState::ApplyEffects => BattleTurnsState::IncrementTurnId,
+            BattleTurnsState::IncrementTurnId => BattleTurnsState::Draw,
+        }
+    }
 }
 
 #[derive(Resource)]
@@ -300,18 +468,15 @@ fn handle_combat_init(
     _: On<EnteredCombat>,
     player_deck: Res<PlayerData>,
     enemy_deck: Res<EnemyData>,
-    curr_battle_state: Res<State<BattleState>>,
-    mut next_battle_state: ResMut<NextState<BattleState>>,
+    curr_battle_state: Res<State<BattleGlobalState>>,
+    mut next_battle_state: ResMut<NextState<BattleGlobalState>>,
     mut cmd: Commands,
 ) {
     match curr_battle_state.get() {
-        BattleState::DrawInitialHands => {
+        BattleGlobalState::AwaitingClient => {
             return;
         }
-        BattleState::AwaitingClient => {
-            return;
-        }
-        BattleState::Running => {
+        BattleGlobalState::Running => {
             return;
         }
         _ => {}
@@ -400,15 +565,7 @@ fn handle_combat_init(
         message: CheckClientBattleReady,
     });
 
-    let battle_data = BattleData::InCombat {
-        battle_tick: BattleTick::initial(),
-    };
-    let mut message: Vec<u8> = Vec::new();
-    postcard_utils::to_extend_mut(&battle_data, &mut message)
-        .expect("Could not serialize battle data");
-    cmd.insert_resource(ReplicationUserdata(message));
-    cmd.insert_resource(battle_data.clone());
-    next_battle_state.set(BattleState::AwaitingClient);
+    next_battle_state.set(BattleGlobalState::AwaitingClient);
 }
 
 pub fn confirm_server_battle_ready(
@@ -427,9 +584,10 @@ pub fn confirm_server_battle_ready(
 
 pub fn handle_client_confirm_battle_start(
     _: On<FromClient<ConfirmBattleReady>>,
-    mut next_battle_state: ResMut<NextState<BattleState>>,
+
+    mut next_battle_state: ResMut<NextState<BattleGlobalState>>,
 ) {
-    next_battle_state.set(BattleState::DrawInitialHands);
+    next_battle_state.set(BattleGlobalState::Running);
 }
 
 #[derive(Debug, Clone)]
@@ -460,12 +618,7 @@ impl DrawFromPile {
     }
 }
 
-fn handle_initial_draw(
-    player_data: Res<PlayerData>,
-    enemy_data: Res<EnemyData>,
-    mut next_battle_state: ResMut<NextState<BattleState>>,
-    mut cmd: Commands,
-) {
+fn handle_turn_draw(player_data: Res<PlayerData>, enemy_data: Res<EnemyData>, mut cmd: Commands) {
     cmd.trigger(DrawFromPile::new(
         player_data.hand_pile,
         player_data.draw_pile,
@@ -477,18 +630,25 @@ fn handle_initial_draw(
         enemy_data.draw_pile,
         DrawAmount::FillHand,
     ));
-
-    next_battle_state.set(BattleState::Running);
 }
 
 pub fn handle_draw_from_pile(
     e: On<DrawFromPile>,
-    mut q: Query<(Entity, &mut CardsPile)>,
+    mut q: Query<(Entity, &mut PileWithCards)>,
     mut cmd: Commands,
 ) {
-    let [(draw_entity, mut draw_pile), (hand_entity, hand_pile)] = q
-        .get_many_mut([e.draw_pile, e.hand_pile])
-        .expect("Should find 'CardsPile' Comp on pile to draw from entity");
+    let Ok([(draw_entity, mut draw_pile), (hand_entity, hand_pile)]) =
+        q.get_many_mut([e.draw_pile, e.hand_pile])
+    else {
+        println!("FAILED, loging HAND then DRAW == >");
+        cmd.entity(e.draw_pile).log_components();
+        cmd.entity(e.hand_pile).log_components();
+        return;
+    };
+
+    println!("((all ok)), loging HAND then DRAW");
+    cmd.entity(e.draw_pile).log_components();
+    cmd.entity(e.hand_pile).log_components();
 
     let max_hand_size: usize = 5;
 
@@ -509,8 +669,6 @@ pub fn handle_draw_from_pile(
         cmd.entity(drawn)
             .insert((JustDrawn, InHand, CardInPile(hand_entity)));
     }
-
-    // cmd.trigger(EntityTurnEnd(e.hand_pile));
 }
 
 #[derive(Component, Debug, Clone)]
