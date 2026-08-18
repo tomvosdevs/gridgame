@@ -37,6 +37,7 @@ use bevy::{
 use bevy_diesel::gauge::prelude::AttributesMut;
 use bevy_diesel::prelude::Invokes;
 use bevy_ecs::{
+    entity::MapEntities,
     hierarchy::ChildOf,
     lifecycle::Add,
     message::Message,
@@ -62,9 +63,10 @@ use rand::RngExt;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    BattleData, BattleTick, BoardUtilsCommandsExt, CardDir, CardInPile, DeckDataSupplier, DrawCard,
-    DrawPile, EnemyData, HandPile, InHand, MainSceneUiRoot, PendingDraw, PileWithCards, PlayerData,
-    PosInDeck,
+    BattleData, BattleTick, BoardUtilsCommandsExt, CardCast, CardDir, CardInPile,
+    CastTicksRequirement, DeckDataSupplier, DrawCard, DrawPile, EnemyData, HandPile, InHand,
+    MainSceneUiRoot, PendingDraw, PileWithCards, PlayerData, PosInDeck, TickEachTurn,
+    TicksSinceCast,
     abilities::abilities_templates::{Marker, Projectile},
     creatures::{
         definitions::{Creature, CreatureKind},
@@ -224,9 +226,55 @@ fn apply_pending_effects(q: Query<(Entity, &PendingDraw)>, mut cmd: Commands) {
     }
 }
 
-fn handle_turn_tick(q: Query<&PosInDeck>) {
-    for e in &q {
-        continue;
+#[derive(EntityEvent, Clone, MapEntities, Serialize, Deserialize)]
+pub struct CardTicked {
+    #[event_target]
+    #[entities]
+    pub card: Entity,
+    pub tick: BattleTick,
+    pub ticks_since_cast: u32,
+    pub cast_at: u32,
+}
+
+fn handle_turn_tick(
+    mut q: Query<(Entity, &CastTicksRequirement, &mut TicksSinceCast), With<TickEachTurn>>,
+    battle_data: Res<BattleData>,
+    mut cmd: Commands,
+) {
+    let Some(battle_tick) = (match battle_data.into_inner() {
+        BattleData::NoBattle => None,
+        BattleData::InCombat { battle_tick } => Some(battle_tick),
+    }) else {
+        return;
+    };
+
+    for (card, cast_req, mut ticks_since_cast) in &mut q {
+        ticks_since_cast.value += 1;
+        let evt = CardTicked {
+            card,
+            tick: *battle_tick,
+            ticks_since_cast: ticks_since_cast.value,
+            cast_at: cast_req.value,
+        };
+        cmd.trigger(evt.clone());
+
+        cmd.server_trigger(ToClients {
+            targets: SendTargets::CLIENTS_ONLY,
+            message: evt,
+        });
+
+        if ticks_since_cast.value >= cast_req.value {
+            let evt = CardCast {
+                card,
+                tick: *battle_tick,
+            };
+            cmd.send_and_trigger(evt.clone());
+            cmd.server_trigger(ToClients {
+                targets: SendTargets::CLIENTS_ONLY,
+                message: evt,
+            });
+            ticks_since_cast.value = 0;
+        }
     }
 }
 
@@ -496,7 +544,7 @@ fn handle_combat_init(
     );
 
     spawn_card(
-        (magnetic_effect(CardDir::Around, 1)),
+        (magnetic_effect(CardDir::Right, 2)),
         &mut cmd,
         player_draw_pile,
         player_hand_pile,
@@ -512,7 +560,7 @@ fn handle_combat_init(
     );
 
     spawn_card(
-        (magnetic_effect(CardDir::Around, 1)),
+        (magnetic_effect(CardDir::Left, 1)),
         &mut cmd,
         player_draw_pile,
         player_hand_pile,
@@ -528,7 +576,7 @@ fn handle_combat_init(
     );
 
     spawn_card(
-        (magnetic_effect(CardDir::Around, 1)),
+        (magnetic_effect(CardDir::Right, 1)),
         &mut cmd,
         enemy_draw_pile,
         enemy_hand_pile,
@@ -544,7 +592,7 @@ fn handle_combat_init(
     );
 
     spawn_card(
-        (magnetic_effect(CardDir::Around, 1)),
+        (magnetic_effect(CardDir::Left, 2)),
         &mut cmd,
         enemy_draw_pile,
         enemy_hand_pile,

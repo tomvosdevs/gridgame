@@ -2,12 +2,13 @@ use std::{
     collections::{BTreeMap, HashMap},
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket},
     ops::Deref,
-    time::SystemTime,
+    time::{Duration, SystemTime},
 };
 
 use bevy::{
     app::{App, FixedUpdate, Plugin, PluginGroup, Startup, Update},
     input::{ButtonInput, keyboard::KeyCode},
+    math::{Rot2, curve::EaseFunction},
     prelude::{Deref, DerefMut},
     state::{
         app::AppExtStates,
@@ -15,7 +16,7 @@ use bevy::{
         condition::in_state,
         state::{OnEnter, OnExit, State, States},
     },
-    ui::Node,
+    ui::{Node, UiTransform},
     utils::default,
 };
 use bevy_ecs::{
@@ -69,17 +70,19 @@ use bevy_replicon::{
     },
 };
 use bevy_replicon_renet::{RenetChannelsExt, RepliconRenetPlugins};
+use bevy_tweening::{AnimTarget, Tween, TweenAnim};
+use moonshine_view::Viewable;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    BattleData, BattleTick, BeingDrawn, BoardUtilsCommandsExt, CardCast, CardInPile, CardWidgetFor,
-    CastTicksRequirement, DeckKind, DelayCompleted, Delayer, DrawPile, EnemyCard, EnemyData,
-    HandPile, InDiscard, InDrawPile, InHand, Magnetic, MainSceneUiRoot, PlayerCard, PlayerData,
-    PosInDeck, UiCardMarker,
+    AnimMode, BattleData, BattleTick, BeingDrawn, BoardUtilsCommandsExt, CardCast, CardInPile,
+    CardWidgetFor, CastTicksRequirement, DeckKind, DelayCompleted, Delayer, DrawPile, EnemyCard,
+    EnemyData, HandPile, InDiscard, InDrawPile, InHand, Magnetic, MainSceneUiRoot, PlayerCard,
+    PlayerData, PosInDeck, TurnAnimator, UiCardMarker, WorldPos, WorldPosLens,
     abilities::effects::{StatusEffectOf, StatusEffects},
     deck::deck_and_cards::{Card, CardPile},
     game_flow::turns::{
-        BattleGlobalState, BattleTriggered, CheckClientBattleReady, ConfirmBattleReady,
+        BattleGlobalState, BattleTriggered, CardTicked, CheckClientBattleReady, ConfirmBattleReady,
         EnemyBoardMarker, PlayerBoardMarker, confirm_server_battle_ready,
         handle_client_confirm_battle_start,
     },
@@ -109,7 +112,7 @@ impl Plugin for NetworkPlugin {
         .replicate::<Card>()
         // .replicate::<CardPile>()
         // .replicate::<CardInPile>()
-        // .replicate::<Magnetic>()
+        .replicate::<Magnetic>()
         .replicate::<UiCardMarker>()
         // .replicate::<InHand>()
         // .replicate::<BeingDrawn>()
@@ -160,7 +163,6 @@ impl Plugin for NetworkPlugin {
         .add_observer(apply_increment_req)
         .add_observer(handle_client_confirm_battle_start)
         .add_observer(confirm_server_battle_ready)
-        .add_observer(handle_battle_tick_incremented)
         .add_observer(user_data_received)
         .add_systems(Startup, setup_networking)
         .add_systems(
@@ -195,6 +197,77 @@ impl Plugin for NetworkPlugin {
         )
         .add_observer(handle_card_changes)
         .add_mapped_server_event::<CardChangedPos>(Channel::Ordered)
+        .add_mapped_server_event::<CardTicked>(Channel::Ordered)
+        .add_mapped_server_event::<CardCast>(Channel::Ordered)
+        .add_observer(
+            |e: On<CardTicked>, mut cmd: Commands, s: Res<State<ClientState>>| {
+                match s.get() {
+                    ClientState::Connected => {}
+                    _ => {
+                        return;
+                    }
+                }
+
+                let card = e.card.clone();
+                let ticks_since_cast = e.ticks_since_cast;
+                let cast_at = e.cast_at;
+
+                cmd.spawn((
+                    AnimInstructionsOf(e.card),
+                    AnimTargetTick { turn: e.tick },
+                    TurnAnimator { turn: e.tick.turn },
+                ))
+                .observe(
+                    move |trig_e: On<TriggerAnim>,
+                          q: Query<&Viewable<Card>>,
+                          q_pos: Query<&WorldPos>,
+                          mut obs_cmd: Commands| {
+                        let view = q.get(card.clone()).unwrap().view().entity();
+
+                        obs_cmd.entity(view).insert(CastData {
+                            ticks_since_cast,
+                            cast_at,
+                        });
+
+                        let curr_world_pos =
+                            q_pos.get(view).expect("should find world pos on this");
+                        let start_tf = curr_world_pos.transform;
+                        let degs_offset = 22.0;
+                        let duration = Duration::from_millis(140);
+
+                        let tf_tween = Tween::new(
+                            EaseFunction::SmoothStepIn,
+                            duration / 2,
+                            WorldPosLens {
+                                pos: AnimMode::NoAnim,
+                                tf: AnimMode::FromTo {
+                                    start: UiTransform::from_rotation(start_tf.rotation),
+                                    end: UiTransform::from_rotation(Rot2::degrees(degs_offset)),
+                                },
+                                translation: AnimMode::NoAnim,
+                            },
+                        )
+                        .then(Tween::new(
+                            EaseFunction::CubicOut,
+                            duration / 2,
+                            WorldPosLens {
+                                pos: AnimMode::NoAnim,
+                                tf: AnimMode::FromTo {
+                                    start: UiTransform::from_rotation(Rot2::degrees(degs_offset)),
+                                    end: UiTransform::from_rotation(Rot2::degrees(0.0)),
+                                },
+                                translation: AnimMode::NoAnim,
+                            },
+                        ));
+
+                        let anim = TweenAnim::new(tf_tween);
+                        let anim_target = AnimTarget::component::<WorldPos>(view);
+
+                        obs_cmd.entity(trig_e.0).insert((anim, anim_target));
+                    },
+                );
+            },
+        )
         .add_observer(
             |e: On<CardChangedPos>, mut q: Query<&mut History<PosInDeck>>, mut cmd: Commands| {
                 println!(
@@ -223,6 +296,28 @@ impl Plugin for NetworkPlugin {
             },
         );
     }
+}
+
+#[derive(Component, Clone)]
+pub struct CastData {
+    pub ticks_since_cast: u32,
+    pub cast_at: u32,
+}
+
+#[derive(EntityEvent, Clone)]
+pub struct TriggerAnim(pub Entity);
+
+#[derive(Component, Debug, Clone)]
+#[relationship_target(relationship = AnimInstructionsOf, linked_spawn)]
+pub struct AnimInstructions(Vec<Entity>);
+
+#[derive(Component, Debug, Clone)]
+#[relationship(relationship_target = AnimInstructions)]
+pub struct AnimInstructionsOf(Entity);
+
+#[derive(Component, Debug, Clone)]
+pub struct AnimTargetTick {
+    pub turn: BattleTick,
 }
 
 // Battle events
@@ -304,14 +399,6 @@ fn user_data_received(
             tick_map.0.insert(e.message_tick.get(), battle_tick);
         }
     }
-}
-
-fn handle_battle_tick_incremented(
-    e: On<BattleTickIncremented>,
-    mut q: Query<(Entity, &mut CastTicksRequirement)>,
-    // par_cmd: ParallelCommands,
-) {
-    q.par_iter_mut().for_each(|(card, mut t)| t.tick(&e.0));
 }
 
 #[derive(Resource)]

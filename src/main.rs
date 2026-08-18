@@ -46,6 +46,7 @@ use bevy_diesel::prelude::{
     SpawnDieselSubstate, SpawnSubEffect, WriteBack, state_component,
 };
 use bevy_diesel::target::Target;
+use bevy_ecs::entity::MapEntities;
 use bevy_ecs::lifecycle::HookContext;
 use bevy_ecs::relationship::{OrderedRelationshipSourceCollection, Relationship};
 use bevy_ecs::schedule::{MultiThreadedExecutor, ScheduleLabel};
@@ -73,7 +74,8 @@ use bevy_tweening::lens::{
     UiPositionLens, UiTransformRotationLens, UiTransformScaleLens, UiTransformTranslationPxLens,
 };
 use bevy_tweening::{
-    AnimCompletedEvent, AnimTarget, CycleCompletedEvent, Lens, PlaybackState, Tween, TweenAnim,
+    AnimCompletedEvent, AnimTarget, AnimTargetKind, CycleCompletedEvent, Lens, PlaybackState,
+    Tween, TweenAnim,
 };
 use moonshine_kind::{GetInstanceCommands, Instance, Kind};
 use moonshine_view::{RegisterViewable, Viewable, ViewableKind};
@@ -99,7 +101,8 @@ use crate::game_flow::turns::{
 
 use crate::grid_abilities_backend::DeckBackend;
 use crate::network::{
-    BattleTickingJustStarted, History, NetworkPlugin, RecordsLastChangeTick, SaveHistory,
+    AnimInstructions, AnimInstructionsOf, AnimTargetTick, BattleTickingJustStarted, CastData,
+    History, NetworkPlugin, RecordsLastChangeTick, SaveHistory, TriggerAnim,
 };
 use crate::ui::{CardVisualAssets, GameUiPlugin};
 use crate::utils::IntoVec;
@@ -414,6 +417,9 @@ impl PileWithCards {
 #[require(Replicated)]
 pub struct CardInPile(#[entities] Entity);
 
+#[derive(Component, Debug, Clone, Serialize, Deserialize)]
+pub struct TickEachTurn;
+
 #[derive(Component, Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[require(Replicated)]
 pub struct TicksSinceCast {
@@ -491,6 +497,7 @@ pub fn cast_data(cast_ticks_requirement: u32) -> impl Bundle {
     (
         CastTicksRequirement::new(cast_ticks_requirement),
         TicksSinceCast::default(),
+        TickEachTurn,
     )
 }
 
@@ -691,25 +698,20 @@ impl TurnAnimator {
 
 pub fn handle_animate_tick(
     e: On<AnimateTick>,
-    q_cards: Query<(Entity, &Viewable<Card>, &History<PosInDeck>)>,
+    q_cards: Query<(
+        Entity,
+        &Viewable<Card>,
+        &History<PosInDeck>,
+        Option<&AnimInstructions>,
+    )>,
+    q_triggerable_anims: Query<(Entity, &AnimTargetTick), With<AnimInstructionsOf>>,
     q_world_pos: Query<&WorldPos>,
     mut cmd: Commands,
 ) {
     let turn_tick = e.0;
-    let min_action_tick = q_cards
-        .iter()
-        .map(|v| {
-            v.2.changes
-                .iter()
-                .filter(|t| t.0.turn as u32 == turn_tick)
-                .map(|t| t.0.subtick)
-                .min()
-                .unwrap_or(999)
-        })
-        .min()
-        .unwrap();
+    let min_action_tick = 0;
 
-    let max_action_tick = q_cards
+    let mut max_action_tick = q_cards
         .iter()
         .map(|v| {
             v.2.changes
@@ -728,11 +730,29 @@ pub fn handle_animate_tick(
         .max()
         .unwrap();
 
+    if max_action_tick < 3 {
+        max_action_tick = 3;
+    }
+
     println!("min {:?} max {:?}", min_action_tick, max_action_tick);
 
     let action_ticks_count = (max_action_tick as i32 - min_action_tick as i32) + 1;
 
-    for (card_entity, viewable, history) in q_cards.iter() {
+    for (card_entity, viewable, history, maybe_anims) in q_cards.iter() {
+        let anims_by_subtick: Vec<(u32, Entity)> = match maybe_anims {
+            Some(anims) => q_triggerable_anims
+                .iter_many(anims.collection())
+                .filter_map(|(e, a)| {
+                    if a.turn.turn != turn_tick {
+                        return None;
+                    }
+
+                    Some((a.turn.subtick, e))
+                })
+                .collect(),
+            None => vec![],
+        };
+
         let view = viewable.view().entity();
         let maybe_world_pos = q_world_pos.get(view);
 
@@ -760,6 +780,12 @@ pub fn handle_animate_tick(
             for tick_nb in min_action_tick..=max_action_tick {
                 let loop_i = tick_nb - min_action_tick;
                 let loop_delay_ms = anim_done_delay * (loop_i as f32);
+                let loop_delay_secs = (loop_delay_ms / 1000.0);
+
+                for (_, anim) in anims_by_subtick.iter().filter(|(sub, _)| *sub == tick_nb) {
+                    println!("triggering some anim boss");
+                    cmd.trigger_delayed(TriggerAnim(*anim), loop_delay_secs + 0.3);
+                }
 
                 let Some(changes) = change_group_by_subtick.get(&tick_nb) else {
                     continue;
@@ -890,6 +916,7 @@ pub struct CardWidgetParams<'w, 's> {
     q_effects_list: Query<'w, 's, &'static StatusEffects>,
     // Switch to using auto registered attributes for easier global access ?
     q_effects: Query<'w, 's, (&'static StatusEffectOf, Option<&'static Magnetic>)>,
+    q_cast_data: Query<'w, 's, Option<&'static CastData>>,
 }
 
 #[derive(Component)]
@@ -919,6 +946,15 @@ impl ImmediateAttach<CapsUi> for CardWidgetFor {
                         .iter_many(descendant_effects)
                         .collect::<Vec<_>>()
                 });
+
+        let (ticks_since_cast, cast_at) = params
+            .q_cast_data
+            .get(view)
+            .unwrap()
+            .map_or((0, 4), |cast_data| {
+                (cast_data.ticks_since_cast, cast_data.cast_at)
+            });
+
         let maybe_world_card = params.q_world_cards.get(view);
 
         ui.ch()
@@ -967,6 +1003,31 @@ impl ImmediateAttach<CapsUi> for CardWidgetFor {
                 if let Ok(world_card) = maybe_world_card {
                     cmds.insert(world_card.transform.clone());
                 };
+            })
+            .add(move |ui| {
+                ui.ch()
+                    .on_spawn_insert(|| {
+                        (
+                            Node {
+                                width: percent(100),
+                                height: percent(0),
+                                position_type: PositionType::Absolute,
+                                bottom: px(0),
+                                left: px(0),
+                                ..default()
+                            },
+                            BackgroundColor(Srgba::GREEN.with_alpha(0.3).into()),
+                        )
+                    })
+                    .node_mut(|n| {
+                        let height_pct = match (ticks_since_cast == 0 || cast_at == 0) {
+                            true => 0.,
+                            false => {
+                                ((ticks_since_cast as f32 / cast_at as f32) * 100.0).min(100.0)
+                            }
+                        };
+                        n.height = percent(height_pct);
+                    });
             })
             .add(move |ui| {
                 for effect in effects.iter() {
@@ -1120,7 +1181,7 @@ fn spawn_card(
     };
 
     cmd.entity(card)
-        .insert((UiCardMarker, Card::new(), cast_data(10), components));
+        .insert((UiCardMarker, Card::new(), cast_data(7), components));
 
     cmd.entity(card).with_children(|parent| {
         let ticking = parent.spawn_substate(card, Name::new("Ticking")).id();
@@ -1191,10 +1252,12 @@ impl<'w, 's> BoardUtilsCommandsExt for Commands<'w, 's> {
     }
 }
 
-#[derive(EntityEvent, Clone, Message, Debug, Reflect)]
+#[derive(EntityEvent, Clone, Message, Debug, Reflect, Serialize, Deserialize, MapEntities)]
 pub struct CardCast {
     #[event_target]
+    #[entities]
     pub card: Entity,
+    pub tick: BattleTick,
 }
 
 impl GearboxMessage for CardCast {
@@ -1782,14 +1845,11 @@ pub struct ReqNextTurnAnim {
 
 fn handle_turn_animator_added(
     e: On<Add, TurnAnimator>,
-    q: Query<&TurnAnimator, With<TweenAnim>>,
+    q: Query<&TurnAnimator>,
     mut cmd: Commands,
 ) {
     let target = e.entity;
-    let turn = q
-        .get(target)
-        .expect("TurnAnimator should always be put on an entity with TweenAnim")
-        .turn;
+    let turn = q.get(target).expect("TurnAnimator not found").turn;
 
     cmd.entity(target).observe(
         move |evt: On<AnimCompletedEvent>,
@@ -1807,9 +1867,12 @@ fn handle_turn_animator_added(
             }
 
             println!("STARTING NEXT TURN ANIM");
-            obs_cmd.trigger(ReqNextTurnAnim {
-                turn: next_expected_turn,
-            });
+            obs_cmd.trigger_delayed(
+                ReqNextTurnAnim {
+                    turn: next_expected_turn,
+                },
+                0.15,
+            );
         },
     );
 }
