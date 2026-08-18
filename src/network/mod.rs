@@ -21,11 +21,11 @@ use bevy::{
 use bevy_ecs::{
     change_detection::DetectChanges,
     component::{Component, Mutable},
-    entity::Entity,
+    entity::{Entity, MapEntities},
     error::BevyError,
     event::{EntityEvent, Event},
     hierarchy::ChildOf,
-    lifecycle::{Add, Remove},
+    lifecycle::{Add, Insert, Remove},
     message::MessageWriter,
     observer::On,
     query::{Changed, Or, With},
@@ -73,9 +73,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     BattleData, BattleTick, BeingDrawn, BoardUtilsCommandsExt, CardCast, CardInPile, CardWidgetFor,
-    CastTicksRequirement, DelayCompleted, Delayer, DrawPile, EnemyCard, EnemyData, HandPile,
-    InDiscard, InDrawPile, InHand, Magnetic, MainSceneUiRoot, PlayerCard, PlayerData, PosInDeck,
-    UiCardMarker,
+    CastTicksRequirement, DeckKind, DelayCompleted, Delayer, DrawPile, EnemyCard, EnemyData,
+    HandPile, InDiscard, InDrawPile, InHand, Magnetic, MainSceneUiRoot, PlayerCard, PlayerData,
+    PosInDeck, UiCardMarker,
     abilities::effects::{StatusEffectOf, StatusEffects},
     deck::deck_and_cards::{Card, CardPile},
     game_flow::turns::{
@@ -107,20 +107,20 @@ impl Plugin for NetworkPlugin {
         .init_state::<GameState>()
         // .replicate::<CastTicksRequirement>()
         .replicate::<Card>()
-        .replicate::<CardPile>()
-        .replicate::<CardInPile>()
-        .replicate::<Magnetic>()
+        // .replicate::<CardPile>()
+        // .replicate::<CardInPile>()
+        // .replicate::<Magnetic>()
         .replicate::<UiCardMarker>()
-        .replicate::<InHand>()
-        .replicate::<BeingDrawn>()
-        .replicate::<InDrawPile>()
-        .replicate::<InDiscard>()
-        .replicate::<PosInDeck>()
+        // .replicate::<InHand>()
+        // .replicate::<BeingDrawn>()
+        // .replicate::<InDrawPile>()
+        // .replicate::<InDiscard>()
+        // .replicate::<PosInDeck>()
         .register_marker_with::<SaveHistory>(MarkerConfig {
             need_history: true,
             ..Default::default()
         })
-        .replicate::<SaveHistory>()
+        // .replicate::<SaveHistory>()
         .set_marker_fns::<SaveHistory, PosInDeck>(write_history, remove_history::<PosInDeck>)
         // .set_marker_fns::<SaveHistory, CastTicksRequirement>(
         //     write_history,
@@ -131,12 +131,12 @@ impl Plugin for NetworkPlugin {
         .replicate_once::<Node>()
         .replicate_once::<MainSceneUiRoot<PlayerData>>()
         .replicate_once::<MainSceneUiRoot<EnemyData>>()
-        .sync_related_entities::<CardInPile>()
-        .replicate::<StatusEffects>()
-        .replicate::<StatusEffectOf>()
-        .sync_related_entities::<StatusEffectOf>()
-        .replicate::<DrawPile>()
-        .replicate::<HandPile>()
+        // .sync_related_entities::<CardInPile>()
+        // .replicate::<StatusEffects>()
+        // .replicate::<StatusEffectOf>()
+        // .sync_related_entities::<StatusEffectOf>()
+        // .replicate::<DrawPile>()
+        // .replicate::<HandPile>()
         .replicate::<PlayerCard>()
         .replicate::<EnemyCard>()
         .sync_related_entities::<ChildOf>()
@@ -192,8 +192,79 @@ impl Plugin for NetworkPlugin {
                 check_inputs.run_if(in_state(ClientState::Connected)),
                 log_shared_vals,
             ),
+        )
+        .add_observer(handle_card_changes)
+        .add_mapped_server_event::<CardChangedPos>(Channel::Ordered)
+        .add_observer(
+            |e: On<CardChangedPos>, mut q: Query<&mut History<PosInDeck>>, mut cmd: Commands| {
+                println!(
+                    "received card pos change: {:?} for tick : {:?} - AND log comps after :",
+                    e.new_pos, e.turn
+                );
+
+                match q.get_mut(e.card) {
+                    Ok(mut history) => match history.changes.get_mut(&e.turn) {
+                        Some(tick_change_list) => {
+                            tick_change_list.push(e.new_pos);
+                        }
+                        None => {
+                            history.changes.insert(e.turn, vec![e.new_pos]);
+                        }
+                    },
+                    Err(_) => {
+                        cmd.entity(e.card)
+                            .insert(History::<PosInDeck>::from_initial_change(
+                                e.new_pos, &e.turn,
+                            ));
+                    }
+                }
+
+                cmd.entity(e.card).log_components();
+            },
         );
     }
+}
+
+// Battle events
+//
+
+pub fn handle_card_changes(
+    e: On<Insert, PosInDeck>,
+    q: Query<(&PosInDeck, &CardInPile), With<Card>>,
+    battle_data: Res<BattleData>,
+    mut cmd: Commands,
+) {
+    let Some(battle_tick) = (match battle_data.into_inner() {
+        BattleData::NoBattle => None,
+        BattleData::InCombat { battle_tick } => Some(battle_tick),
+    }) else {
+        return;
+    };
+
+    let card = e.entity;
+    let (curr_pos, card_in_pile) = q
+        .get(card)
+        .expect("PosInDeck was inserted so it should match this query, also should have a Card");
+
+    let pile = card_in_pile.0;
+
+    cmd.server_trigger(ToClients {
+        targets: SendTargets::CLIENTS_ONLY,
+        message: CardChangedPos {
+            card,
+            new_pos: *curr_pos,
+            turn: *battle_tick,
+        },
+    });
+}
+
+#[derive(EntityEvent, MapEntities, Serialize, Deserialize)]
+pub struct CardChangedPos {
+    #[event_target]
+    #[entities]
+    pub card: Entity,
+    pub new_pos: PosInDeck,
+    pub turn: BattleTick,
 }
 
 #[derive(Component, Default, Serialize, Deserialize)]

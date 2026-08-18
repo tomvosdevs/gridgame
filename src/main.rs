@@ -520,6 +520,7 @@ pub enum DeckKind {
 )]
 // (i32, DeckKind, BattleTick)
 #[require(Replicated, SaveHistory)]
+#[component(immutable)]
 pub struct PosInDeck {
     index: u32,
     deck: DeckKind,
