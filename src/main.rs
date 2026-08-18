@@ -98,7 +98,9 @@ use crate::game_flow::turns::{
 };
 
 use crate::grid_abilities_backend::DeckBackend;
-use crate::network::{BattleTickingJustStarted, History, NetworkPlugin, SaveHistory};
+use crate::network::{
+    BattleTickingJustStarted, History, NetworkPlugin, RecordsLastChangeTick, SaveHistory,
+};
 use crate::ui::{CardVisualAssets, GameUiPlugin};
 use crate::utils::IntoVec;
 use crate::visuals::cards::animation::DiegeticCardTweenPlugin;
@@ -521,11 +523,24 @@ pub enum DeckKind {
 pub struct PosInDeck {
     index: u32,
     deck: DeckKind,
+    last_changed: BattleTick,
 }
 
 impl PosInDeck {
     pub fn new(index: u32, deck: DeckKind) -> Self {
-        Self { index, deck }
+        Self {
+            index,
+            deck,
+            last_changed: BattleTick::initial(),
+        }
+    }
+
+    pub fn new_with_change_tick(index: u32, deck: DeckKind, tick: &BattleTick) -> Self {
+        Self {
+            index,
+            deck,
+            last_changed: tick.clone(),
+        }
     }
 
     pub fn as_world_pos(&self) -> Vec2 {
@@ -537,6 +552,12 @@ impl PosInDeck {
             DeckKind::Draw => false,
             DeckKind::Hand => true,
         }
+    }
+}
+
+impl RecordsLastChangeTick for PosInDeck {
+    fn get_last_change_tick(&self) -> BattleTick {
+        self.last_changed
     }
 }
 
@@ -694,7 +715,10 @@ pub fn handle_animate_tick(
                 .iter()
                 .filter(|t| t.0.turn as u32 == turn_tick)
                 .map(|t| {
-                    println!("animating one with subtick : {:?}", t.0.subtick);
+                    println!(
+                        "animating one with turn {:?} and subtick : {:?}",
+                        t.0.turn, t.0.subtick
+                    );
                     t.0.subtick
                 })
                 .max()
@@ -833,11 +857,6 @@ pub fn handle_animate_tick(
                     let delay_secs = loop_delay_ms / 1000.0;
                     cmd.spawn(Delayer::from_secs(delay_secs)).observe(
                         move |_: On<DelayCompleted>, mut q: Query<&mut TweenAnim>| {
-                            println!(
-                                "animating world pos, following a delay of {:?} seconds from card index : {:?}",
-                                delay_secs.clone(),
-                                cloned_idx.clone()
-                            );
                             let [mut tween_a, mut tween_b] =
                                 q.get_many_mut([anim_a, anim_b]).unwrap();
 
@@ -1588,9 +1607,15 @@ fn check_update_cards_idx(
     q_decks: Query<(&PileWithCards, Has<HandPile>), Changed<PileWithCards>>,
     q_just_drawn: Query<(), With<JustDrawn>>,
     q_idx: Query<&PosInDeck>,
+    battle_data: Res<BattleData>,
     mut cmd: Commands,
     // mut increment_action_tick: ResMut<IncrementActionTick>,
 ) {
+    let battle_tick = match battle_data.into_inner() {
+        BattleData::NoBattle => &BattleTick::initial(),
+        BattleData::InCombat { battle_tick } => battle_tick,
+    };
+
     if q_decks.count() == 0 {
         return;
     }
@@ -1602,7 +1627,7 @@ fn check_update_cards_idx(
                 false => DeckKind::Draw,
             };
 
-            let after = PosInDeck::new(i as u32, card_kind);
+            let after = PosInDeck::new_with_change_tick(i as u32, card_kind, battle_tick);
             let Ok(before) = q_idx.get(card) else {
                 // Initializes value the first time
                 cmd.entity(card).insert(after);
@@ -1722,7 +1747,7 @@ fn check_battle_data_fully_received(
 
     println!("READY ! All ticks for first turn receive -> START ANIMATING");
     anim_state.started = true;
-    cmd.trigger_delayed(ReqNextTurnAnim { turn: 0 }, 0.1);
+    cmd.trigger_delayed(ReqNextTurnAnim { turn: 0 }, 0.5);
 }
 
 #[derive(Event)]
@@ -1791,11 +1816,9 @@ fn handle_turn_animator_added(
 fn update_subtick(mut battle_data: ResMut<BattleData>) {
     match &mut battle_data.into_inner() {
         BattleData::NoBattle => {
-            println!("XXXXXX == NO BATTLE DATAA");
             return;
         }
         BattleData::InCombat { battle_tick } => {
-            println!("OOOOOO == FOUND BATTLE DATAA : {:?}", battle_tick);
             battle_tick.subtick += 1;
         }
     }

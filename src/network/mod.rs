@@ -106,7 +106,6 @@ impl Plugin for NetworkPlugin {
         .insert_resource(RepliconTickToBattleTick(HashMap::new()))
         .init_state::<GameState>()
         // .replicate::<CastTicksRequirement>()
-        .replicate::<SharedVal>()
         .replicate::<Card>()
         .replicate::<CardPile>()
         .replicate::<CardInPile>()
@@ -123,10 +122,10 @@ impl Plugin for NetworkPlugin {
         })
         .replicate::<SaveHistory>()
         .set_marker_fns::<SaveHistory, PosInDeck>(write_history, remove_history::<PosInDeck>)
-        .set_marker_fns::<SaveHistory, CastTicksRequirement>(
-            write_history,
-            remove_history::<CastTicksRequirement>,
-        )
+        // .set_marker_fns::<SaveHistory, CastTicksRequirement>(
+        //     write_history,
+        //     remove_history::<CastTicksRequirement>,
+        // )
         .replicate::<PlayerBoardMarker>()
         .replicate::<EnemyBoardMarker>()
         .replicate_once::<Node>()
@@ -193,42 +192,7 @@ impl Plugin for NetworkPlugin {
                 check_inputs.run_if(in_state(ClientState::Connected)),
                 log_shared_vals,
             ),
-        )
-        .add_systems(
-            FixedUpdate,
-            update_null_tick_histories.run_if(in_state(ClientState::Connected)),
         );
-    }
-}
-
-fn update_null_tick_histories(
-    mut q: Query<&mut History<PosInDeck>>,
-    ticks_map: Res<RepliconTickToBattleTick>,
-) {
-    for mut history in &mut q {
-        let mut to_update: Vec<(u32, BattleTick)> = vec![];
-        for (repl_tick, _) in history.awaiting.iter_mut() {
-            match ticks_map.0.get(repl_tick) {
-                Some(battle_tick) => {
-                    to_update.push((*repl_tick, battle_tick.clone()));
-                }
-                None => {
-                    continue;
-                }
-            }
-        }
-
-        for (repl_tick, battle_tick) in to_update {
-            let mut vals = history.awaiting.remove(&repl_tick).unwrap();
-            match history.changes.get_mut(&battle_tick) {
-                Some(changes) => {
-                    changes.append(&mut vals);
-                }
-                None => {
-                    history.changes.insert(battle_tick, vals);
-                }
-            }
-        }
     }
 }
 
@@ -332,47 +296,44 @@ pub enum TickedAt {
 
 #[derive(Component)]
 pub struct History<C: Component + Clone> {
-    pub awaiting: HashMap<u32, Vec<C>>,
     pub changes: BTreeMap<BattleTick, Vec<C>>,
 }
 
 impl<C: Component + Clone> History<C> {
-    pub fn from_initial_change(initial: C, replicon_tick: u32) -> Self {
-        let mut awaiting = HashMap::new();
-        awaiting.insert(replicon_tick, vec![initial]);
+    pub fn from_initial_change(initial: C, tick: &BattleTick) -> Self {
+        let mut changes = BTreeMap::new();
+        changes.insert(tick.clone(), vec![initial]);
         Self {
-            awaiting,
             changes: BTreeMap::new(),
         }
     }
 }
 
-#[derive(Component, Clone, Debug)]
-pub struct HistoryJustUpdated;
+pub trait RecordsLastChangeTick {
+    fn get_last_change_tick(&self) -> BattleTick;
+}
 
-fn write_history<C: Component + Eq + Clone>(
+fn write_history<C: Component + Eq + Clone + RecordsLastChangeTick>(
     ctx: &mut WriteCtx,
     rule_fns: &RuleFns<C>,
     entity: &mut DeferredEntity,
     message: &mut Bytes,
 ) -> Result<(), BevyError> {
     let component: C = rule_fns.deserialize(ctx, message)?;
-    let repl_tick = ctx.message_tick.get();
+    let battle_tick = component.get_last_change_tick();
 
     if let Some(mut history) = entity.get_mut::<History<C>>() {
-        match history.awaiting.get_mut(&repl_tick) {
+        match history.changes.get_mut(&battle_tick) {
             Some(change_list) => {
                 change_list.push(component);
             }
             None => {
-                history.awaiting.insert(repl_tick, vec![component]);
+                history.changes.insert(battle_tick, vec![component]);
             }
         }
     } else {
-        entity.insert(History::<C>::from_initial_change(component, repl_tick));
+        entity.insert(History::<C>::from_initial_change(component, &battle_tick));
     };
-
-    entity.insert(HistoryJustUpdated);
 
     Ok(())
 }

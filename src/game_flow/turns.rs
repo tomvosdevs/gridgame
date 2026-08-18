@@ -646,10 +646,6 @@ pub fn handle_draw_from_pile(
         return;
     };
 
-    println!("((all ok)), loging HAND then DRAW");
-    cmd.entity(e.draw_pile).log_components();
-    cmd.entity(e.hand_pile).log_components();
-
     let max_hand_size: usize = 5;
 
     if hand_pile.len() >= max_hand_size {
